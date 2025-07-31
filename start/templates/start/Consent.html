@@ -1,0 +1,27 @@
+{% extends "global/Page.html" %}
+{% load otree static %}
+
+{% block title %}
+
+{% endblock %}
+
+{% block content %}
+<style>
+body{max-width: initial!important;}
+.otree-body.container{
+    
+    width: 100%!important;
+    max-width: 1000px;
+    margin-top: 0px!important;
+}
+h2.otree-title.page-header.mt-5{display:none}
+</style>
+{% autoescape off%}
+    {{session.vars.consent}}
+{% endautoescape %}
+
+    <button class="otree-btn-next btn btn-primary">I want to participate!</button>
+
+
+
+    {% endblock %}

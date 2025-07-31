@@ -1,0 +1,260 @@
+{% load otree static %}
+
+
+</p>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/2.9.2/umd/popper.min.js"
+    integrity="sha512-2rNj2KJ+D8s1ceNasTIex6z4HWyOnEYLVC3FigGOmyQCZc2eBXKgOxQmo3oKLHyfcj53uz4QMsRCWNbLd32Q1g=="
+    crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css">
+<!-- JS, Popper.js, and jQuery -->
+<script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.11.6/dist/umd/popper.min.js"></script>
+<script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/js/bootstrap.min.js"></script>
+<style>
+    .input-group-append {
+        position: absolute;
+        right: 10px;
+        top: 10px;
+        pointer-events: none;
+    }
+
+    .input-group-append .btn {
+        pointer-events: all;
+    }
+</style>
+
+<style>
+    .input-group {
+        max-width: 100%;
+    }
+
+    .input-kids {
+        min-width: 200px;
+    }
+
+    [v-cloak] {
+        display: none
+    }
+
+    .help-button {
+        position: absolute!important;
+        top: -15px!important;
+        right: -15px!important;
+        background: none!important;
+        border: none!important;
+    }
+
+    .error {
+        border: 1px solid red;
+        border-radius: 5px !important;
+    }
+</style>
+<div id="app" class="text-center" v-cloak>
+    {% verbatim %}
+  <div class="modal fade" id="confirmModal" tabindex="-1" role="dialog" aria-labelledby="confirmModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="confirmModalLabel">Confirm Submission</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        Are you sure you want to submit?
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" @click="submitForm">Submit</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+    <div   class="container mt-5">
+        
+        <div class="modal" tabindex="-1" role="dialog" id="infoModal">
+            <div class="modal-dialog" role="document">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Input Information</h5>
+                        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                            <span aria-hidden="true">&times;</span>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <p>Here are the allowed input values:</p>
+                        <ul v-if="currentFieldChoices">
+                        <li v-for="choice in currentFieldChoices" :key="choice">{{choice}}</li>
+                        </ul>
+                        
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+
+
+    <input type="hidden" name="producer_decision" :value="JSON.stringify(formattedItems)">
+    <input type="hidden" v-model="startTime" name="start_decision_time">
+    <input type="hidden" v-model="endTime" name="end_decision_time">
+    <input type="hidden" v-model="durationInSeconds" name="decision_seconds">
+    <ul class="list-group list-group-flush my-3" v-cloak>
+        <li class="list-group-item d-flex" v-for="(item, itemIndex) in items" :key="itemIndex"
+            style="    flex-flow: nowrap">
+            <div class="input-group mb-3 d-flex" style="    flex-flow: nowrap">
+                <div class="prefix mx-3 text-nowrap" v-if="prefix">{{prefix}}</div>
+                <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex"
+                    class="input-group mb-3 d-flex flex-nowrap">
+                    <div style="position: relative;">
+                        <input type="text" v-model.trim="field.value" class="form-control input-kids"
+                            :class="{ error: isError(field) }" :placeholder="`Field ${fieldIndex+1}`" required
+                            @input="hideError">
+                        <button class="btn btn-outline-secondary help-button" type="button" data-toggle="tooltip"
+                            data-placement="top" title="Click for Info" @click="showInfo(field)" tabindex="-1">
+                            <i class="fa fa-question-circle"></i>
+                        </button>
+                    </div>
+                    <span class="input-group-tex mx-3 text-nowrap">{{ field.suffix }}</span>
+                </div>
+                <button @click="addItem" style="flex-basis: 75px;" type="button" class="btn btn-success"
+                    :disabled="items.length === maxItems">+</button>
+                <button @click="removeItem(itemIndex)" type="button" :disabled="items.length === minItems"
+                    class="btn btn-danger" style="flex-basis: 75px;">-</button>
+
+            </div>
+        </li>
+    </ul>
+    <p v-if="error" class="alert alert-danger" v-html="errorMessage"></p>
+    <button :disabled="!isFormComplete" @click="validate" class="btn btn-primary mb-3" type="button">Next</button>
+
+
+    </p>
+
+
+    {% endverbatim %}
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="{% static 'global/js/input_functions.js' %}"></script>
+<script>
+
+    window.prefix = {{ session.vars.prefix | json }};
+    window.suffixes = {{ session.vars.suffixes | json }}
+    window.allowedValues = {{ session.vars.allowed_values | json }}
+    window.regex = {{ session.vars.allowed_regex | json }};
+    window.caseflag = {{ session.vars.caseflag | json }};
+</script>
+<script>
+    const app = Vue.createApp({
+        data() {
+
+
+            return {
+                inputValue: "",
+                currentFieldChoices:null,
+                startTime: new Date().toISOString(),  // ISO string format "2023-07-19T16:14:33.789Z"
+                endTime: null,
+                durationInSeconds: null,
+                maxItems: 5,
+                minItems: 1,
+                prefix: window.prefix,
+                suffixes: window.suffixes,
+                items: [{ fields: getFields() }],
+                error: false,
+                errorMessage: '',
+                validated: false
+            }
+        },
+        methods: {
+            showInfo(field) {
+                this.currentFieldChoices=field.allowedValues;
+                $('#infoModal').modal('show');
+            },
+            addItem: addItem,
+            removeItem(index) {
+                if (this.items.length > this.minItems) {
+                    this.items.splice(index, 1);
+                }
+            },
+            validate() {
+
+                if (!this.isValid()) {
+                    this.error = true;
+                    this.errorMessage = this.getErrMessage
+                    this.validated = true;
+                } else {
+                    this.error = false;
+
+                    this.validated = true;
+                    this.error = false;
+                    this.endTime = new Date().toISOString();
+                    this.durationInSeconds = (new Date(this.endTime) - new Date(this.startTime)) / 1000;
+
+                    this.$nextTick(() => {
+                         $('#confirmModal').modal('show');
+                        // After the next DOM update cycle
+                        
+                    });
+
+                }
+            },
+            submitForm: function() {
+    // Your submit logic here
+    $('#form').submit();
+  },
+            isValid() {
+                return this.items.every((item) => {
+                    return item.fields.every((field) => {
+
+                        return this.checkSingleField(field)
+                    })
+                });
+            },
+            hideError() {
+                this.error = false;
+                this.validated = false;
+            },
+           checkSingleField: checkSingleField,
+            isError(field) {
+                return this.validated && !this.checkSingleField(field);
+            }
+        },
+        computed: {
+            formattedItems() {
+                return this.items.map(item => {
+                    let obj = {};
+                    item.fields.forEach((field, i) => {
+                        obj[`field_${i}`] = field.value;
+                    });
+                    return obj;
+                });
+            },
+            isFormComplete() {
+                return this.items.length >= this.minItems && this.items.every(item => item.fields.every(field => field.value !== ''));
+            },
+            getErrMessage() {
+                let errmsg = 'Error. The text is not in the allowed list of values. <br> ';
+
+                this.suffixes.forEach((suffix, index) => {
+                    allVal = window.allowedValues[index]
+                    if (allVal.length > 0) {
+                        errmsg += `For Field ${index + 1}, the allowed values are: <b>${allVal.join(", ")}</b>. <br>`;
+                    }
+                });
+                return errmsg
+            }
+        }
+    });
+    app.mount('#app')
+    $(function () {
+        $('[data-toggle="tooltip"]').tooltip()
+    })
+</script>

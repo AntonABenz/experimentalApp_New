@@ -1,0 +1,30 @@
+{% extends "global/Page.html" %}
+{% load otree static %}
+
+{% block title %}
+ 
+{% endblock %}
+
+{% block content %}
+
+<h2 style="text-align:right">
+    <table style="width:800px">
+        <tr>
+            <td></td>
+            <td></td>
+            <td><img src="{% static 'global/img/zas.png' %}" width="110" alt="ZAS"></td>
+        </tr>
+    </table>
+</h2>
+
+
+    <script src="https://unpkg.com/survey-jquery@1.9.115/survey.jquery.min.js"></script>
+    <script src="https://unpkg.com/survey-jquery@1.9.115/themes/index.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/survey-jquery@1.9.115/defaultV2.min.css" />
+    <div id="surveyElement" ></div>
+    <input type="hidden" id="survey_data" value="" name="survey_data">
+    <script src="{% static 'global/js/demographics.js' %}"></script>
+
+
+
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "global/Page.html" %}
+{% load otree static %}
+
+{% block global_styles %}
+
+{% if player.role == Constants.PRODUCER %}
+<link rel="preload" as="image" href="{{player.get_image_url}}">
+{% endif %}
+
+
+
+{% endblock %}
+{% block title %}
+Round {{view.round_number}}/{{session.vars.num_rounds}}
+{% endblock %}
+
+{% block content %}
+
+{% if player.role == Constants.PRODUCER %}
+<div class="card">
+    <div class="card-body text-center">
+
+        <img width="500px" src="{{player.get_image_url}}" alt="">
+    </div>
+    {% include "img_desc/includes/p_form.html" %}
+
+</div>
+{% endif %}
+{% if player.role == Constants.INTERPRETER %}
+<div class="alert alert-info lead text-center">
+    {% for s in player.get_full_sentences %}
+    {{s}} <br>
+    {% endfor %}
+</div>
+{% include "img_desc/includes/i_form.html" %}
+
+{% endif %}
+
+
+
+{% endblock %}

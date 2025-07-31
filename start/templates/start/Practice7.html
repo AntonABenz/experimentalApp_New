@@ -1,0 +1,190 @@
+{% extends "global/Page.html" %}
+{% load otree static %}
+
+{% block title %}
+
+{% endblock %}
+
+{% block content %}
+
+<style>
+    .input-group {
+        max-width: 100%;
+    }
+
+    .input-kids {
+        min-width: 200px;
+    }
+
+    [v-cloak] {
+        display: none
+    }
+
+    .error {
+        border: 1px solid red;
+        border-radius: 5px !important;
+    }
+</style>
+<div id="app">
+    {% verbatim %}
+
+    <h1>{{title}}</h1>
+    <div v-html="main_text"></div>
+
+    <div class="text-center">
+        <div class="image text-center my-3 d-flex justify-content-center">
+            <div style="width: 500px; height: 300px;  background-color: lightblue; border-radius: 10px;"></div>
+        </div>
+    </div>
+    <div class="text-center">
+        <div class="text-center">
+            <div class="row my-3">
+                <div class=" col mb-3" v-for="(allowedList,index) in allowedValues" :key="index">
+                    <div v-if="allowedList.length">
+                        <p class="font-weight-bold">Text field {{index+1}}:</p>
+                        <ul class="list-group">
+                            <li class="list-group-item" v-for="value in allowedList" :key="value">{{ value }}</li>
+                        </ul>
+                    </div>
+                </div>
+
+            </div>
+
+
+            <ul class="list-group list-group-flush my-3" v-cloak>
+                <li class="list-group-item d-flex" v-for="(item, itemIndex) in items" :key="itemIndex"
+                    style="    flex-flow: nowrap">
+                    <div class="input-group mb-3 d-flex align-items-baseline" style="    flex-flow: nowrap">
+                        <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex"
+                            class="input-group mb-3 d-flex align-items-baseline">
+                            <input type="text" v-model.trim="field.value" class="form-control input-kids"
+                                :class="{ error: isError(field) }" :placeholder="`Field ${fieldIndex+1}`" required
+                                @input="hideError">
+                            <span class="input-group-tex mx-3">{{ field.suffix }}</span>
+                        </div>
+                        <button @click="addItem" style="flex-basis: 75px;" type="button" class="btn btn-success"
+                            :disabled="items.length === maxItems">+</button>
+                        <button @click="removeItem(itemIndex)" type="button" :disabled="items.length === minItems"
+                            class="btn btn-danger" style="flex-basis: 75px;">-</button>
+
+                    </div>
+                </li>
+            </ul>
+
+        </div>
+
+
+    </div>
+    <p v-if="sentences_left" class="alert alert-info">Make {{sentences_left}}.</p>
+    <p v-if="error" class="alert alert-danger" v-html="errorMessage"></p>
+    <button :disabled="!isFormComplete" @click="validate" class="btn btn-primary mb-3" type="button">Next</button>
+
+    {% endverbatim %}
+</div>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="{% static 'global/js/input_functions.js' %}"></script>
+<script>
+    window.suffixes = {{ session.vars.suffixes | json }}
+    window.allowedValues = {{ session.vars.allowed_values | json }}
+    window.regex = {{ session.vars.allowed_regex | json }};
+    window.caseflag = {{ session.vars.caseflag | json }};
+</script>
+<script>
+    const app = Vue.createApp({
+        data() {
+
+
+            return {
+                suffixes: window.suffixes,
+                minItems: 1,
+                maxItems: 5,
+                requiredNumSentences: 5,
+                allowedValues: window.allowedValues,
+                image_path: js_vars.settings.full_image_path,
+                title: js_vars.settings.title,
+                main_text: js_vars.settings.main_text,
+                items: [{ fields: getFields() }],
+                error: false,
+                contentError: false,
+                errorMessage: '',
+                validated: false
+            }
+        },
+        methods: {
+            addItem: addItem,
+            removeItem(index) {
+                if (this.items.length > this.minItems) {
+                    this.items.splice(index, 1);
+                }
+            },
+            validate() {
+
+                if (!this.isValid()) {
+                    this.error = true;
+                    this.contentError = true;
+                    this.errorMessage = this.getErrMessage
+                    this.validated = true;
+                } else {
+                    this.error = false;
+                    this.contentError = false;
+                    this.validated = true;
+                    this.error = false;
+                    $('#form').submit()
+                }
+            },
+            isValid() {
+                return this.items.every((item) => {
+                    return item.fields.every((field) => {
+
+                        return this.checkSingleField(field)
+                    })
+                });
+            },
+            hideError() {
+                this.error = false;
+                this.validated = false;
+            },
+            checkSingleField: checkSingleField,
+            isError(field) {
+                return this.validated && !this.checkSingleField(field);
+            }
+        },
+        computed: {
+            sentences_left() {
+                const remained = this.requiredNumSentences - this.items.length
+                if (remained <= 0) return false
+                const ending = remained === 1 ? '' : 's'
+                return `${remained} more sentence${ending}`
+            },
+            isFormComplete() {
+                return this.items.length >= this.requiredNumSentences && this.items.every(item => item.fields.every(field => field.value !== ''));
+            },
+            getErrMessage() {
+                let errmsg = ''
+                if (this.contentError) {
+                    errmsg = 'Error. The text is not in the allowed list of values. <br> ';
+                }
+                const lengthErrMsg = this.items.length !== this.requiredNumSentences ? `Please produce ${this.requiredNumSentences} sentences.<br>` : '';
+                errmsg = lengthErrMsg + errmsg;
+                this.suffixes.forEach((suffix, index) => {
+                    allVal = window.allowedValues[index]
+                    if (allVal.length > 0) {
+                        errmsg += `For Field ${index + 1}, the allowed values are: <b>${allVal.join(", ")}</b>. <br>`;
+                    }
+                });
+                return errmsg
+            }
+        }
+    })
+    app.mount('#app')
+</script>
+
+
+
+
+
+
+
+
+
+{% endblock %}
