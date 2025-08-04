@@ -1,14 +1,9 @@
-# Use standard oTree instead of the fork
 otree>=5.10.0
-
-# Keep your other dependencies
 psycopg2-binary>=2.9.0
 gspread>=5.7.0
 oauth2client>=4.1.3
 pandas>=1.5.0
 numpy>=1.21.0
 whitenoise>=6.2.0
-
-# For Heroku
 gunicorn>=20.1.0
-
+dj-database-url>=1.0.0
