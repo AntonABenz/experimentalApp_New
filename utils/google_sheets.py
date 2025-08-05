@@ -20,7 +20,7 @@ def get_google_sheet_client():
     config = settings.GOOGLE_SHEETS_CONFIG
     creds_dict = {
         "type": "service_account",
-        "project_id": "your-project-id",  # Update this
+        "project_id": "versatile-nomad-423508-e4", 
         "private_key_id": config['private_key_id'],
         "private_key": config['private_key'],
         "client_email": config['client_email'],
