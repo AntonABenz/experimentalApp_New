@@ -1,6 +1,9 @@
 import os
 from os import environ
 import dj_database_url
+from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent
+
 
 # oTree settings
 SESSION_CONFIGS = [
