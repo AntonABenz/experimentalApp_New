@@ -33,6 +33,11 @@ SESSION_CONFIGS = [
         filename=environ.get('GOOGLE_SHEET_NAME', 'benz'),
     ),
 ]
+SESSION_CONFIG_DEFAULTS = dict(
+    real_world_currency_per_point=0.01,
+    participation_fee=0.00,
+    doc="",
+)
 
 # Participant fields for Prolific integration
 PARTICIPANT_FIELDS = [
