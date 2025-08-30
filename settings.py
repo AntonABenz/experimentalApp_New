@@ -43,7 +43,6 @@ SESSION_CONFIG_DEFAULTS = dict(
 PARTICIPANT_FIELDS = [
     'prolific_pid',
     'study_id', 
-    'session_id',
     'batch_id',
     'condition',
 ]
