@@ -21,19 +21,25 @@ class Subsession(BaseSubsession):
         for group in self.get_groups():
             players = group.get_players()
             if len(players) >= 1:
-                players[0].role = 'Producer'
+                players[0].player_role = 'Producer'
             for i in range(1, len(players)):
-                players[i].role = 'Interpreter'
+                players[i].player_role = 'Interpreter'
 
 class Group(BaseGroup):
     # Group-level fields for your experiment
     condition = models.StringField(blank=True)
     item = models.StringField(blank=True)
     exp_id = models.StringField(blank=True)
+    
+    def get_player_by_player_role(self, role_name):
+        for player in self.get_players():
+            if player.player_role == role_name:
+                return player
+        return None
 
 class Player(BasePlayer):
     # Role assignment
-    role = models.StringField(choices=['Producer', 'Interpreter'], blank=True)
+    player_role = models.StringField(choices=['Producer', 'Interpreter'], blank=True)
     
     # Response fields
     producer_response = models.LongStringField(
@@ -63,10 +69,10 @@ class Player(BasePlayer):
     
     def get_partner(self):
         """Get the other player in the group (for Producer-Interpreter pairs)"""
-        if self.role == 'Producer':
-            return self.group.get_player_by_role('Interpreter')
-        elif self.role == 'Interpreter':
-            return self.group.get_player_by_role('Producer')
+        if self.player_role == 'Producer':
+            return self.group.get_player_by_player_role('Interpreter')
+        elif self.player_role == 'Interpreter':
+            return self.group.get_player_by_player_role('Producer')
         return None
 
 # PAGES
@@ -75,7 +81,7 @@ class Instructions(Page):
         instructions_url = self.session.config.get('instructions_path', '')
         return {
             'instructions_url': instructions_url,
-            'role': self.player.role
+            'role': self.player.player_role
         }
 
 class Producer(Page):
@@ -83,7 +89,7 @@ class Producer(Page):
     form_fields = ['producer_response']
     
     def is_displayed(self):
-        return self.player.role == 'Producer'
+        return self.player.player_role == 'Producer'
     
     def vars_for_template(self):
         # Load experiment data for this round
@@ -98,12 +104,12 @@ class Producer(Page):
             'sheet_data': sheet_data,
             'settings': settings,
             'image_url': f"{s3_base}/{image_path}",
-            'role': self.player.role
+            'role': self.player.player_role
         }
 
 class WaitForProducer(WaitPage):
     def is_displayed(self):
-        return self.player.role == 'Interpreter'
+        return self.player.player_role == 'Interpreter'
     
     body_text = "Waiting for the Producer to complete their description..."
 
@@ -112,16 +118,16 @@ class Interpreter(Page):
     form_fields = ['interpreter_response']
     
     def is_displayed(self):
-        return self.player.role == 'Interpreter'
+        return self.player.player_role == 'Interpreter'
     
     def vars_for_template(self):
         # Get producer's response
-        producer = self.group.get_player_by_role('Producer')
+        producer = self.group.get_player_by_player_role('Producer')
         producer_response = producer.producer_response if producer else ''
         
         return {
             'producer_response': producer_response,
-            'role': self.player.role
+            'role': self.player.player_role
         }
 
 class WaitForAll(WaitPage):
@@ -133,13 +139,13 @@ class WaitForAll(WaitPage):
 class Results(Page):
     def vars_for_template(self):
         # Show results to all players
-        producer = self.group.get_player_by_role('Producer')
-        interpreters = [p for p in self.group.get_players() if p.role == 'Interpreter']
+        producer = self.group.get_player_by_player_role('Producer')
+        interpreters = [p for p in self.group.get_players() if p.player_role == 'Interpreter']
         
         return {
             'producer_response': producer.producer_response if producer else '',
             'interpreter_responses': [p.interpreter_response for p in interpreters],
-            'role': self.player.role
+            'role': self.player.player_role
         }
 
 # Page sequence MUST be defined
