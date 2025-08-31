@@ -2,22 +2,27 @@ from otree.api import *
 
 # Constants - OLD FORMAT
 class Constants(BaseConstants):
-    name_in_url = 'img_desc'  # lowercase
-    players_per_group = 4     # Adjust based on your experiment design
+    name_in_url = 'img_desc'
+    players_per_group = 4
     num_rounds = 85
 
 class Subsession(BaseSubsession):
     def creating_session(self):
         # Load experiment data from Google Sheets
-        from utils.google_sheets import load_sheet_data
-        filename = self.session.config.get('filename', 'benz')
-        sheet_data = load_sheet_data(filename)
-        
-        if sheet_data:
-            self.session.vars['sheet_data'] = sheet_data
-            self.session.vars['settings'] = sheet_data.get('settings', {})
+        try:
+            from utils.google_sheets import load_sheet_data
+            filename = self.session.config.get('filename', 'benz')
+            sheet_data = load_sheet_data(filename)
             
-        # Assign roles to players (adjust logic as needed)
+            if sheet_data:
+                self.session.vars['sheet_data'] = sheet_data
+                self.session.vars['settings'] = sheet_data.get('settings', {})
+        except ImportError:
+            # Handle case where Google Sheets utility is not available
+            self.session.vars['sheet_data'] = {}
+            self.session.vars['settings'] = {}
+            
+        # Assign roles to players
         for group in self.get_groups():
             players = group.get_players()
             if len(players) >= 1:
@@ -32,6 +37,7 @@ class Group(BaseGroup):
     exp_id = models.StringField(blank=True)
     
     def get_player_by_player_role(self, role_name):
+        """Get player by their role"""
         for player in self.get_players():
             if player.player_role == role_name:
                 return player
@@ -39,7 +45,10 @@ class Group(BaseGroup):
 
 class Player(BasePlayer):
     # Role assignment
-    player_role = models.StringField(choices=['Producer', 'Interpreter'], blank=True)
+    player_role = models.StringField(
+        choices=['Producer', 'Interpreter'], 
+        blank=True
+    )
     
     # Response fields
     producer_response = models.LongStringField(
@@ -51,21 +60,21 @@ class Player(BasePlayer):
         label="Your interpretation"
     )
     
-    # Timing fields (optional)
+    # Timing fields
     time_spent_producer = models.FloatField(blank=True)
     time_spent_interpreter = models.FloatField(blank=True)
     
-    # Prolific integration fields
+    # Prolific integration fields - RENAMED TO AVOID CONFLICTS
     prolific_pid = models.StringField(blank=True)
-    study_id = models.StringField(blank=True)
-    session_id = models.StringField(blank=True)
+    prolific_study_id = models.StringField(blank=True)  # Changed from study_id
+    prolific_session_id = models.StringField(blank=True)  # Changed from session_id
     
     def set_prolific_data(self):
         """Store Prolific parameters from session"""
         if hasattr(self.participant, 'vars'):
             self.prolific_pid = self.participant.vars.get('PROLIFIC_PID', '')
-            self.study_id = self.participant.vars.get('STUDY_ID', '')
-            self.session_id = self.participant.vars.get('SESSION_ID', '')
+            self.prolific_study_id = self.participant.vars.get('STUDY_ID', '')
+            self.prolific_session_id = self.participant.vars.get('SESSION_ID', '')
     
     def get_partner(self):
         """Get the other player in the group (for Producer-Interpreter pairs)"""
@@ -81,7 +90,7 @@ class Instructions(Page):
         instructions_url = self.session.config.get('instructions_path', '')
         return {
             'instructions_url': instructions_url,
-            'role': self.player.player_role
+            'player_role': self.player.player_role
         }
 
 class Producer(Page):
@@ -96,15 +105,21 @@ class Producer(Page):
         sheet_data = self.session.vars.get('sheet_data', {})
         settings = self.session.vars.get('settings', {})
         
-        # Get image URL (adjust based on your data structure)
+        # Get image URL based on round and condition
         s3_base = self.session.config.get('s3_base_url', '')
-        image_path = 'default.jpg'  # Replace with logic to get actual image
+        
+        # Example logic to get image based on round number
+        # You'll need to adjust this based on your data structure
+        round_num = self.round_number
+        image_filename = f"image_{round_num}.jpg"  # Adjust as needed
+        image_url = f"{s3_base}/{image_filename}" if s3_base else ''
         
         return {
             'sheet_data': sheet_data,
             'settings': settings,
-            'image_url': f"{s3_base}/{image_path}",
-            'role': self.player.player_role
+            'image_url': image_url,
+            'player_role': self.player.player_role,
+            'round_number': round_num
         }
 
 class WaitForProducer(WaitPage):
@@ -127,7 +142,7 @@ class Interpreter(Page):
         
         return {
             'producer_response': producer_response,
-            'role': self.player.player_role
+            'player_role': self.player.player_role
         }
 
 class WaitForAll(WaitPage):
@@ -145,10 +160,10 @@ class Results(Page):
         return {
             'producer_response': producer.producer_response if producer else '',
             'interpreter_responses': [p.interpreter_response for p in interpreters],
-            'role': self.player.player_role
+            'player_role': self.player.player_role
         }
 
-# Page sequence MUST be defined
+# Page sequence
 page_sequence = [
     Instructions,
     Producer,
