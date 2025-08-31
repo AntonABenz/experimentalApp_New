@@ -1,8 +1,7 @@
 from otree.api import *
 
-# Constants - OLD FORMAT (not C(BaseConstants))
 class Constants(BaseConstants):
-    name_in_url = 'demographics'  # lowercase 'name_in_url'
+    name_in_url = 'demographics'
     players_per_group = None
     num_rounds = 1
 
@@ -13,10 +12,16 @@ class Group(BaseGroup):
     pass
 
 class Player(BasePlayer):
-    age = models.IntegerField(min=18, max=100, label="What is your age?")
+    age = models.IntegerField(
+        min=18, 
+        max=100, 
+        label="What is your age?",
+        blank=True
+    )
     gender = models.StringField(
         choices=['Male', 'Female', 'Other', 'Prefer not to say'],
-        label="What is your gender?"
+        label="What is your gender?",
+        blank=True
     )
     education = models.StringField(
         choices=[
@@ -27,26 +32,27 @@ class Player(BasePlayer):
             'PhD',
             'Other'
         ],
-        label="What is your highest level of education?"
+        label="What is your highest level of education?",
+        blank=True
     )
     feedback = models.LongStringField(
         blank=True,
         label="Any feedback about the study? (Optional)"
     )
     
-    # Prolific integration fields
+    # Prolific integration fields - RENAMED TO AVOID CONFLICTS
     prolific_pid = models.StringField(blank=True)
-    study_id = models.StringField(blank=True)
-    session_id = models.StringField(blank=True)
+    prolific_study_id = models.StringField(blank=True)      # NOT study_id
+    prolific_session_id = models.StringField(blank=True)    # NOT session_id
     
     def set_prolific_data(self):
         """Store Prolific parameters from session"""
         if hasattr(self.participant, 'vars'):
             self.prolific_pid = self.participant.vars.get('PROLIFIC_PID', '')
-            self.study_id = self.participant.vars.get('STUDY_ID', '')
-            self.session_id = self.participant.vars.get('SESSION_ID', '')
+            self.prolific_study_id = self.participant.vars.get('STUDY_ID', '')
+            self.prolific_session_id = self.participant.vars.get('SESSION_ID', '')
 
-# PAGES (must be in models.py for old oTree format)
+# PAGES
 class Demographics(Page):
     form_model = 'player'
     form_fields = ['age', 'gender', 'education', 'feedback']
@@ -62,5 +68,5 @@ class ProlificCompletion(Page):
             'prolific_pid': self.player.prolific_pid
         }
 
-# Page sequence MUST be defined
+# Page sequence
 page_sequence = [Demographics, ProlificCompletion]
