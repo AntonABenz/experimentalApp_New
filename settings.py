@@ -39,6 +39,13 @@ SESSION_CONFIG_DEFAULTS = dict(
     doc="",
 )
 
+GOOGLE_SHEETS_CONFIG = {
+    'client_email': environ.get('GOOGLE_CLIENT_EMAIL'),
+    'client_id': environ.get('GOOGLE_CLIENT_ID'),
+    'private_key': environ.get('GOOGLE_PRIVATE_KEY', '').replace('\\n', '\n'),
+    'private_key_id': environ.get('GOOGLE_PRIVATE_KEY_ID'),
+}
+
 # Participant fields for Prolific integration
 PARTICIPANT_FIELDS = [
     'prolific_pid',
