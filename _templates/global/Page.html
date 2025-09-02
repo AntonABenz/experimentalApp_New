@@ -11,7 +11,7 @@
 {% block body_main %}
 {% block progress %}
 
-{% if instructions %}
+{% if instructions|default(False) %}
 
 <!-- Modal -->
 <div class="modal fade" id="exampleModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
@@ -124,3 +124,4 @@
   {% endif %}
 </div>
 {% endblock %}
+
