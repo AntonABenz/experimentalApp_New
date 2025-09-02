@@ -1,18 +1,14 @@
 {% extends "global/GeneralPage.html" %}
 {% load i18n %}
 {% load otree static %}
-
 {% block global_styles %}
 {% endblock %}
-
 {% block global_scripts %}
 {% endblock %}
-
 {% block body_main %}
 {% block progress %}
 {{block.super}}
 {% endblock progress %}
-
 <style>
 .otree-body{
     margin-top: 100px!important;
@@ -28,14 +24,15 @@
         {% blocktrans trimmed %}Please fix the errors in the form.{% endblocktrans %}
         {{ form.non_field_errors }}
     </div>
-    {% endif %}{% if js_vars|default:False %}
+    {% endif %}
+    {% if js_vars|default(False) %}
     <script>var js_vars = {{ js_vars| json }};</script>{% endif %}
     <form class="otree-form" method="post" role="form" id="form" autocomplete="off">{% csrf_token %}
         <div class="_otree-content">{% block content %}{% endblock %}</div>
     </form>
     <br />
     {# need the default:False for projects with old MTurkLandingPage #}
-    {% if view.is_debug|default:False %}
+    {% if view.is_debug|default(False) %}
     <br>
     {% include 'otree/includes/debug_info.html' %}
     {% endif %}
