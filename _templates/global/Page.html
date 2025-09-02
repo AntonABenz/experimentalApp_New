@@ -45,7 +45,7 @@
         <b> {{ progress }}%</b>
       </div>
     </div>
-    {% if instructions %}
+    {% if instructions|default(False) %}
     <button class="btn btn-success btn-sm mx-2" data-toggle="modal" data-target="#exampleModal">Instructions</button>
     {% endif %}
   </div>
@@ -124,4 +124,5 @@
   {% endif %}
 </div>
 {% endblock %}
+
 
