@@ -96,10 +96,6 @@
     }
   </style>
  
- 
-
-
-
 </nav>
 
 {% endblock %}
@@ -115,14 +111,14 @@
     {% blocktrans trimmed %}Please fix the errors in the form.{% endblocktrans %}
     {{ form.non_field_errors }}
   </div>
-  {% endif %}{% if js_vars|default:False %}
+  {% endif %}{% if js_vars|default(False) %}
   <script>var js_vars = {{ js_vars| json }};</script>{% endif %}
   <form class="otree-form" method="post" role="form" id="form" autocomplete="off">{% csrf_token %}
     <div class="_otree-content">{% block content %}{% endblock %}</div>
   </form>
   <br />
-  {# need the default:False for projects with old MTurkLandingPage #}
-  {% if view.is_debug|default:False %}
+  {# need the default(False) for projects with old MTurkLandingPage #}
+  {% if view.is_debug|default(False) %}
   <br>
   {% include 'otree/includes/debug_info.html' %}
   {% endif %}
