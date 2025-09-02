@@ -2,6 +2,7 @@ from otree.api import *
 from . import *
 
 class PracticePage1(Page):
+    template_name = 'start/Practice1.html'
     form_model = 'player'
     form_fields = ['practice_1_response']
     
@@ -20,6 +21,7 @@ class PracticePage1(Page):
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
 class PracticePage2(Page):
+    template_name = 'start/Practice2.html'
     form_model = 'player'
     form_fields = ['practice_2_response']
     
@@ -38,6 +40,7 @@ class PracticePage2(Page):
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
 class PracticePage3(Page):
+    template_name = 'start/Practice3.html'
     form_model = 'player'
     form_fields = ['practice_3_response']
     
@@ -56,6 +59,7 @@ class PracticePage3(Page):
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
 class PracticePage4(Page):
+    template_name = 'start/Practice4.html'
     form_model = 'player'
     form_fields = ['practice_4_response']
     
@@ -74,6 +78,7 @@ class PracticePage4(Page):
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
 class PracticePage5(Page):
+    template_name = 'start/Practice5.html'
     form_model = 'player'
     form_fields = ['practice_5_response']
     
@@ -92,6 +97,7 @@ class PracticePage5(Page):
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
 class PracticePage6(Page):
+    template_name = 'start/Practice6.html'
     form_model = 'player'
     form_fields = ['practice_6_response']
     
@@ -110,6 +116,7 @@ class PracticePage6(Page):
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
 class PracticePage7(Page):
+    template_name = 'start/Practice7.html'
     form_model = 'player'
     form_fields = ['practice_7_response']
     
@@ -128,11 +135,11 @@ class PracticePage7(Page):
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
 page_sequence = [
-    PracticePage1, 
-    PracticePage2, 
-    PracticePage3, 
-    PracticePage4, 
-    PracticePage5, 
-    PracticePage6, 
-    PracticePage7
+    PracticePage1,
+    PracticePage2,
+    PracticePage3,
+    PracticePage4,
+    PracticePage5,
+    PracticePage6,
+    PracticePage7,
 ]
