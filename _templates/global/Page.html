@@ -11,7 +11,7 @@
 {% block body_main %}
 {% block progress %}
 
-{% if instructions|default(False) %}
+{% if instructions|default_if_none|default(False) %}
 
 <!-- Modal -->
 <div class="modal fade" id="exampleModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
@@ -45,7 +45,7 @@
         <b> {{ progress }}%</b>
       </div>
     </div>
-    {% if instructions|default(False) %}
+    {% if instructions|default_if_none|default(False) %}
     <button class="btn btn-success btn-sm mx-2" data-toggle="modal" data-target="#exampleModal">Instructions</button>
     {% endif %}
   </div>
@@ -124,5 +124,6 @@
   {% endif %}
 </div>
 {% endblock %}
+
 
 
