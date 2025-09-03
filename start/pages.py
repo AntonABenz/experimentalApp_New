@@ -1,5 +1,5 @@
 from otree.api import *
-from . import *
+from . import page_sequence  # Import page_sequence list from this module
 
 class PracticePage1(Page):
     template_name = 'start/Practice1.html'
@@ -10,12 +10,13 @@ class PracticePage1(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_1', {})
 
-        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
+        page_names = [p.__name__ for p in page_sequence]
         try:
-            current_index = page_sequence.index(current_page_name)
+            current_index = page_names.index(current_page_name)
         except ValueError:
             current_index = 0
+
         progress = int((current_index + 1) / len(page_sequence) * 100)
 
         return {
@@ -39,12 +40,13 @@ class PracticePage2(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_2', {})
 
-        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
+        page_names = [p.__name__ for p in page_sequence]
         try:
-            current_index = page_sequence.index(current_page_name)
+            current_index = page_names.index(current_page_name)
         except ValueError:
             current_index = 0
+
         progress = int((current_index + 1) / len(page_sequence) * 100)
 
         return {
@@ -68,12 +70,13 @@ class PracticePage3(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_3', {})
 
-        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
+        page_names = [p.__name__ for p in page_sequence]
         try:
-            current_index = page_sequence.index(current_page_name)
+            current_index = page_names.index(current_page_name)
         except ValueError:
             current_index = 0
+
         progress = int((current_index + 1) / len(page_sequence) * 100)
 
         return {
@@ -97,12 +100,13 @@ class PracticePage4(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_4', {})
 
-        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
+        page_names = [p.__name__ for p in page_sequence]
         try:
-            current_index = page_sequence.index(current_page_name)
+            current_index = page_names.index(current_page_name)
         except ValueError:
             current_index = 0
+
         progress = int((current_index + 1) / len(page_sequence) * 100)
 
         return {
@@ -126,12 +130,13 @@ class PracticePage5(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_5', {})
 
-        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
+        page_names = [p.__name__ for p in page_sequence]
         try:
-            current_index = page_sequence.index(current_page_name)
+            current_index = page_names.index(current_page_name)
         except ValueError:
             current_index = 0
+
         progress = int((current_index + 1) / len(page_sequence) * 100)
 
         return {
@@ -155,12 +160,13 @@ class PracticePage6(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_6', {})
 
-        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
+        page_names = [p.__name__ for p in page_sequence]
         try:
-            current_index = page_sequence.index(current_page_name)
+            current_index = page_names.index(current_page_name)
         except ValueError:
             current_index = 0
+
         progress = int((current_index + 1) / len(page_sequence) * 100)
 
         return {
@@ -184,12 +190,13 @@ class PracticePage7(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_7', {})
 
-        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
+        page_names = [p.__name__ for p in page_sequence]
         try:
-            current_index = page_sequence.index(current_page_name)
+            current_index = page_names.index(current_page_name)
         except ValueError:
             current_index = 0
+
         progress = int((current_index + 1) / len(page_sequence) * 100)
 
         return {
