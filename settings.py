@@ -2,8 +2,10 @@ import os
 from os import environ
 import dj_database_url
 from pathlib import Path
-BASE_DIR = Path(__file__).resolve().parent
 
+BASE_DIR = Path(__file__).resolve().parent
+CSRF_COOKIE_HTTPONLY = False
+CSRF_USE_SESSIONS = True
 
 # oTree settings
 SESSION_CONFIGS = [
