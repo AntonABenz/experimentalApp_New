@@ -10,7 +10,7 @@ class PracticePage1(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_1', {})
 
-        page_sequence = self._session.config['page_sequence']
+        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
         try:
             current_index = page_sequence.index(current_page_name)
@@ -39,7 +39,7 @@ class PracticePage2(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_2', {})
 
-        page_sequence = self._session.config['page_sequence']
+        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
         try:
             current_index = page_sequence.index(current_page_name)
@@ -68,7 +68,7 @@ class PracticePage3(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_3', {})
 
-        page_sequence = self._session.config['page_sequence']
+        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
         try:
             current_index = page_sequence.index(current_page_name)
@@ -97,7 +97,7 @@ class PracticePage4(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_4', {})
 
-        page_sequence = self._session.config['page_sequence']
+        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
         try:
             current_index = page_sequence.index(current_page_name)
@@ -126,7 +126,7 @@ class PracticePage5(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_5', {})
 
-        page_sequence = self._session.config['page_sequence']
+        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
         try:
             current_index = page_sequence.index(current_page_name)
@@ -155,7 +155,7 @@ class PracticePage6(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_6', {})
 
-        page_sequence = self._session.config['page_sequence']
+        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
         try:
             current_index = page_sequence.index(current_page_name)
@@ -184,7 +184,7 @@ class PracticePage7(Page):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_7', {})
 
-        page_sequence = self._session.config['page_sequence']
+        page_sequence = self.session.config['page_sequence']
         current_page_name = self._current_page_name
         try:
             current_index = page_sequence.index(current_page_name)
