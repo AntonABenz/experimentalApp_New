@@ -113,7 +113,7 @@
   </div>
   {% endif %}{% if js_vars|default(False) %}
   <script>var js_vars = {{ js_vars| json }};</script>{% endif %}
-  <form class="otree-form" method="post" role="form" id="form" autocomplete="off">{% csrf_token %}
+  <form class="otree-form" method="post" role="form" id="form" autocomplete="off">
     <div class="_otree-content">{% block content %}{% endblock %}</div>
   </form>
   <br />
@@ -124,7 +124,3 @@
   {% endif %}
 </div>
 {% endblock %}
-
-
-
-
