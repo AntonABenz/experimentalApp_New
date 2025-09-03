@@ -19,7 +19,7 @@ class PracticePage1(Page):
             'PracticePage6',
             'PracticePage7',
         ]
-        current_page_name = self._current_page_name
+        current_page_name = sself.__class__.__name__
         try:
             current_index = page_sequence_class_names.index(current_page_name)
         except ValueError:
@@ -56,7 +56,7 @@ class PracticePage2(Page):
             'PracticePage6',
             'PracticePage7',
         ]
-        current_page_name = self._current_page_name
+        current_page_name = sself.__class__.__name__
         try:
             current_index = page_sequence_class_names.index(current_page_name)
         except ValueError:
@@ -93,7 +93,7 @@ class PracticePage3(Page):
             'PracticePage6',
             'PracticePage7',
         ]
-        current_page_name = self._current_page_name
+        current_page_name = sself.__class__.__name__
         try:
             current_index = page_sequence_class_names.index(current_page_name)
         except ValueError:
@@ -130,7 +130,7 @@ class PracticePage4(Page):
             'PracticePage6',
             'PracticePage7',
         ]
-        current_page_name = self._current_page_name
+        current_page_name = sself.__class__.__name__
         try:
             current_index = page_sequence_class_names.index(current_page_name)
         except ValueError:
@@ -167,7 +167,7 @@ class PracticePage5(Page):
             'PracticePage6',
             'PracticePage7',
         ]
-        current_page_name = self._current_page_name
+        current_page_name = sself.__class__.__name__
         try:
             current_index = page_sequence_class_names.index(current_page_name)
         except ValueError:
@@ -204,7 +204,7 @@ class PracticePage6(Page):
             'PracticePage6',
             'PracticePage7',
         ]
-        current_page_name = self._current_page_name
+        current_page_name = sself.__class__.__name__
         try:
             current_index = page_sequence_class_names.index(current_page_name)
         except ValueError:
@@ -241,7 +241,7 @@ class PracticePage7(Page):
             'PracticePage6',
             'PracticePage7',
         ]
-        current_page_name = self._current_page_name
+        current_page_name = sself.__class__.__name__
         try:
             current_index = page_sequence_class_names.index(current_page_name)
         except ValueError:
