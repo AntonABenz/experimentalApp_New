@@ -13,7 +13,8 @@ class PracticePage1(Page):
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(1),
-            'page_title': settings.get('title', 'Practice Page 1')
+            'page_title': settings.get('title', 'Practice Page 1'),
+            'instructions': False,  # Always defined to avoid template errors
         }
     
     def get_practice_image_url(self, page_num):
@@ -32,7 +33,8 @@ class PracticePage2(Page):
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(2),
-            'page_title': settings.get('title', 'Practice Page 2')
+            'page_title': settings.get('title', 'Practice Page 2'),
+            'instructions': False,
         }
     
     def get_practice_image_url(self, page_num):
@@ -51,7 +53,8 @@ class PracticePage3(Page):
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(3),
-            'page_title': settings.get('title', 'Practice Page 3')
+            'page_title': settings.get('title', 'Practice Page 3'),
+            'instructions': False,
         }
     
     def get_practice_image_url(self, page_num):
@@ -70,7 +73,8 @@ class PracticePage4(Page):
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(4),
-            'page_title': settings.get('title', 'Practice Page 4')
+            'page_title': settings.get('title', 'Practice Page 4'),
+            'instructions': False,
         }
     
     def get_practice_image_url(self, page_num):
@@ -89,7 +93,8 @@ class PracticePage5(Page):
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(5),
-            'page_title': settings.get('title', 'Practice Page 5')
+            'page_title': settings.get('title', 'Practice Page 5'),
+            'instructions': False,
         }
     
     def get_practice_image_url(self, page_num):
@@ -108,7 +113,8 @@ class PracticePage6(Page):
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(6),
-            'page_title': settings.get('title', 'Practice Page 6')
+            'page_title': settings.get('title', 'Practice Page 6'),
+            'instructions': False,
         }
     
     def get_practice_image_url(self, page_num):
@@ -127,7 +133,8 @@ class PracticePage7(Page):
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(7),
-            'page_title': settings.get('title', 'Practice Page 7')
+            'page_title': settings.get('title', 'Practice Page 7'),
+            'instructions': False,
         }
     
     def get_practice_image_url(self, page_num):
