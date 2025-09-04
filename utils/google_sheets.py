@@ -1,7 +1,9 @@
 """
 Google Sheets integration utilities
-Extracted from the original benzproj code
+Updated to load full service account JSON from environment variable
 """
+import os
+import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from django.conf import settings
@@ -17,21 +19,13 @@ def get_google_sheet_client():
         'https://www.googleapis.com/auth/drive'
     ]
     
-    config = settings.GOOGLE_SHEETS_CONFIG
-    creds_dict = {
-        "type": "service_account",
-        "project_id": "versatile-nomad-423508-e4", 
-        "private_key_id": config['private_key_id'],
-        "private_key": config['private_key'],
-        "client_email": config['client_email'],
-        "client_id": config['client_id'],
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{config['client_email']}"
-    }
+    creds_json = os.environ.get('GOOGLE_SHEETS_CREDS_JSON')
+    if not creds_json:
+        logger.error("GOOGLE_SHEETS_CREDS_JSON environment variable not set")
+        return None
     
     try:
+        creds_dict = json.loads(creds_json)
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         return gspread.authorize(creds)
     except Exception as e:
@@ -81,7 +75,8 @@ def load_practice_data(filename):
                 records = worksheet.get_all_records()
                 if records:
                     practice_data[f'Practice_{i}'] = records[0]
-            except:
+            except Exception as e:
+                logger.warning(f"Practice sheet Practice_{i} not found or load failed: {e}")
                 practice_data[f'Practice_{i}'] = {}
                 
         return practice_data
