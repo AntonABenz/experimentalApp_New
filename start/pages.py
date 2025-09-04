@@ -1,7 +1,7 @@
 from otree.api import *
 from . import *
 
-class PracticePage1(Page):
+class Practice1(Page):
     template_name = 'start/Practice1.html'
     form_model = 'player'
     form_fields = ['practice_1_response']
@@ -9,15 +9,14 @@ class PracticePage1(Page):
     def vars_for_template(self):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_1', {})
-
         page_sequence_class_names = [
-            'PracticePage1',
-            'PracticePage2',
-            'PracticePage3',
-            'PracticePage4',
-            'PracticePage5',
-            'PracticePage6',
-            'PracticePage7',
+            'Practice1',
+            'Practice2',
+            'Practice3',
+            'Practice4',
+            'Practice5',
+            'Practice6',
+            'Practice7',
         ]
         current_page_name = self.__class__.__name__
         try:
@@ -25,7 +24,6 @@ class PracticePage1(Page):
         except ValueError:
             current_index = 0
         progress = int((current_index + 1) / len(page_sequence_class_names) * 100)
-
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(1),
@@ -38,7 +36,7 @@ class PracticePage1(Page):
         s3_base = self.session.config.get('s3_base_url', '')
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
-class PracticePage2(Page):
+class Practice2(Page):
     template_name = 'start/Practice2.html'
     form_model = 'player'
     form_fields = ['practice_2_response']
@@ -46,15 +44,14 @@ class PracticePage2(Page):
     def vars_for_template(self):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_2', {})
-
         page_sequence_class_names = [
-            'PracticePage1',
-            'PracticePage2',
-            'PracticePage3',
-            'PracticePage4',
-            'PracticePage5',
-            'PracticePage6',
-            'PracticePage7',
+            'Practice1',
+            'Practice2',
+            'Practice3',
+            'Practice4',
+            'Practice5',
+            'Practice6',
+            'Practice7',
         ]
         current_page_name = self.__class__.__name__
         try:
@@ -62,7 +59,6 @@ class PracticePage2(Page):
         except ValueError:
             current_index = 0
         progress = int((current_index + 1) / len(page_sequence_class_names) * 100)
-
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(2),
@@ -75,23 +71,21 @@ class PracticePage2(Page):
         s3_base = self.session.config.get('s3_base_url', '')
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
-class PracticePage3(Page):
+class Practice3(Page):
     template_name = 'start/Practice3.html'
     form_model = 'player'
     form_fields = ['practice_3_response']
-
     def vars_for_template(self):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_3', {})
-
         page_sequence_class_names = [
-            'PracticePage1',
-            'PracticePage2',
-            'PracticePage3',
-            'PracticePage4',
-            'PracticePage5',
-            'PracticePage6',
-            'PracticePage7',
+            'Practice1',
+            'Practice2',
+            'Practice3',
+            'Practice4',
+            'Practice5',
+            'Practice6',
+            'Practice7',
         ]
         current_page_name = self.__class__.__name__
         try:
@@ -99,7 +93,6 @@ class PracticePage3(Page):
         except ValueError:
             current_index = 0
         progress = int((current_index + 1) / len(page_sequence_class_names) * 100)
-
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(3),
@@ -107,28 +100,25 @@ class PracticePage3(Page):
             'instructions': False,
             'progress': progress,
         }
-
     def get_practice_image_url(self, page_num):
         s3_base = self.session.config.get('s3_base_url', '')
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
-class PracticePage4(Page):
+class Practice4(Page):
     template_name = 'start/Practice4.html'
     form_model = 'player'
     form_fields = ['practice_4_response']
-
     def vars_for_template(self):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_4', {})
-
         page_sequence_class_names = [
-            'PracticePage1',
-            'PracticePage2',
-            'PracticePage3',
-            'PracticePage4',
-            'PracticePage5',
-            'PracticePage6',
-            'PracticePage7',
+            'Practice1',
+            'Practice2',
+            'Practice3',
+            'Practice4',
+            'Practice5',
+            'Practice6',
+            'Practice7',
         ]
         current_page_name = self.__class__.__name__
         try:
@@ -136,7 +126,6 @@ class PracticePage4(Page):
         except ValueError:
             current_index = 0
         progress = int((current_index + 1) / len(page_sequence_class_names) * 100)
-
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(4),
@@ -144,28 +133,25 @@ class PracticePage4(Page):
             'instructions': False,
             'progress': progress,
         }
-
     def get_practice_image_url(self, page_num):
         s3_base = self.session.config.get('s3_base_url', '')
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
-class PracticePage5(Page):
+class Practice5(Page):
     template_name = 'start/Practice5.html'
     form_model = 'player'
     form_fields = ['practice_5_response']
-
     def vars_for_template(self):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_5', {})
-
         page_sequence_class_names = [
-            'PracticePage1',
-            'PracticePage2',
-            'PracticePage3',
-            'PracticePage4',
-            'PracticePage5',
-            'PracticePage6',
-            'PracticePage7',
+            'Practice1',
+            'Practice2',
+            'Practice3',
+            'Practice4',
+            'Practice5',
+            'Practice6',
+            'Practice7',
         ]
         current_page_name = self.__class__.__name__
         try:
@@ -173,7 +159,6 @@ class PracticePage5(Page):
         except ValueError:
             current_index = 0
         progress = int((current_index + 1) / len(page_sequence_class_names) * 100)
-
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(5),
@@ -181,28 +166,25 @@ class PracticePage5(Page):
             'instructions': False,
             'progress': progress,
         }
-
     def get_practice_image_url(self, page_num):
         s3_base = self.session.config.get('s3_base_url', '')
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
-class PracticePage6(Page):
+class Practice6(Page):
     template_name = 'start/Practice6.html'
     form_model = 'player'
     form_fields = ['practice_6_response']
-
     def vars_for_template(self):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_6', {})
-
         page_sequence_class_names = [
-            'PracticePage1',
-            'PracticePage2',
-            'PracticePage3',
-            'PracticePage4',
-            'PracticePage5',
-            'PracticePage6',
-            'PracticePage7',
+            'Practice1',
+            'Practice2',
+            'Practice3',
+            'Practice4',
+            'Practice5',
+            'Practice6',
+            'Practice7',
         ]
         current_page_name = self.__class__.__name__
         try:
@@ -210,7 +192,6 @@ class PracticePage6(Page):
         except ValueError:
             current_index = 0
         progress = int((current_index + 1) / len(page_sequence_class_names) * 100)
-
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(6),
@@ -218,28 +199,25 @@ class PracticePage6(Page):
             'instructions': False,
             'progress': progress,
         }
-
     def get_practice_image_url(self, page_num):
         s3_base = self.session.config.get('s3_base_url', '')
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
-class PracticePage7(Page):
+class Practice7(Page):
     template_name = 'start/Practice7.html'
     form_model = 'player'
     form_fields = ['practice_7_response']
-
     def vars_for_template(self):
         practice_data = self.session.vars.get('practice_data', {})
         settings = practice_data.get('Practice_7', {})
-
         page_sequence_class_names = [
-            'PracticePage1',
-            'PracticePage2',
-            'PracticePage3',
-            'PracticePage4',
-            'PracticePage5',
-            'PracticePage6',
-            'PracticePage7',
+            'Practice1',
+            'Practice2',
+            'Practice3',
+            'Practice4',
+            'Practice5',
+            'Practice6',
+            'Practice7',
         ]
         current_page_name = self.__class__.__name__
         try:
@@ -247,7 +225,6 @@ class PracticePage7(Page):
         except ValueError:
             current_index = 0
         progress = int((current_index + 1) / len(page_sequence_class_names) * 100)
-
         return {
             'practice_settings': settings,
             'image_url': self.get_practice_image_url(7),
@@ -255,18 +232,17 @@ class PracticePage7(Page):
             'instructions': False,
             'progress': progress,
         }
-
     def get_practice_image_url(self, page_num):
         s3_base = self.session.config.get('s3_base_url', '')
         return f"{s3_base}/practice/practice_{page_num}.jpg"
 
-
+# Updated page_sequence
 page_sequence = [
-    PracticePage1,
-    PracticePage2,
-    PracticePage3,
-    PracticePage4,
-    PracticePage5,
-    PracticePage6,
-    PracticePage7,
+    Practice1,
+    Practice2,
+    Practice3,
+    Practice4,
+    Practice5,
+    Practice6,
+    Practice7,
 ]
