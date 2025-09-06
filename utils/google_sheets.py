@@ -39,7 +39,7 @@ def load_sheet_data(filename):
         return None
         
     try:
-        sheet = client.open_by_key('1Gc5kcXMMiCgpCbj3ANv86zcQkd8mviQRYfwAsVLGhkA')
+        sheet = client.open_by_key('1V4HMCILzCSB6lruKN0WPzsAqqnSemIAItoTQW07I6kk')
         
         # Load settings
         settings_sheet = sheet.worksheet('Settings')
