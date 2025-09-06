@@ -56,7 +56,7 @@ def load_sheet_data(filename):
             'data': main_data
         }
     except Exception as e:
-        logger.error(f"Failed to load sheet data: {repr(e)}", exc_info=True)
+        logger.error(f"GoogleSheetsUtils - Failed to load sheet data: {repr(e)}", exc_info=True)
         return None
 
 def load_practice_data(filename):
