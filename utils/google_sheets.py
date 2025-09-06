@@ -29,7 +29,7 @@ def get_google_sheet_client():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         return gspread.authorize(creds)
     except Exception as e:
-        logger.error(f"Failed to authenticate with Google Sheets: {e}")
+        logger.error(f"Failed to authenticate with Google Sheets: {repr(e)}", exc_info=True)
         return None
 
 def load_sheet_data(filename):
@@ -56,7 +56,7 @@ def load_sheet_data(filename):
             'data': main_data
         }
     except Exception as e:
-        logger.error(f"Failed to load sheet data: {e}")
+        logger.error(f"Failed to load sheet data: {repr(e)}", exc_info=True)
         return None
 
 def load_practice_data(filename):
@@ -76,10 +76,10 @@ def load_practice_data(filename):
                 if records:
                     practice_data[f'Practice_{i}'] = records[0]
             except Exception as e:
-                logger.warning(f"Practice sheet Practice_{i} not found or load failed: {e}")
+                logger.warning(f"Practice sheet Practice_{i} not found or load failed: {repr(e)}", exc_info=True)
                 practice_data[f'Practice_{i}'] = {}
                 
         return practice_data
     except Exception as e:
-        logger.error(f"Failed to load practice data: {e}")
+        logger.error(f"Failed to load practice data: {repr(e)}", exc_info=True)
         return {}
