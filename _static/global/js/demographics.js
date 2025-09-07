@@ -1,106 +1,142 @@
-const json = {
-"title": " ",
-   "showCompletedPage": false,
-   "showPrevButton": false,
- "completeText": "Next",
- "description": "We ask you to provide us with the following information, which will be treated confidentially and stored anonymously.",
- "pages": [
-  {
-   "name": "page1",
-   "elements": [
+// Demographics questionnaire structure
+// Based on original benzproj documentation
+
+window.demographicsQuestions = [
     {
-     "type": "radiogroup",
-     "name": "gender",
-     "title": "Gender:",
-     "isRequired": true,
-     "choices": [
-      "female",
-      "male",
-      "diverse",
-      "I prefer not to say"
-     ]
+        name: 'age',
+        type: 'number',
+        label: 'What is your age?',
+        required: true,
+        min: 18,
+        max: 100
     },
     {
-     "type": "text",
-     "name": "age",
-     "title": "Age (years):",
-     "isRequired": true,
-     "inputType": "number"
+        name: 'gender',
+        type: 'radio',
+        label: 'What is your gender?',
+        required: true,
+        choices: [
+            'Male',
+            'Female', 
+            'Other',
+            'Prefer not to say'
+        ]
     },
     {
-     "type": "radiogroup",
-     "name": "handedness",
-     "title": "Handedness:",
-     "isRequired": true,
-     "choices": [
-      "right-handed",
-      "left-handed",
-      "ambidextrous/two-handed"
-     ]
+        name: 'education',
+        type: 'select',
+        label: 'What is your highest level of education?',
+        required: true,
+        choices: [
+            'High school or less',
+            'Some college',
+            'Bachelor\'s degree',
+            'Master\'s degree',
+            'PhD or higher',
+            'Other'
+        ]
     },
     {
-      "type": "country",
-     "name": "grewUpInCountry",
-     "title": "Grew up in country:",
-     "isRequired": true
+        name: 'english_fluency',
+        type: 'radio',
+        label: 'How would you rate your English fluency?',
+        required: true,
+        choices: [
+            'Native speaker',
+            'Fluent',
+            'Good',
+            'Fair',
+            'Poor'
+        ]
     },
     {
-     "type": "country",
-     "name": "currentlyLivingInCountry",
-     "title": "Currently living in country:",
-     "isRequired": true
+        name: 'country',
+        type: 'text',
+        label: 'What country do you currently live in?',
+        required: true
     },
     {
-     "type": "radiogroup",
-     "name": "nativeLanguage",
-     "title": "Native language:",
-     "isRequired": true,
-     "choices": [
-      "English",
-      "other"
-     ]
+        name: 'participation_before',
+        type: 'radio',
+        label: 'Have you participated in a similar study before?',
+        required: true,
+        choices: [
+            'Yes',
+            'No',
+            'Not sure'
+        ]
     },
     {
-     "type": "dropdown",
-     "name": "education",
-     "title": "Completed highest level of education:",
-     "isRequired": true,
-     "choices": [
-      "Less than a high school diploma",
-      "High school degree or equivalent (e.g. GED)",
-      "Some college, no degree",
-      "Associate degree (e.g. AA, AS)",
-      "Bachelor's degree (e.g. BA, BS)",
-      "Master's degree (e.g. MA, MS, MEd)",
-      "Doctorate or professional degree (e.g. MD, DDS, PhD)"
-     ]
+        name: 'feedback',
+        type: 'textarea',
+        label: 'Do you have any feedback about this study? (Optional)',
+        required: false,
+        rows: 4
     }
-   ]
-  }
- ]
+];
+
+// Function to generate form HTML
+function generateDemographicsForm() {
+    let html = '<div class="demographics-form">';
+    
+    window.demographicsQuestions.forEach(function(question) {
+        html += '<div class="form-group mb-3">';
+        html += '<label class="form-label">' + question.label;
+        if (question.required) {
+            html += ' <span class="text-danger">*</span>';
+        }
+        html += '</label>';
+        
+        if (question.type === 'text') {
+            html += '<input type="text" class="form-control" name="' + question.name + '"';
+            if (question.required) html += ' required';
+            html += '>';
+        }
+        else if (question.type === 'number') {
+            html += '<input type="number" class="form-control" name="' + question.name + '"';
+            if (question.min) html += ' min="' + question.min + '"';
+            if (question.max) html += ' max="' + question.max + '"';
+            if (question.required) html += ' required';
+            html += '>';
+        }
+        else if (question.type === 'textarea') {
+            html += '<textarea class="form-control" name="' + question.name + '"';
+            if (question.rows) html += ' rows="' + question.rows + '"';
+            if (question.required) html += ' required';
+            html += '></textarea>';
+        }
+        else if (question.type === 'radio') {
+            question.choices.forEach(function(choice, index) {
+                html += '<div class="form-check">';
+                html += '<input class="form-check-input" type="radio" name="' + question.name + '" id="' + question.name + '_' + index + '" value="' + choice + '"';
+                if (question.required) html += ' required';
+                html += '>';
+                html += '<label class="form-check-label" for="' + question.name + '_' + index + '">' + choice + '</label>';
+                html += '</div>';
+            });
+        }
+        else if (question.type === 'select') {
+            html += '<select class="form-control" name="' + question.name + '"';
+            if (question.required) html += ' required';
+            html += '>';
+            html += '<option value="">Please select...</option>';
+            question.choices.forEach(function(choice) {
+                html += '<option value="' + choice + '">' + choice + '</option>';
+            });
+            html += '</select>';
+        }
+        
+        html += '</div>';
+    });
+    
+    html += '</div>';
+    return html;
 }
-//Register new "country" component
-Survey.ComponentCollection.Instance.add({
-    //Unique component name. It becomes a new question type. Please note, it should be written in lowercase.
-    name: "country",
-    //The text that shows on toolbox
-    title: "Country",
-    //The actual question that will do the job
-    questionJSON: {
-        type: "dropdown",
-        placeholder: "Select a country...",
-        choicesByUrl: {
-            url: "https://surveyjs.io/api/CountriesExample",
-        },
-    },
+
+// Initialize demographics form when document is ready
+document.addEventListener('DOMContentLoaded', function() {
+    const demographicsContainer = document.getElementById('demographics-container');
+    if (demographicsContainer) {
+        demographicsContainer.innerHTML = generateDemographicsForm();
+    }
 });
-const survey = new Survey.Model(json);
-
-survey.onComplete.add((sender, options) => {
-    var surveyData = JSON.stringify(sender.data, null, 3);
-    $('#survey_data').val(surveyData);
-
-    $('#form').submit();
-});
-
-$("#surveyElement").Survey({model: survey});
