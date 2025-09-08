@@ -8,27 +8,22 @@ class Constants(BaseConstants):
 
 class Subsession(BaseSubsession):
     def creating_session(self):
-        # Load experiment data from Google Sheets
-        try:
-            from utils.google_sheets import load_sheet_data
-            filename = self.session.config.get('filename', 'benz')
-            sheet_data = load_sheet_data(filename)
-            
-            if sheet_data:
-                self.session.vars['sheet_data'] = sheet_data
-                self.session.vars['settings'] = sheet_data.get('settings', {})
-        except ImportError:
-            # Handle case where Google Sheets utility is not available
-            self.session.vars['sheet_data'] = {}
-            self.session.vars['settings'] = {}
-            
-        # Assign roles to players
-        for group in self.get_groups():
-            players = group.get_players()
-            if len(players) >= 1:
-                players[0].player_role = 'Producer'
-            for i in range(1, len(players)):
-                players[i].player_role = 'Interpreter'
+    # Only load if not already loaded
+        if 'sheet_data_loaded' not in self.session.vars:
+            try:
+                from utils.google_sheets import load_sheet_data
+                filename = self.session.config.get('filename', 'benz')
+                sheet_data = load_sheet_data(filename)
+                
+                if sheet_data:
+                    self.session.vars['sheet_data'] = sheet_data
+                    self.session.vars['settings'] = sheet_data.get('settings', {})
+                    self.session.vars['sheet_data_loaded'] = True
+            except Exception as e:
+                logger.error(f"Failed to load Google Sheets: {e}")
+                self.session.vars['sheet_data'] = {'settings': {}, 'data': []}
+                self.session.vars['settings'] = {}
+                self.session.vars['sheet_data_loaded'] = True
 
 class Group(BaseGroup):
     # Group-level fields for your experiment
