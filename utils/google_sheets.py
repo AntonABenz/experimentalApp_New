@@ -42,7 +42,7 @@ def load_sheet_data(filename):
         sheet = client.open_by_key('1WAjT5DrDAangn55J23Ruot7QvdnMWjGSwbXcRfVxWp0')
         
         # Load settings
-        settings_sheet = sheet.worksheet('Settings')
+        settings_sheet = sheet.worksheet('settings')
         settings_data = {}
         for row in settings_sheet.get_all_records():
             settings_data[row.get('parameter', '')] = row.get('value', '')
