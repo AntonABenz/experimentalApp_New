@@ -25,14 +25,15 @@ def get_google_sheet_client():
         return None
     
     creds_dict = {
-        "type": "service_account",
-        "project_id": "versatile-nomad-423508-e4",
-        "private_key_id": private_key_id,
-        "private_key": private_key,
-        "client_email": client_email,
-        "client_id": client_id,
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
+        'type': 'service_account',
+        'project_id': 'versatile-nomad-423508-e4',
+        'private_key_id': environ.get('GOOGLE_PRIVATE_KEY_ID'),
+        'private_key': environ.get('GOOGLE_PRIVATE_KEY').replace('\\\\n', '\\n'),
+        'client_email': environ.get('GOOGLE_CLIENT_EMAIL'),
+        'client_id': environ.get('GOOGLE_CLIENT_ID'),
+        'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+        'token_uri': 'https://oauth2.googleapis.com/token',
+        
     }
     
     try:
