@@ -15,7 +15,7 @@ SESSION_CONFIGS = [
         app_sequence=['start', 'img_desc', 'demographics'],
         num_demo_participants=4,
         # Custom parameters
-        filename=environ.get('GOOGLE_SHEET_NAME', 'benz'),
+        filename=environ.get('GOOGLE_SHEET_NAME', 'testt'),
         instructions_path=environ.get('INSTRUCTIONS_URL', ''),
         s3_base_url=environ.get('S3_BASE_URL', ''),
         expand_slots=True,
@@ -25,14 +25,14 @@ SESSION_CONFIGS = [
         display_name="Practice Pages Only",
         app_sequence=['start'],
         num_demo_participants=1,
-        filename=environ.get('GOOGLE_SHEET_NAME', 'benz'),
+        filename=environ.get('GOOGLE_SHEET_NAME', 'testt'),
     ),
     dict(
         name='main_study_only',
         display_name="Main Study Only", 
         app_sequence=['img_desc', 'demographics'],
         num_demo_participants=4,
-        filename=environ.get('GOOGLE_SHEET_NAME', 'benz'),
+        filename=environ.get('GOOGLE_SHEET_NAME', 'testt'),
     ),
 ]
 SESSION_CONFIG_DEFAULTS = dict(
