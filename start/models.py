@@ -9,7 +9,7 @@ class Subsession(BaseSubsession):
     def creating_session(self):
         try:
             from utils.google_sheets import load_practice_data
-            filename = self.session.config.get('filename', 'benz')
+            filename = self.session.config.get('filename', 'testt')
             practice_data = load_practice_data(filename)
             self.session.vars['practice_data'] = practice_data
             
