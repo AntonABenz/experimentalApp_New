@@ -12,7 +12,7 @@ SESSION_CONFIGS = [
     dict(
         name='full_study',
         display_name="Full Study",
-        app_sequence=['start', 'img_desc', 'demographics'],
+        app_sequence=['start', 'demographics','img_desc'],
         num_demo_participants=4,
         # Custom parameters
         filename=environ.get('GOOGLE_SHEET_NAME', 'testt'),
