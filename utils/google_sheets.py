@@ -78,7 +78,7 @@ def load_sheet_data(filename):
         # Load data with retry
         main_data = []
         try:
-            data_sheet = sheet.worksheet('Data')
+            data_sheet = sheet.worksheet('data')
             main_data = data_sheet.get_all_records()
         except Exception as e:
             logger.warning(f"Could not load Data sheet: {e}")
@@ -114,7 +114,7 @@ def load_practice_data(filename):
         
         for i in range(1, 8):
             try:
-                worksheet = sheet.worksheet(f'Practice_{i}')
+                worksheet = sheet.worksheet(f'practice_{i}')
                 records = worksheet.get_all_records()
                 if records:
                     # Convert list of records to single dict
