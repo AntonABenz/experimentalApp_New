@@ -1,12 +1,14 @@
-{% extends "global/Page.html" %}
-{% load otree static %}
-
 {% block title %}
-    Instructions
+Introduction
 {% endblock %}
 
 {% block content %}
-    {% include 'start/includes/instructions.html'%}
-    {% next_button %}
+<h2>Welcome to the Experiment</h2>
+<p>
+In this study, you will be asked to make decisions and complete tasks. Please read the instructions carefully before you begin.
+</p>
 
+<form method="post">
+    <button class="btn btn-primary">Continue</button>
+</form>
 {% endblock %}
