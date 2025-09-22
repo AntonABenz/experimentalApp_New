@@ -5,14 +5,12 @@ from otree.api import *
 class Consent(Page):
     template_name = 'start/Consent.html'
 
+class Introduction(Page):
+    template_name = 'start/Introduction.html'
 
 class Instructions(Page):
     template_name = 'start/Instructions.html'
-    def vars_for_template(self):
-        return {
-            'instructions': "Welcome to the experiment. Please read these instructions carefully before you proceed."
-        }
-
+    
 
 class Demographics(Page):
     template_name = 'start/Demographics.html'
@@ -95,6 +93,7 @@ class Practice7(Practice1):
 # --- Full sequence ---
 page_sequence = [
     Consent,
+    Introduction,
     Instructions,
     Demographics,
     Practice1,
