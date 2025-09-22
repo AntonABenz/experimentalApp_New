@@ -41,6 +41,7 @@ SESSION_CONFIG_DEFAULTS = dict(
     doc="",
 )
 
+# Google Sheets configuration
 GOOGLE_SHEETS_CONFIG = {
     'client_email': environ.get('GOOGLE_CLIENT_EMAIL'),
     'client_id': environ.get('GOOGLE_CLIENT_ID'),
@@ -74,14 +75,6 @@ else:
             'NAME': BASE_DIR / 'db.sqlite3',
         }
     }
-
-# Google Sheets configuration
-GOOGLE_SHEETS_CONFIG = {
-    'client_email': environ.get('GOOGLE_CLIENT_EMAIL'),
-    'client_id': environ.get('GOOGLE_CLIENT_ID'),
-    'private_key': environ.get('GOOGLE_PRIVATE_KEY', '').replace('\\n', '\n'),
-    'private_key_id': environ.get('GOOGLE_PRIVATE_KEY_ID'),
-}
 
 # Security
 SECRET_KEY = environ.get('SECRET_KEY', 'your-dev-secret-key-change-in-production')
