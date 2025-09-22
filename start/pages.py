@@ -13,9 +13,18 @@ class Instructions(Page):
     
 
 class Demographics(Page):
-    template_name = 'start/Demographics.html'
-    form_model = 'player'
-    form_fields = ['age', 'gender']  # <- make sure these fields exist in models.py
+     def post(self):
+        print(self.request.POST)
+        raw_data = self.request.POST.get('survey_data')
+        try:
+            json_data= json.loads(raw_data)
+            print(json_data)
+            self.player.survey_data = json.dumps(json_data)
+        except JSONDecodeError:
+            logger.warning('No  demographic data')
+        except Exception as e:
+            logger.error(f"Error while saving demographic data: {e}")
+        return super().post()
 
 
 # --- Practice Pages ---
