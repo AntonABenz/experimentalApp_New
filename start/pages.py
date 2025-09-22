@@ -8,6 +8,10 @@ class Consent(Page):
 
 class Instructions(Page):
     template_name = 'start/Instructions.html'
+    def vars_for_template(self):
+        return {
+            'instructions': "Welcome to the experiment. Please read these instructions carefully before you proceed."
+        }
 
 
 class Demographics(Page):
