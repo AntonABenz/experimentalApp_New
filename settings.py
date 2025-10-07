@@ -1,5 +1,9 @@
-import os
 from os import environ
+
+def as_bool(v, default=False):
+    if v is None:
+        return default
+    return v in ('1', 'true', 'True', True)
 
 SESSION_CONFIGS = [
     dict(
@@ -9,8 +13,8 @@ SESSION_CONFIGS = [
         num_demo_participants=4,
         filename=environ.get('BENZ_SPREADSHEET_NAME', 'benz'),
         instructions_path=environ.get('BENZ_INSTRUCTIONS_URL', ''),
-        expand_slots=environ.get('BENZ_EXPAND_SLOTS', '1') in ('1', 'true', 'True'),
-        prolific_enabled=environ.get('BENZ_PROLIFIC_ENABLED', '1') in ('1', 'true', 'True'),
+        expand_slots=as_bool(environ.get('BENZ_EXPAND_SLOTS', '1'), True),
+        prolific_enabled=as_bool(environ.get('BENZ_PROLIFIC_ENABLED', '1'), True),
     ),
     dict(
         name='main_study_only',
@@ -51,18 +55,20 @@ ADMIN_USERNAME = environ.get('OTREE_ADMIN_USERNAME', 'admin')
 ADMIN_PASSWORD = environ.get('OTREE_ADMIN_PASSWORD', 'changeme')
 SECRET_KEY = environ.get('OTREE_SECRET_KEY', 'dev-secret')
 
-OTREE_PRODUCTION = environ.get('OTREE_PRODUCTION') in {'1', 'true', 'True'}
+OTREE_PRODUCTION = as_bool(environ.get('OTREE_PRODUCTION', '0'), False)
 
-# Optional mapping to your Google Sheet schema
 SHEET_TAB_SETTINGS = environ.get('BENZ_SHEET_TAB_SETTINGS', 'Settings')
-SHEET_TAB_DATA     = environ.get('BENZ_SHEET_TAB_DATA', 'Data')
+SHEET_TAB_DATA = environ.get('BENZ_SHEET_TAB_DATA', 'Data')
 SHEET_TAB_PREFIX_PRACTICE = environ.get('BENZ_SHEET_TAB_PREFIX_PRACTICE', 'Practice')
 
 SHEET_COLS = {
-    'image_url':    environ.get('BENZ_COL_IMAGE_URL',    's3path'),
-    'filename':     environ.get('BENZ_COL_FILENAME',     'filename'),
-    'extension':    environ.get('BENZ_COL_EXTENSION',    'extension'),
-    'prompt':       environ.get('BENZ_COL_PROMPT',       'prompt'),
-    'description':  environ.get('BENZ_COL_DESCRIPTION',  'description'),
-    'practice':     environ.get('BENZ_COL_PRACTICE',     'is_practice'),
+    'image_url': environ.get('BENZ_COL_IMAGE_URL', 's3path'),
+    'filename': environ.get('BENZ_COL_FILENAME', 'filename'),
+    'extension': environ.get('BENZ_COL_EXTENSION', 'extension'),
+    'prompt': environ.get('BENZ_COL_PROMPT', 'prompt'),
+    'description': environ.get('BENZ_COL_DESCRIPTION', 'description'),
+    'practice': environ.get('BENZ_COL_PRACTICE', 'is_practice'),
 }
+
+DEMO_PAGE_INTRO_HTML = ""
+INSTALLED_APPS = ['otree']
