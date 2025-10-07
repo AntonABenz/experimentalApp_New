@@ -1,153 +1,68 @@
 import os
 from os import environ
-import dj_database_url
-from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
-CSRF_COOKIE_HTTPONLY = False
-CSRF_USE_SESSIONS = True
-
-# oTree settings
 SESSION_CONFIGS = [
     dict(
         name='full_study',
-        display_name="Full Study",
-        app_sequence=['start', 'demographics','img_desc'],
+        display_name='Full study',
+        app_sequence=['start', 'demographics'],
         num_demo_participants=4,
-        # Custom parameters
-        filename=environ.get('GOOGLE_SHEET_NAME', 'testt'),
-        instructions_path=environ.get('INSTRUCTIONS_URL', ''),
-        s3_base_url=environ.get('S3_BASE_URL', ''),
-        expand_slots=True,
-    ),
-    dict(
-        name='practice_only',
-        display_name="Practice Pages Only",
-        app_sequence=['start'],
-        num_demo_participants=1,
-        filename=environ.get('GOOGLE_SHEET_NAME', 'testt'),
+        filename=environ.get('BENZ_SPREADSHEET_NAME', 'benz'),
+        instructions_path=environ.get('BENZ_INSTRUCTIONS_URL', ''),
+        expand_slots=environ.get('BENZ_EXPAND_SLOTS', '1') in ('1', 'true', 'True'),
+        prolific_enabled=environ.get('BENZ_PROLIFIC_ENABLED', '1') in ('1', 'true', 'True'),
     ),
     dict(
         name='main_study_only',
-        display_name="Main Study Only", 
-        app_sequence=['img_desc', 'demographics'],
+        display_name='Main study only',
+        app_sequence=['start'],
         num_demo_participants=4,
-        filename=environ.get('GOOGLE_SHEET_NAME', 'testt'),
+        filename=environ.get('BENZ_SPREADSHEET_NAME', 'benz'),
+        instructions_path=environ.get('BENZ_INSTRUCTIONS_URL', ''),
+        expand_slots=False,
+        prolific_enabled=True,
+    ),
+    dict(
+        name='practice_pages',
+        display_name='Practice pages',
+        app_sequence=['start'],
+        num_demo_participants=2,
+        filename=environ.get('BENZ_SPREADSHEET_NAME', 'benz'),
+        instructions_path=environ.get('BENZ_INSTRUCTIONS_URL', ''),
+        expand_slots=False,
+        prolific_enabled=False,
     ),
 ]
+
 SESSION_CONFIG_DEFAULTS = dict(
-    real_world_currency_per_point=0.01,
+    real_world_currency_per_point=1.00,
     participation_fee=0.00,
     doc="",
 )
 
-# Google Sheets configuration
-GOOGLE_SHEETS_CONFIG = {
-    'client_email': environ.get('GOOGLE_CLIENT_EMAIL'),
-    'client_id': environ.get('GOOGLE_CLIENT_ID'),
-    'private_key': environ.get('GOOGLE_PRIVATE_KEY', '').replace('\\n', '\n'),
-    'private_key_id': environ.get('GOOGLE_PRIVATE_KEY_ID'),
-}
+PARTICIPANT_FIELDS = ['prolific_pid', 'study_id', 'session_id']
+SESSION_FIELDS = ['sheet_settings', 'sheet_data', 'practices', 'sheet_meta']
 
-# Participant fields for Prolific integration
-PARTICIPANT_FIELDS = [
-    'prolific_pid',
-    'study_id', 
-    'batch_id',
-    'condition',
-]
-
-SESSION_FIELDS = [
-    'config_dict',
-    'google_sheet_data',
-    'practice_data',
-]
-
-# Database
-if environ.get('DATABASE_URL'):
-    DATABASES = {
-        'default': dj_database_url.parse(environ.get('DATABASE_URL'))
-    }
-else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
-    }
-
-# Security
-SECRET_KEY = environ.get('SECRET_KEY', 'your-dev-secret-key-change-in-production')
-DEBUG = environ.get('DEBUG', 'False').lower() == 'true'
-ALLOWED_HOSTS = ['*'] if environ.get('OTREE_PRODUCTION') == '1' else ['localhost', '127.0.0.1']
-
-# Middleware - IMPORTANT: Includes our custom Prolific middleware
-MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'otree.middleware.CheckBotMiddleware',
-    'middleware.prolific_middleware.ProlificMiddleware',  # Custom Prolific handling
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
-]
-
-# Static files
-STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-
-# Templates
-TEMPLATES = [
-    {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [BASE_DIR / '_templates'],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.debug',
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
-                'otree.context_processors.otree',
-            ],
-        },
-    },
-]
-
-# Internationalization
 LANGUAGE_CODE = 'en'
-TIME_ZONE = 'UTC'
-USE_I18N = True
-USE_TZ = True
-
-# oTree specific
 REAL_WORLD_CURRENCY_CODE = 'USD'
-USE_POINTS = False
-POINTS_CUSTOM_NAME = ''
+USE_POINTS = True
 
-# Prolific integration
-PROLIFIC_COMPLETION_URL = 'https://app.prolific.co/submissions/complete'
+ADMIN_USERNAME = environ.get('OTREE_ADMIN_USERNAME', 'admin')
+ADMIN_PASSWORD = environ.get('OTREE_ADMIN_PASSWORD', 'changeme')
+SECRET_KEY = environ.get('OTREE_SECRET_KEY', 'dev-secret')
 
-# Admin
-OTREE_ADMIN_PASSWORD = environ.get('OTREE_ADMIN_PASSWORD', 'admin')
-OTREE_PRODUCTION = environ.get('OTREE_PRODUCTION', '') == '1'
-OTREE_AUTH_LEVEL = environ.get('OTREE_AUTH_LEVEL', 'STUDY')
+OTREE_PRODUCTION = environ.get('OTREE_PRODUCTION') in {'1', 'true', 'True'}
 
-# Logging
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
-        },
-    },
-    'root': {
-        'handlers': ['console'],
-        'level': 'INFO',
-    },
+# Optional mapping to your Google Sheet schema
+SHEET_TAB_SETTINGS = environ.get('BENZ_SHEET_TAB_SETTINGS', 'Settings')
+SHEET_TAB_DATA     = environ.get('BENZ_SHEET_TAB_DATA', 'Data')
+SHEET_TAB_PREFIX_PRACTICE = environ.get('BENZ_SHEET_TAB_PREFIX_PRACTICE', 'Practice')
+
+SHEET_COLS = {
+    'image_url':    environ.get('BENZ_COL_IMAGE_URL',    's3path'),
+    'filename':     environ.get('BENZ_COL_FILENAME',     'filename'),
+    'extension':    environ.get('BENZ_COL_EXTENSION',    'extension'),
+    'prompt':       environ.get('BENZ_COL_PROMPT',       'prompt'),
+    'description':  environ.get('BENZ_COL_DESCRIPTION',  'description'),
+    'practice':     environ.get('BENZ_COL_PRACTICE',     'is_practice'),
 }
