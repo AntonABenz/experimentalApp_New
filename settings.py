@@ -5,7 +5,7 @@ SESSION_CONFIGS = [
     dict(
         name='full_study',
         display_name='Full study',
-        app_sequence=['start', 'img_desc', 'demographics'],
+        app_sequence=['start', 'demographics', 'img_desc'],
         num_demo_participants=4,
         filename=environ.get('BENZ_SPREADSHEET_NAME', 'benz'),
         instructions_path=environ.get('BENZ_INSTRUCTIONS_URL', ''),
