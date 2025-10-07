@@ -1,41 +1,26 @@
 from otree.api import *
+from . import models
 
 # --- Introduction Pages ---
 
 class Consent(Page):
     template_name = 'start/Consent.html'
 
-class Introduction(Page):
-    template_name = 'start/Introduction.html'
 
 class Instructions(Page):
     template_name = 'start/Instructions.html'
-    
+
 
 class Demographics(Page):
-     def post(self):
-        print(self.request.POST)
-        raw_data = self.request.POST.get('survey_data')
-        try:
-            json_data= json.loads(raw_data)
-            print(json_data)
-            self.player.survey_data = json.dumps(json_data)
-        except JSONDecodeError:
-            logger.warning('No  demographic data')
-        except Exception as e:
-            logger.error(f"Error while saving demographic data: {e}")
-        return super().post()
+    form_model = 'player'
+    form_fields = ['age', 'gender']
+    template_name = 'start/Demographics.html'
 
 
 # --- Practice Pages ---
 
-class Practice1(Page):
-    template_name = 'start/Practice1.html'
+class PracticeBase(Page):
     form_model = 'player'
-    form_fields = ['practice_1_response']
-
-    def vars_for_template(self):
-        return self._get_practice_vars(1)
 
     def _get_practice_vars(self, page_num):
         practice_data = self.session.vars.get('practice_data', {})
@@ -51,58 +36,65 @@ class Practice1(Page):
         }
 
 
-class Practice2(Practice1):
-    template_name = 'start/Practice2.html'
+class Practice1(PracticeBase):
+    form_fields = ['practice_1_response']
+    template_name = 'start/Practice1.html'
+
+    def vars_for_template(self):
+        return self._get_practice_vars(1)
+
+
+class Practice2(PracticeBase):
     form_fields = ['practice_2_response']
+    template_name = 'start/Practice2.html'
 
     def vars_for_template(self):
         return self._get_practice_vars(2)
 
 
-class Practice3(Practice1):
-    template_name = 'start/Practice3.html'
+class Practice3(PracticeBase):
     form_fields = ['practice_3_response']
+    template_name = 'start/Practice3.html'
 
     def vars_for_template(self):
         return self._get_practice_vars(3)
 
 
-class Practice4(Practice1):
-    template_name = 'start/Practice4.html'
+class Practice4(PracticeBase):
     form_fields = ['practice_4_response']
+    template_name = 'start/Practice4.html'
 
     def vars_for_template(self):
         return self._get_practice_vars(4)
 
 
-class Practice5(Practice1):
-    template_name = 'start/Practice5.html'
+class Practice5(PracticeBase):
     form_fields = ['practice_5_response']
+    template_name = 'start/Practice5.html'
 
     def vars_for_template(self):
         return self._get_practice_vars(5)
 
 
-class Practice6(Practice1):
-    template_name = 'start/Practice6.html'
+class Practice6(PracticeBase):
     form_fields = ['practice_6_response']
+    template_name = 'start/Practice6.html'
 
     def vars_for_template(self):
         return self._get_practice_vars(6)
 
 
-class Practice7(Practice1):
-    template_name = 'start/Practice7.html'
+class Practice7(PracticeBase):
     form_fields = ['practice_7_response']
+    template_name = 'start/Practice7.html'
 
     def vars_for_template(self):
         return self._get_practice_vars(7)
 
 
-# --- Full sequence ---
+# --- Page sequence ---
 page_sequence = [
     Consent,
-    Introduction,
     Instructions,
     Demographics,
     Practice1,
