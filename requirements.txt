@@ -7,3 +7,4 @@ numpy>=1.21.0
 whitenoise>=6.2.0
 gunicorn>=20.1.0
 dj-database-url>=1.0.0
+Django==4.2.16 
