@@ -14,7 +14,7 @@ class Group(BaseGroup): pass
 class Player(BasePlayer):
     prolific_pid = models.StringField(blank=True)
     study_id = models.StringField(blank=True)
-    session_id = models.StringField(blank=True)
+    prolific_session_id = models.StringField(blank=True)
     response_text = models.LongStringField(blank=True)
 
 def creating_session(subsession: Subsession):
@@ -31,7 +31,7 @@ def creating_session(subsession: Subsession):
 def _capture_prolific(player: Player, params: Dict[str, Any]):
     for k, field in (('PROLIFIC_PID', 'prolific_pid'),
                      ('STUDY_ID', 'study_id'),
-                     ('SESSION_ID', 'session_id')):
+                     ('SESSION_ID', 'prolific_session_id')):
         v = params.get(k) or params.get(k.lower())
         if v:
             setattr(player, field, v)
