@@ -44,7 +44,7 @@ SESSION_CONFIG_DEFAULTS = dict(
     doc="",
 )
 
-PARTICIPANT_FIELDS = ['prolific_pid', 'study_id', 'session_id']
+PARTICIPANT_FIELDS = ['prolific_pid', 'study_id', 'prolific_session_id']
 SESSION_FIELDS = ['sheet_settings', 'sheet_data', 'practices', 'sheet_meta']
 
 LANGUAGE_CODE = 'en'
