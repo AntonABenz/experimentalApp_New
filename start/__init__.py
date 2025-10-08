@@ -8,30 +8,42 @@ class C(BaseConstants):
     PLAYERS_PER_GROUP = None
     NUM_ROUNDS = 1
 
-class Subsession(BaseSubsession): pass
-class Group(BaseGroup): pass
+class Subsession(BaseSubsession):
+
+    def creating_session(self):
+        # Only load once per session
+        if 'sheet_data' in self.session.vars:
+            return
+
+        from reading_xls.reader import load_all
+        cfg = self.session.config
+        payload = load_all(cfg.get('filename', 'benz'))
+
+        # ✳️ store in session.vars (not as ad-hoc attributes)
+        self.session.vars['sheet_settings'] = payload['settings']
+        self.session.vars['sheet_data'] = payload['data']              # main rows
+        self.session.vars['practices'] = payload['practices']          # dict of tabs -> rows
+        self.session.vars['sheet_meta'] = dict(schema=payload['schema'], tabs=payload['tabs'])
+
+class Group(BaseGroup):
+    pass
 
 class Player(BasePlayer):
     prolific_pid = models.StringField(blank=True)
     study_id = models.StringField(blank=True)
     prolific_session_id = models.StringField(blank=True)
-    response_text = models.LongStringField(blank=True)
 
-def creating_session(subsession: Subsession):
-    if 'sheet_data' in subsession.session.vars:
-        return
-    from reading_xls.reader import load_all
-    cfg = subsession.session.config
-    payload = load_all(cfg.get('filename', 'benz'))
-    subsession.session.sheet_settings = payload['settings']
-    subsession.session.sheet_data = payload['data']
-    subsession.session.practices = payload['practices']
-    subsession.session.sheet_meta = dict(schema=payload['schema'], tabs=payload['tabs'])
+    # if you want to keep both practice & main answers, split them:
+    practice_response_text = models.LongStringField(blank=True)
+    main_response_text = models.LongStringField(blank=True)
 
 def _capture_prolific(player: Player, params: Dict[str, Any]):
-    for k, field in (('PROLIFIC_PID', 'prolific_pid'),
-                     ('STUDY_ID', 'study_id'),
-                     ('SESSION_ID', 'prolific_session_id')):
+    # map Prolific params into your fields
+    for k, field in (
+        ('PROLIFIC_PID', 'prolific_pid'),
+        ('STUDY_ID', 'study_id'),
+        ('SESSION_ID', 'prolific_session_id'),
+    ):
         v = params.get(k) or params.get(k.lower())
         if v:
             setattr(player, field, v)
@@ -53,44 +65,53 @@ class Consent(Page):
 
 class PracticeTask(Page):
     form_model = 'player'
-    form_fields = ['response_text']
+    form_fields = ['practice_response_text']  # was 'response_text'
 
     @staticmethod
     def is_displayed(player: Player):
-        return bool(player.session.practices)
+        return bool(player.session.vars.get('practices'))
 
     @staticmethod
     def vars_for_template(player: Player):
         from utils.sheet_utils import image_src
-        meta = player.session.sheet_meta
-        schema = meta['schema']
-        if not player.session.practices:
+        meta = player.session.vars.get('sheet_meta', {}) or {}
+        schema = meta.get('schema', {})
+        practices = player.session.vars.get('practices') or {}
+
+        if not practices:
             return dict(row={}, img='', desc='', practice_tab=None)
-        first_tab = sorted(player.session.practices.keys())[0]
-        rows = player.session.practices[first_tab]
+
+        first_tab = sorted(practices.keys())[0]
+        rows = practices[first_tab]
         row = rows[0] if rows else {}
         img = image_src(row, schema)
-        desc = (row.get(schema['description']) or '').strip()
+        desc = (row.get(schema.get('description')) or '').strip() if schema else ''
         return dict(row=row, img=img, desc=desc, practice_tab=first_tab)
 
 class MainTask(Page):
     form_model = 'player'
-    form_fields = ['response_text']
+    form_fields = ['main_response_text']  # was 'response_text'
 
     @staticmethod
     def vars_for_template(player: Player):
         from utils.sheet_utils import image_src
         from utils.img_desc import read_desc
-        meta = player.session.sheet_meta
-        schema = meta['schema']
-        rows: List[Dict] = player.session.sheet_data or []
+
+        meta = player.session.vars.get('sheet_meta', {}) or {}
+        schema = meta.get('schema', {})
+        rows: List[Dict] = player.session.vars.get('sheet_data') or []
+
         row = rows[0] if rows else {}
         img = image_src(row, schema)
+
         # prefer Sheet description; fallback to img_desc/<filename>.txt|md
-        desc = (row.get(schema['description']) or '').strip()
+        desc = (row.get(schema.get('description')) or '').strip() if schema else ''
         if not desc:
-            basename = (row.get(schema['filename']) or '').rsplit('.', 1)[0]
-            desc = read_desc(basename)
+            filename_key = schema.get('filename') if schema else None
+            basename = (row.get(filename_key) or '').rsplit('.', 1)[0] if filename_key else ''
+            if basename:
+                desc = read_desc(basename)
+
         return dict(row=row, img=img, desc=desc)
 
 class Results(Page):
@@ -103,4 +124,3 @@ class Results(Page):
         )
 
 page_sequence = [Instructions, Consent, PracticeTask, MainTask, Results]
-
