@@ -1,0 +1,11 @@
+{% extends "global/Page.html" %}
+{% block title %}Main Task{% endblock %}
+{% block content %}
+  {% if progress and progress.total %}
+    <div>Progress: {{ progress.current }} / {{ progress.total }} ({{ progress.percent }}%)</div>
+  {% endif %}
+  {% if img %}<img src="{{ img }}" style="max-width:100%;height:auto;margin:1rem 0;">{% endif %}
+  {% if desc %}<p>{{ desc }}</p>{% endif %}
+  {{ formfields }}
+  {{ next_button }}
+{% endblock %}
