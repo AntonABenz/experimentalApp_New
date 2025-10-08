@@ -1,12 +1,17 @@
-{% extends "global/Page.html" %}
-{% load otree static %}
-
 {% block title %}
-    Instructions
+Instructions
 {% endblock %}
 
 {% block content %}
-    {% include 'start/includes/instructions.html'%}
-    {% next_button %}
+<h2>Instructions</h2>
+<p>
+On the following screens, you will be presented with tasks. Please follow the instructions shown for each task carefully.
+</p>
+<p>
+If you have any questions, please raise your hand and the experimenter will assist you.
+</p>
 
+<form method="post">
+    <button class="btn btn-primary">Start</button>
+</form>
 {% endblock %}

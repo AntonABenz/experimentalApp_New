@@ -1,2 +1,1 @@
-web: otree prodserver $PORT
-worker: otree runworker
+web: otree prodserver 1
