@@ -160,6 +160,8 @@ class Results(Page):
         return dict(
             show_prolific=player.session.config.get('prolific_enabled'),
             completion_link=completion_url(),
+            # add this so templates that do `{% if instructions %}` won’t explode
+            instructions=player.session.config.get('instructions_path', ''),
         )
 
 
