@@ -1,10 +1,12 @@
-otree>=5.10.0
-psycopg2-binary>=2.9.0
-gspread>=5.7.0
-oauth2client>=4.1.3
-pandas>=1.5.0
-numpy>=1.21.0
-whitenoise>=6.2.0
-gunicorn>=20.1.0
-dj-database-url>=1.0.0
-Django==4.2.16 
+# oTree (Django ORM)
+otree==5.10.0
+Django==4.2.16
+
+# DB/runtime helpers
+psycopg2-binary==2.9.9
+gunicorn==21.2.0
+whitenoise==6.7.0
+python-dotenv==1.0.1
+
+gspread==6.1.2
+google-auth==2.34.0
