@@ -90,27 +90,37 @@ class PracticeTask(Page):
 
 class MainTask(Page):
     form_model = 'player'
-    form_fields = ['main_response_text']  # was 'response_text'
+    form_fields = ['response_text']
 
     @staticmethod
     def vars_for_template(player: Player):
         from utils.sheet_utils import image_src
         from utils.img_desc import read_desc
 
-        meta = player.session.vars.get('sheet_meta', {}) or {}
-        schema = meta.get('schema', {})
-        rows: List[Dict] = player.session.vars.get('sheet_data') or []
+        meta = getattr(player.session, 'sheet_meta', {}) or {}
+        schema = meta.get('schema', {}) or {}
 
-        row = rows[0] if rows else {}
-        img = image_src(row, schema)
+        rows = getattr(player.session, 'sheet_data', []) or []
+        # Accept both list-of-rows or dict {tab: [rows]}
+        if isinstance(rows, dict):
+            # Prefer the first tab in meta['tabs'] for deterministic order
+            tabs = meta.get('tabs') or list(rows.keys())
+            flat = []
+            for t in tabs:
+                flat.extend(rows.get(t) or [])
+            rows = flat
 
-        # prefer Sheet description; fallback to img_desc/<filename>.txt|md
-        desc = (row.get(schema.get('description')) or '').strip() if schema else ''
-        if not desc:
-            filename_key = schema.get('filename') if schema else None
-            basename = (row.get(filename_key) or '').rsplit('.', 1)[0] if filename_key else ''
-            if basename:
-                desc = read_desc(basename)
+        row = rows[0] if isinstance(rows, list) and rows else {}
+
+        img = image_src(row, schema) if row else ''
+        desc = (row.get(schema.get('description')) or '').strip() if row else ''
+        if not desc and row:
+            basename = (row.get(schema.get('filename')) or '').rsplit('.', 1)[0]
+            desc = read_desc(basename)
+
+        # Graceful empty-state so the page renders instead of 500
+        if not row:
+            return dict(row={}, img='', desc='No rows found in sheet_data.', empty=True)
 
         return dict(row=row, img=img, desc=desc)
 
