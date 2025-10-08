@@ -1,4 +1,6 @@
 from otree.api import *
+import logging
+logger = logging.getLogger(__name__)
 
 # Constants - OLD FORMAT
 class Constants(BaseConstants):
