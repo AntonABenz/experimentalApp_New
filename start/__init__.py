@@ -48,20 +48,19 @@ def _capture_prolific(player: Player, params: Dict[str, Any]):
         if v:
             setattr(player, field, v)
 
+def _instructions(player):
+    # pull from settings.py session config; empty string if not set
+    return player.session.config.get('instructions_path', '')
+
 class Instructions(Page):
     @staticmethod
     def vars_for_template(player: Player):
-        return dict(instructions_path=player.session.config.get('instructions_path', ''))
+        return dict(instructions=_instructions(player))
 
 class Consent(Page):
     @staticmethod
-    def before_next_page(player: Player, timeout_happened):
-        params = dict(
-            PROLIFIC_PID=player.participant.vars.get('PROLIFIC_PID'),
-            STUDY_ID=player.participant.vars.get('STUDY_ID'),
-            SESSION_ID=player.participant.vars.get('SESSION_ID'),
-        )
-        _capture_prolific(player, params)
+    def vars_for_template(player: Player):
+        return dict(instructions=_instructions(player))
 
 class PracticeTask(Page):
     form_model = 'player'
@@ -80,18 +79,18 @@ class PracticeTask(Page):
         settings = player.session.vars.get('sheet_settings', {}) or {}
 
         if not practices:
-            return dict(row={}, img='', desc='', practice_tab=None)
+            return dict(row={}, img='', desc='', practice_tab=None, instructions=_instructions(player))
 
         first_tab = sorted(practices.keys())[0]
         rows = practices.get(first_tab) or []
         row = rows[0] if rows else {}
         img = image_src(row, schema, settings)
         desc = (row.get(schema.get('description')) or '').strip() if row else ''
-        return dict(row=row, img=img, desc=desc, practice_tab=first_tab)
+        return dict(row=row, img=img, desc=desc, practice_tab=first_tab, instructions=_instructions(player))
 
 class MainTask(Page):
     form_model = 'player'
-    form_fields = ['main_response_text']
+    form_fields = ['main_response_text']   # make sure this matches your Player field
 
     @staticmethod
     def vars_for_template(player: Player):
@@ -103,10 +102,9 @@ class MainTask(Page):
         settings = player.session.vars.get('sheet_settings', {}) or {}
 
         rows = player.session.vars.get('sheet_data')
-        # Accept either list-of-rows OR dict {tab: [rows]}
         if isinstance(rows, dict):
             tabs = meta.get('tabs') or list(rows.keys())
-            flat: List[Dict[str, Any]] = []
+            flat = []
             for t in tabs:
                 flat.extend(rows.get(t) or [])
             rows = flat
@@ -115,23 +113,21 @@ class MainTask(Page):
 
         row = rows[0] if rows else {}
         if not row:
-            return dict(row={}, img='', desc='No rows found in sheet_data.', empty=True, progress=dict(current=0, total=0, percent=0))
+            return dict(row={}, img='', desc='No rows found in sheet_data.', empty=True,
+                        progress=dict(current=0, total=0, percent=0),
+                        instructions=_instructions(player))
 
         img = image_src(row, schema, settings)
-
-        # description (prefer sheet cell; fallback to local text)
         desc = (row.get(schema.get('description')) or '').strip()
         if not desc:
-            # Try filename column or 'Item'
             fname_key = schema.get('filename') or 'filename'
             basename = (row.get(fname_key) or row.get('Item') or '').rsplit('.', 1)[0]
             desc = read_desc(basename) if basename else ''
 
-        # simple progress (first item only for now)
         total = len(rows)
-        progress = dict(current=1 if total else 0, total=total, percent=int(100 * (1 / total)) if total else 0)
+        progress = dict(current=1 if total else 0, total=total, percent=int(100 * (1/total)) if total else 0)
 
-        return dict(row=row, img=img, desc=desc, progress=progress)
+        return dict(row=row, img=img, desc=desc, progress=progress, instructions=_instructions(player))
 
 class Results(Page):
     @staticmethod
@@ -140,6 +136,7 @@ class Results(Page):
         return dict(
             show_prolific=bool(player.session.config.get('prolific_enabled')),
             completion_link=completion_url(),
+            instructions=_instructions(player),
         )
 
 page_sequence = [Instructions, Consent, PracticeTask, MainTask, Results]
