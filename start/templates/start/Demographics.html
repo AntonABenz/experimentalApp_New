@@ -1,30 +1,71 @@
-{% extends "global/Page.html" %}
-{% load otree static %}
-
-{% block title %}
- 
-{% endblock %}
+{% extends "otree/Page.html" %}
+{% block title %}Demographics{% endblock %}
 
 {% block content %}
+  <!-- Hidden field your Page.post() reads -->
+  <input type="hidden" name="survey_data" id="survey_data">
 
-<h2 style="text-align:right">
-    <table style="width:800px">
-        <tr>
-            <td></td>
-            <td></td>
-            <td><img src="{% static 'global/img/zas.png' %}" width="110" alt="ZAS"></td>
-        </tr>
-    </table>
-</h2>
+  <div class="form-group">
+    <label>Age</label>
+    <input name="age" type="number" min="18" max="100" class="form-control" required>
+  </div>
 
+  <div class="form-group">
+    <label>Gender</label>
+    <select name="gender" class="form-control" required>
+      <option value="" selected disabled>— select —</option>
+      <option>Female</option>
+      <option>Male</option>
+      <option>Non-binary</option>
+      <option>Prefer not to say</option>
+      <option>Other</option>
+    </select>
+  </div>
 
-    <script src="https://unpkg.com/survey-jquery@1.9.115/survey.jquery.min.js"></script>
-    <script src="https://unpkg.com/survey-jquery@1.9.115/themes/index.min.js"></script>
-    <link rel="stylesheet" href="https://unpkg.com/survey-jquery@1.9.115/defaultV2.min.css" />
-    <div id="surveyElement" ></div>
-    <input type="hidden" id="survey_data" value="" name="survey_data">
-    <script src="{% static 'global/js/demographics.js' %}"></script>
+  <div class="form-group">
+    <label>Native language</label>
+    <input name="native_language" type="text" class="form-control" required>
+  </div>
 
+  <div class="form-group">
+    <label>Country of residence</label>
+    <input name="country" type="text" class="form-control" required>
+  </div>
 
+  <div class="form-group">
+    <label>Highest education</label>
+    <select name="education" class="form-control">
+      <option value="" selected disabled>— select —</option>
+      <option>High school</option>
+      <option>Bachelor</option>
+      <option>Master</option>
+      <option>Doctorate</option>
+      <option>Other</option>
+    </select>
+  </div>
 
+  {% next_button %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const form = document.querySelector('form');
+    form.addEventListener('submit', function () {
+      const fields = ['age','gender','native_language','country','education'];
+      const data = {};
+      fields.forEach(function (name) {
+        const el = form.querySelector('[name="'+name+'"]');
+        if (!el) return;
+        if (el.type === 'radio') {
+          const checked = form.querySelector('input[name="'+name+'"]:checked');
+          data[name] = checked ? checked.value : '';
+        } else {
+          data[name] = el.value || '';
+        }
+      });
+      document.getElementById('survey_data').value = JSON.stringify(data);
+    });
+  })();
+</script>
 {% endblock %}
