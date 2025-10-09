@@ -229,6 +229,24 @@ class _PracticePage(_BasePage):
             return pps.get(cls.__name__, True)
         return True
 
+    @staticmethod
+    def _build_js_vars(player, practice_id: int):
+        """Build the js_vars dict for a specific practice_id (used by Practice1..7 overrides)."""
+        settings = (player.session.vars.get('practice_settings', {})
+                    .get(f'practice_{practice_id}', {})).copy()
+
+        img = settings.get('image')
+        if img:
+            settings['full_image_path'] = _full_image_url(player, f'practice/{img}')
+        else:
+            settings['full_image_path'] = ''
+
+        settings.setdefault('title', f'Practice {practice_id}')
+        settings.setdefault('main_text', '')
+        settings.setdefault('right_answer', [])
+
+        return dict(settings=settings)
+
 
 class Practice1(_PracticePage):
     practice_id = 1
