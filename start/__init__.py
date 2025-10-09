@@ -74,25 +74,27 @@ def _practice_enabled(session, cls_name):
 
 class _PracticePage(Page):
     instructions = True
-    practice_id: int = None
-    template_name = 'start/Practice.html'  # one template for all practices
+    practice_id = None
 
-    def is_displayed(self):
-        # allow toggling specific practice pages on/off from session.vars
-        return _practice_enabled(self.session, self.__class__.__name__)
-
-    def js_vars(self):
-        """Expose per-practice settings to JS (image path, answers, etc.)."""
+    @classmethod
+    def js_vars(cls, player):
         try:
-            settings = (self.session.vars.get("practice_settings", {})
-                        .get(f"practice_{self.practice_id}", {})).copy()
-            # If you use absolute URLs for images, add/transform here.
-            # Example: if your settings contain "image": "foo.jpg", you can
-            # construct a full path or leave it as-is if your template can handle it.
-            return dict(settings=settings)
+            practice_settings = (
+                player.session.vars.get("practice_settings", {})
+                .get(f"practice_{cls.practice_id}", {})
+            ) or {}
+
+            img = practice_settings.get("image")
+            if img:
+                from img_desc.utils import get_url_for_image
+                practice_settings["full_image_path"] = get_url_for_image(
+                    player, f"practice/{img}"
+                )
+
+            return dict(settings=practice_settings)
         except Exception as e:
-            logger.error(f"Cannot build js_vars for practice_{self.practice_id}: {e}")
-            return {}
+            logger.error(f"Cannot build js_vars for practice_{cls.practice_id}: {e}")
+            return dict(settings={})
 
 class Practice1(_PracticePage): practice_id = 1
 class Practice2(_PracticePage): practice_id = 2
