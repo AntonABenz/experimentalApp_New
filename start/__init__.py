@@ -1,167 +1,134 @@
+# start/__init__.py  (oTree 5)
 from otree.api import *
-from typing import Dict, Any, List
+import logging, json
+from json import JSONDecodeError
 
-doc = """Main study app (oTree 5). Loads Google Sheet; uses img_desc as fallback."""
+logger = logging.getLogger("benzapp.start_pages")
 
 class C(BaseConstants):
     NAME_IN_URL = 'start'
     PLAYERS_PER_GROUP = None
     NUM_ROUNDS = 1
 
-
-# ---------- helpers ----------
-def _ensure_sheet_loaded(session):
-    if session.vars.get('sheet_data') is not None:
-        return
-    # load your XLS/Google-Sheet bundle
-    from reading_xls.reader import load_all
-    payload = load_all(session.config.get('filename', 'benz'))
-    session.vars['sheet_settings'] = payload['settings']
-    session.vars['sheet_data']   = payload['data']        # list OR dict-of-tabs
-    session.vars['practices']    = payload['practices']   # dict tab -> rows
-    session.vars['sheet_meta']   = dict(schema=payload['schema'], tabs=payload['tabs'])
-
-
-def _capture_prolific(player, params: Dict[str, Any]):
-    for k, field in (('PROLIFIC_PID', 'prolific_pid'),
-                     ('STUDY_ID', 'study_id'),
-                     ('SESSION_ID', 'prolific_session_id')):
-        v = params.get(k) or params.get(k.lower())
-        if v:
-            setattr(player, field, v)
-
-
-# ---------- models ----------
 class Subsession(BaseSubsession):
     def creating_session(self):
-        _ensure_sheet_loaded(self.session)
-
+        # Ensure the keys exist even if your loader didn't set them
+        self.session.vars.setdefault('user_settings', {})       # e.g., {'practice_pages': {'Practice1': True, ...}}
+        self.session.vars.setdefault('practice_settings', {})   # e.g., {'practice_1': {...}, 'practice_2': {...}}
 
 class Group(BaseGroup):
     pass
 
-
 class Player(BasePlayer):
+    # Prolific fields
     prolific_pid = models.StringField(blank=True)
     study_id = models.StringField(blank=True)
     prolific_session_id = models.StringField(blank=True)
 
-    # separate fields for practice vs main
-    practice_response_text = models.LongStringField(blank=True)
-    main_response_text = models.LongStringField(blank=True)
+    # Demographics: store the JSON blob from the page
+    survey_data = models.LongStringField(blank=True)
 
+def _capture_prolific(player: Player):
+    """Copy Prolific query params (saved by oTree) into your Player fields."""
+    for k, field in (('PROLIFIC_PID', 'prolific_pid'),
+                     ('STUDY_ID', 'study_id'),
+                     ('SESSION_ID', 'prolific_session_id')):
+        v = player.participant.vars.get(k) or player.participant.vars.get(k.lower())
+        if v:
+            setattr(player, field, v)
 
-# ---------- pages ----------
-class Instructions(Page):
-    @staticmethod
-    def vars_for_template(player: Player):
-        # many templates check for 'instructions', so provide that key
-        return dict(instructions=player.session.config.get('instructions_path', ''))
+# ----- Base Page that injects context expected by your templates -----
+class Page(otree.api.Page):
+    instructions_path = "start/includes/instructions.html"  # if you include this partial
+    instructions = False
+    template_name = None  # subclasses can set one template for many pages
 
+    def get_context_data(self, **context):
+        r = super().get_context_data(**context)
+        maxpages = getattr(self.participant, '_max_page_index', 1) or 1
+        idx = getattr(self, '_index_in_pages', 1) or 1
+        r["instructions_google_doc"] = self.session.config.get("instructions_path")
+        r["maxpages"] = maxpages
+        r["page_index"] = idx
+        r["progress"] = f"{int(idx / maxpages * 100):d}"
+        r["instructions"] = self.instructions
+        return r
 
+# ----- Pages -----
 class Consent(Page):
     @staticmethod
     def before_next_page(player: Player, timeout_happened):
-        params = dict(
-            PROLIFIC_PID=player.participant.vars.get('PROLIFIC_PID'),
-            STUDY_ID=player.participant.vars.get('STUDY_ID'),
-            SESSION_ID=player.participant.vars.get('SESSION_ID'),
-        )
-        _capture_prolific(player, params)
+        _capture_prolific(player)
 
+class Demographics(Page):
+    # Template should POST a field named 'survey_data' with JSON
+    def post(self):
+        raw = self.request.POST.get('survey_data')
+        try:
+            if raw:
+                json.loads(raw)  # validate
+                self.player.survey_data = raw
+            else:
+                logger.warning('No demographic data posted')
+        except JSONDecodeError:
+            logger.warning('Malformed demographic JSON')
+        except Exception as e:
+            logger.error(f"Error saving demographic data: {e}")
+        return super().post()
 
-class PracticeTask(Page):
-    form_model = 'player'
-    form_fields = ['practice_response_text']
+class Instructions(Page):
+    pass
 
-    @staticmethod
-    def is_displayed(player: Player):
-        _ensure_sheet_loaded(player.session)
-        practices = player.session.vars.get('practices') or {}
-        # show if *any* tab has at least one practice row
-        return any(practices.get(tab) for tab in practices)
+# ----- Practices: one HTML template reused by all practice pages -----
+def _practice_enabled(session, cls_name):
+    pps = session.vars.get('user_settings', {}).get('practice_pages', {})
+    return pps.get(cls_name, True) if pps else True
 
-    @staticmethod
-    def vars_for_template(player: Player):
-        _ensure_sheet_loaded(player.session)
-        from utils.sheet_utils import image_src
+class _PracticePage(Page):
+    instructions = True
+    practice_id: int = None
+    template_name = 'start/Practice.html'  # one template for all practices
 
-        meta = player.session.vars.get('sheet_meta') or {}
-        schema = meta.get('schema') or {}
-        practices = player.session.vars.get('practices') or {}
+    def is_displayed(self):
+        # allow toggling specific practice pages on/off from session.vars
+        return _practice_enabled(self.session, self.__class__.__name__)
 
-        if not practices or not any(practices.get(t) for t in practices):
-            return dict(empty=True, img='', desc='', row={}, practice_tab=None,
-                        instructions=player.session.config.get('instructions_path', ''))
+    def js_vars(self):
+        """Expose per-practice settings to JS (image path, answers, etc.)."""
+        try:
+            settings = (self.session.vars.get("practice_settings", {})
+                        .get(f"practice_{self.practice_id}", {})).copy()
+            # If you use absolute URLs for images, add/transform here.
+            # Example: if your settings contain "image": "foo.jpg", you can
+            # construct a full path or leave it as-is if your template can handle it.
+            return dict(settings=settings)
+        except Exception as e:
+            logger.error(f"Cannot build js_vars for practice_{self.practice_id}: {e}")
+            return {}
 
-        first_tab = sorted(practices.keys())[0]
-        rows = practices.get(first_tab) or []
-        row = rows[0] if rows else {}
-        img = image_src(row, schema) if row else ''
-        desc_key = schema.get('description')
-        desc = (row.get(desc_key) or '').strip() if (row and desc_key) else ''
+class Practice1(_PracticePage): practice_id = 1
+class Practice2(_PracticePage): practice_id = 2
+class Practice3(_PracticePage): practice_id = 3
+class Practice4(_PracticePage):
+    practice_id = 4
+    def js_vars(self):
+        d = super().js_vars().get('settings', {}).copy()
+        ra = d.get('right_answer')
+        if ra:
+            # Convert ["a;b;c", "x;y"] -> [["a","b","c"], ["x","y"]]
+            d["right_answer"] = [[item.strip() for item in s.split(';')] for s in ra]
+        return dict(settings=d)
+class Practice5(_PracticePage): practice_id = 5
+class Practice6(_PracticePage): practice_id = 6
+class Practice7(_PracticePage): practice_id = 7
 
-        return dict(empty=False, img=img, desc=desc, row=row, practice_tab=first_tab,
-                    # keep templates happy:
-                    progress={'current': 0, 'total': 0, 'percent': 0},
-                    instructions=player.session.config.get('instructions_path', ''))
+class EndOfIntro(Page):
+    pass
 
-
-class MainTask(Page):
-    form_model = 'player'
-    form_fields = ['main_response_text']
-
-    @staticmethod
-    def vars_for_template(player: Player):
-        _ensure_sheet_loaded(player.session)
-        from utils.sheet_utils import image_src
-        from utils.img_desc import read_desc
-
-        meta = player.session.vars.get('sheet_meta') or {}
-        schema = meta.get('schema') or {}
-        rows = player.session.vars.get('sheet_data') or []
-
-        # allow dict-of-tabs or flat list
-        if isinstance(rows, dict):
-            tabs = meta.get('tabs') or list(rows.keys())
-            flat: List[Dict] = []
-            for t in tabs:
-                flat.extend(rows.get(t) or [])
-            rows = flat
-
-        row = rows[0] if isinstance(rows, list) and rows else {}
-        if not row:
-            return dict(empty=True, img='', desc='No rows found in sheet_data.',
-                        row={}, progress={'current': 0, 'total': 0, 'percent': 0},
-                        instructions=player.session.config.get('instructions_path', ''))
-
-        img = image_src(row, schema) if row else ''
-        desc_key = schema.get('description')
-        desc = (row.get(desc_key) or '').strip() if desc_key else ''
-        if not desc:
-            fname_key = schema.get('filename')
-            basename = (row.get(fname_key) or '').rsplit('.', 1)[0] if fname_key else ''
-            if basename:
-                desc = read_desc(basename)
-
-        total = len(rows)
-        current = 1  # showing the first item only in this app
-        percent = round(100 * current / total) if total else 0
-
-        return dict(empty=False, img=img, desc=desc, row=row,
-                    progress={'current': current, 'total': total, 'percent': percent},
-                    instructions=player.session.config.get('instructions_path', ''))
-
-
-class Results(Page):
-    @staticmethod
-    def vars_for_template(player: Player):
-        from utils.prolific import completion_url
-        return dict(
-            show_prolific=player.session.config.get('prolific_enabled'),
-            completion_link=completion_url(),
-            instructions=player.session.config.get('instructions_path', ''),
-        )
-
-
-page_sequence = [Instructions, Consent, PracticeTask, MainTask, Results]
+page_sequence = [
+    Consent,
+    Demographics,
+    Instructions,
+    Practice1, Practice2, Practice3, Practice4, Practice5, Practice6, Practice7,
+    EndOfIntro,
+]
