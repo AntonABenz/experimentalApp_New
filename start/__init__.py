@@ -61,20 +61,8 @@ class Consent(Page):
         _capture_prolific(player)
 
 class Demographics(Page):
-    # Template should POST a field named 'survey_data' with JSON
-    def post(self):
-        raw = self.request.POST.get('survey_data')
-        try:
-            if raw:
-                json.loads(raw)  # validate
-                self.player.survey_data = raw
-            else:
-                logger.warning('No demographic data posted')
-        except JSONDecodeError:
-            logger.warning('Malformed demographic JSON')
-        except Exception as e:
-            logger.error(f"Error saving demographic data: {e}")
-        return super().post()
+    form_model = 'player'
+    form_fields = ['survey_data']
 
 class Instructions(Page):
     pass
