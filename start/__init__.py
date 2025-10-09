@@ -1,5 +1,5 @@
-# start/__init__.py  (oTree 5)
 from otree.api import *
+import otree.api as otree
 import logging, json
 from json import JSONDecodeError
 
@@ -38,7 +38,7 @@ def _capture_prolific(player: Player):
             setattr(player, field, v)
 
 # ----- Base Page that injects context expected by your templates -----
-class Page(otree.api.Page):
+class Page(otree.Page):
     instructions_path = "start/includes/instructions.html"  # if you include this partial
     instructions = False
     template_name = None  # subclasses can set one template for many pages
