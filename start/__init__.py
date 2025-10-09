@@ -1,5 +1,6 @@
 from otree.api import *
 import logging
+from utils.google_sheets import load_sheet_into_session
 
 logger = logging.getLogger('benzapp.start_pages')
 
@@ -44,8 +45,12 @@ class Subsession(BaseSubsession):
             session.vars['interpreter_title']
             session.vars['interpreter_choices']
         """
-        sv = self.session.vars
+        try:
+            load_sheet_into_session(self.session, self.session.config.get("filename"))
+        except Exception as e:
+            logger.warning(f"Failed to load Google Sheets: {e}")
 
+        sv = self.session.vars
         # --- 1) Interpreter title/choices for your Vue table header/rows ----
         if 'interpreter_title' not in sv:
             sv['interpreter_title'] = (
