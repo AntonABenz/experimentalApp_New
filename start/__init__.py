@@ -146,11 +146,12 @@ class Player(BasePlayer):
 
 class _BasePage(Page):
     instructions = False
-    instructions_path = "start/includes/instructions.html" 
+    instructions_path = "start/includes/instructions.html"
+
     def get_context_data(self, **context):
         r = super().get_context_data(**context)
+        r['instructions_path'] = self.instructions_path   # <— add this
         r['instructions_google_doc'] = self.session.config.get('instructions_path')
-        # progress percentage string ("37", etc.)
         try:
             max_idx = getattr(self.participant, '_max_page_index', 1) or 1
             r['progress'] = f"{int(self._index_in_pages / max_idx * 100):d}"
@@ -158,7 +159,6 @@ class _BasePage(Page):
             r['progress'] = "0"
         r['instructions'] = self.instructions
         return r
-
 
 class Consent(_BasePage):
     pass
@@ -233,39 +233,63 @@ class _PracticePage(_BasePage):
 class Practice1(_PracticePage):
     practice_id = 1
 
+    @staticmethod
+    def js_vars(player):
+        return _PracticePage._build_js_vars(player, 1)
+
 
 class Practice2(_PracticePage):
     practice_id = 2
+
+    @staticmethod
+    def js_vars(player):
+        return _PracticePage._build_js_vars(player, 2)
 
 
 class Practice3(_PracticePage):
     practice_id = 3
 
+    @staticmethod
+    def js_vars(player):
+        return _PracticePage._build_js_vars(player, 3)
+
 
 class Practice4(_PracticePage):
     practice_id = 4
 
-    @classmethod
-    def js_vars(cls, player: Player):
-        """
-        Keep your special-case split for right answers if needed.
-        (Your Practice1 Vue already does Boolean(parseInt(i)) — so returning the raw strings is fine.)
-        This override is shown here if you later need to transform shape for p4 only.
-        """
-        data = super().js_vars(player)
+    @staticmethod
+    def js_vars(player):
+        data = _PracticePage._build_js_vars(player, 4)
+        # convert "a;b;c" → ["a","b","c"] for each element in right_answer if needed
+        ra = data["settings"].get("right_answer") or []
+        data["settings"]["right_answer"] = [
+            [item.strip() for item in s.split(";")] if isinstance(s, str) and ";" in s else s
+        for s in ra]
         return data
 
 
 class Practice5(_PracticePage):
     practice_id = 5
 
+    @staticmethod
+    def js_vars(player):
+        return _PracticePage._build_js_vars(player, 5)
+
 
 class Practice6(_PracticePage):
     practice_id = 6
 
+    @staticmethod
+    def js_vars(player):
+        return _PracticePage._build_js_vars(player, 6)
+
 
 class Practice7(_PracticePage):
     practice_id = 7
+
+    @staticmethod
+    def js_vars(player):
+        return _PracticePage._build_js_vars(player, 7)
 
 
 class EndOfIntro(_BasePage):
