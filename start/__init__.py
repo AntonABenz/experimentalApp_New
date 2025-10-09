@@ -145,8 +145,8 @@ class Player(BasePlayer):
 # -------------- Common base page (adds progress + instructions flag) -------------
 
 class _BasePage(Page):
-    instructions = False  # subclasses can set to True for instruction/practice screens
-
+    instructions = False
+    instructions_path = "start/includes/instructions.html" 
     def get_context_data(self, **context):
         r = super().get_context_data(**context)
         r['instructions_google_doc'] = self.session.config.get('instructions_path')
