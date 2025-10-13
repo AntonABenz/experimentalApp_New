@@ -1,29 +1,155 @@
 from otree.api import *
-import csv
 import logging
+import os
+import re
 from pathlib import Path
 
 logger = logging.getLogger('benzapp.start_pages')
 
-# Try to import your existing helper for image URLs; fall back to a static path.
+# Optional helper for building public image URLs (keeps your old behavior if present)
 try:
     from img_desc.utils import get_url_for_image as _img_url_helper
-except Exception:  # pragma: no cover
+except Exception:
     _img_url_helper = None
+
+# Try to import pandas for Excel loading
+try:
+    import pandas as pd  # requires pandas + openpyxl in requirements.txt
+except Exception:
+    pd = None
 
 
 def _full_image_url(player, rel_path: str) -> str:
-    """
-    Return a URL that the browser can load.
-    Prefer your existing helper; otherwise fall back to /static/.
-    """
+    """Return a browser-loadable URL for an image path ('practice/foo.png')."""
     if _img_url_helper:
         try:
             return _img_url_helper(player, rel_path)
-        except Exception as e:  # keep the app running even if helper fails
+        except Exception as e:
             logger.warning(f'get_url_for_image failed for {rel_path}: {e}')
-    # fallback – adjust if your static path differs
+    # Fallback; adjust if your static layout differs
     return f'/static/start/{rel_path}'
+
+
+def _find_local_data_file(name: str | None) -> str | None:
+    """Find the Excel/CSV file inside the repo for Heroku dynos."""
+    if not name:
+        return None
+    name = str(name).strip().strip('"').strip("'")
+    here = Path(__file__).resolve().parent
+    candidates = [
+        Path(name),
+        here / name,
+        here / 'data' / name,
+        here.parent / 'data' / name,
+        here.parent / name,
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return None
+
+
+def _read_excel_all_sheets(path: str) -> dict[str, "pd.DataFrame"]:
+    """Read all sheets from an .xlsx into a dict of DataFrames."""
+    if not pd:
+        logger.error("pandas not available; cannot load Excel workbook.")
+        return {}
+    try:
+        return pd.read_excel(path, sheet_name=None, engine='openpyxl')
+    except Exception as e:
+        logger.error(f"Failed to read Excel workbook '{path}': {e}")
+        return {}
+
+
+def _extract_meta(frames: dict) -> tuple[str | None, list[str] | None]:
+    """
+    Look for a sheet with columns 'key'/'value' to get:
+      - interpreter_title
+      - interpreter_choices (semicolon-separated)
+    """
+    ititle, ichoices = None, None
+    for name, df in frames.items():
+        if not hasattr(df, 'columns'):
+            continue
+        cols_lc = [str(c).strip().lower() for c in df.columns.tolist()]
+        if 'key' in cols_lc and 'value' in cols_lc:
+            k_idx, v_idx = cols_lc.index('key'), cols_lc.index('value')
+            for _, row in df.iterrows():
+                key = str(row.iloc[k_idx]).strip().lower()
+                val = row.iloc[v_idx]
+                if key == 'interpreter_title' and pd.notna(val):
+                    ititle = str(val).strip()
+                elif key == 'interpreter_choices' and pd.notna(val):
+                    ichoices = [s.strip() for s in str(val).split(';') if s.strip()]
+    return ititle, ichoices
+
+
+def _normalize_practice_row(row: dict, idx: int) -> dict:
+    """
+    Accepts a dict-like row and normalizes keys:
+      filename/image, title, main_text, right_answer (semicolon '1;0;1' or list)
+    """
+    # flexible column aliases
+    def pick(*names):
+        for n in names:
+            for k, v in row.items():
+                if str(k).strip().lower() == n:
+                    return v
+        return None
+
+    image = pick('filename', 'image', 'img', 'picture', 'file')
+    title = pick('title', 'page_title', 'name') or f'Practice {idx}'
+    main_text = pick('main_text', 'text', 'html', 'instructions', 'body') or ''
+
+    ra = pick('right_answer', 'answers', 'solution', 'key')
+    if isinstance(ra, str):
+        right_answer = [s.strip() for s in ra.split(';') if s.strip() != '']
+    elif isinstance(ra, (list, tuple)):
+        right_answer = [str(x).strip() for x in ra]
+    else:
+        right_answer = []
+
+    return {
+        'image': str(image).strip() if image is not None else '',
+        'title': str(title).strip(),
+        'main_text': str(main_text),
+        'right_answer': right_answer,
+    }
+
+
+def _build_practice_from_workbook(frames: dict) -> dict:
+    """
+    Collect sheets named like 'Practice', 'Practice 1', 'practice_2', etc.
+    Take the first non-empty row of each sheet and normalize it.
+    """
+    if not frames:
+        return {}
+
+    practice = {}
+    # sort so 'Practice', 'Practice 1', 'Practice 2' come in numeric order
+    def _practice_key(name: str):
+        m = re.match(r'(?i)practice[_\s]*(\d+)?', name.strip())
+        if m:
+            num = m.group(1)
+            return (0, int(num)) if num and num.isdigit() else (0, 0)
+        return (1, name.lower())
+
+    for sheet_name in sorted(frames.keys(), key=_practice_key):
+        if not re.match(r'(?i)^practice', sheet_name.strip()):
+            continue
+        df = frames[sheet_name]
+        if df is None or df.empty:
+            continue
+        # Use the first non-all-NA row as the source
+        row = df.dropna(how='all')
+        if row.empty:
+            continue
+        first = row.iloc[0].to_dict()
+        idx_match = re.match(r'(?i)practice[_\s]*(\d+)?', sheet_name.strip())
+        idx = int(idx_match.group(1)) if (idx_match and idx_match.group(1) and idx_match.group(1).isdigit()) else len(practice) + 1
+        practice[f'practice_{idx}'] = _normalize_practice_row(first, idx)
+
+    return practice
 
 
 class C(BaseConstants):
@@ -35,147 +161,48 @@ class C(BaseConstants):
 class Subsession(BaseSubsession):
     def creating_session(self):
         """
-        Load practice screens from a CSV when session.config['filename'] ends with .csv.
-        Normalize data into:
-          session.vars['practice_settings'] = {'practice_1': {...}, ...}
-          session.vars['interpreter_title']
-          session.vars['interpreter_choices']
+        On session start, load disjunctionExpTest8EN_1.xlsx (multi-worksheet) and
+        prepare:
+          - session.vars['practice_settings'] = { practice_1: {...}, ... }
+          - session.vars['interpreter_title'], session.vars['interpreter_choices']
         """
-
         sv = self.session.vars
 
-        # If something already populated practice_settings, keep it.
+        # If already loaded (e.g., by another app), don't reload.
         if isinstance(sv.get('practice_settings'), dict) and sv['practice_settings']:
-            sv.setdefault('desc', 'Practice data was already set.')
             return
 
-        filename = (self.session.config.get('filename') or '').strip()
+        filename = self.session.config.get('filename')
+        path = None
+        if filename and str(filename).lower().endswith(('.xlsx', '.xls')):
+            path = _find_local_data_file(filename)
 
-        # --------- CSV path resolution ----------
-        rows = []
-        if filename.endswith('.csv'):
-            base_dir = Path(__file__).resolve().parent  # .../start
-            candidates = [
-                Path(filename),                          # absolute or relative to project root
-                base_dir / 'data' / filename,            # start/data/<file>
-                base_dir / filename,                     # start/<file>
-            ]
-            csv_path = next((p for p in candidates if p.exists()), None)
-            if not csv_path:
-                logger.warning(f'CSV file not found: {filename}. Tried: {", ".join(str(p) for p in candidates)}')
-            else:
-                try:
-                    with csv_path.open(newline='', encoding='utf-8-sig') as f:
-                        reader = csv.DictReader(f)
-                        rows = [dict(row) for row in reader]
-                    logger.info(f'Loaded {len(rows)} rows from CSV: {csv_path}')
-                except Exception as e:
-                    logger.error(f'Failed reading CSV {csv_path}: {e}')
+        frames = {}
+        if path:
+            frames = _read_excel_all_sheets(path)
+            if not frames:
+                logger.warning(f"Workbook found but empty or unreadable: {path}")
+        else:
+            logger.warning(
+                f"No Excel file found for 'filename'={filename!r}. "
+                f"Place disjunctionExpTest8EN_1.xlsx in the repo and set filename to that exact name."
+            )
 
-        # --------- Interpreter header/choices ----------
-        # Preferred: from config. Otherwise try to infer from CSV.
-        sv['interpreter_title'] = (
-            self.session.config.get('interpreter_title')
-            or sv.get('interpreter_title')
-            or 'Interpretation'
+        # meta (optional)
+        ititle, ichoices = _extract_meta(frames)
+        sv['interpreter_title'] = ititle or self.session.config.get('interpreter_title') or 'Interpretation'
+        sv['interpreter_choices'] = (
+            ichoices or self.session.config.get('interpreter_choices') or ['Choice 1', 'Choice 2', 'Choice 3']
         )
 
-        if 'interpreter_choices' in self.session.config:
-            sv['interpreter_choices'] = list(self.session.config['interpreter_choices'])
-        else:
-            inferred_choices = []
-            if rows:
-                # Option 1: a column named "interpreter_choices" like "A;B;C"
-                raw = (rows[0].get('interpreter_choices') or rows[0].get('choices') or '').strip()
-                if raw:
-                    inferred_choices = [c.strip() for c in raw.split(';') if c.strip()]
-
-                # Option 2: columns like choice_1, choice_2, ...
-                if not inferred_choices:
-                    prefix_names = [k for k in rows[0].keys() if k.lower().startswith('choice_')]
-                    if prefix_names:
-                        # keep stable order by sorting numerically if possible
-                        def _choice_key(k):
-                            try:
-                                return int(k.split('_', 1)[1])
-                            except Exception:
-                                return 1_000_000
-                        for k in sorted(prefix_names, key=_choice_key):
-                            val = (rows[0].get(k) or '').strip()
-                            if val:
-                                inferred_choices.append(val)
-
-            sv['interpreter_choices'] = inferred_choices or ['Choice 1', 'Choice 2', 'Choice 3']
-
-        # --------- Build practice_settings from CSV (robust to schema) ----------
-        practice_settings = {}
-        if rows:
-            # If a "practice_id" column exists, use it. Otherwise, enumerate.
-            def _practice_key(r, idx):
-                pid = (r.get('practice_id') or r.get('practice') or '').strip()
-                if pid.isdigit():
-                    return int(pid)
-                return idx  # fallback to row order
-
-            # Required columns we look for, with aliases
-            def _get(r, *names):
-                for n in names:
-                    if n in r and r[n] is not None:
-                        val = str(r[n]).strip()
-                        if val != '':
-                            return val
-                return ''
-
-            indexed = []
-            for i, r in enumerate(rows, start=1):
-                # Optional filtering if your CSV mixes practice + other sections:
-                section = (r.get('section') or r.get('type') or '').strip().lower()
-                if section and section not in ('practice', 'practise', 'practice1', 'intro'):  # accept common labels
-                    # Skip non-practice rows; remove this if the CSV contains *only* practice
-                    continue
-
-                idx = _practice_key(r, i)
-                settings = {
-                    'image': _get(r, 'filename', 'image', 'img'),
-                    'title': _get(r, 'title', 'screen_title') or f'Practice {idx}',
-                    'main_text': _get(r, 'main_text', 'text', 'html', 'content'),
-                }
-
-                # right_answer may be "1;0;1" or list-like columns ra_1, ra_2...
-                ra = _get(r, 'right_answer', 'answers', 'ra')
-                if ra:
-                    settings['right_answer'] = [s.strip() for s in ra.split(';') if s.strip() != '']
-                else:
-                    # Try ra_1, ra_2, ...
-                    ra_keys = [k for k in r.keys() if k.lower().startswith('ra_')]
-                    vals = []
-                    for k in sorted(ra_keys):
-                        val = (r.get(k) or '').strip()
-                        if val != '':
-                            vals.append(val)
-                    settings['right_answer'] = vals
-
-                practice_settings[f'practice_{idx}'] = settings
-
-            # Compact to practice_1..N sequence order
-            if practice_settings:
-                keys_sorted = sorted(
-                    practice_settings.keys(),
-                    key=lambda k: int(k.split('_')[1]) if k.split('_')[1].isdigit() else 10_000
-                )
-                practice_settings = {f'practice_{i+1}': practice_settings[k] for i, k in enumerate(keys_sorted)}
-
+        # practice settings from sheets
+        practice_settings = _build_practice_from_workbook(frames)
+        if not practice_settings:
+            logger.warning("No practice sheets detected. Expect sheets named 'Practice', 'Practice 1', ...")
         sv['practice_settings'] = practice_settings
 
-        if practice_settings:
-            sv['desc'] = f'Practice data loaded from CSV: {filename or "unknown"}.'
-        else:
-            sv['desc'] = 'No practice rows found in CSV.'
-            logger.warning('No practice content found: session.vars["practice_settings"] is empty.')
-
-        # (Optional) helpful note for your debug view
-        sv.setdefault('sheet_meta', {})
-        sv['sheet_meta']['source'] = 'csv'
+        # Small breadcrumb for your /SessionStartLinks debug view
+        sv['desc'] = 'Practice data prepared from Excel.' if practice_settings else 'Excel loaded but no Practice sheets found.'
 
 
 class Group(BaseGroup):
@@ -183,11 +210,11 @@ class Group(BaseGroup):
 
 
 class Player(BasePlayer):
-    # Keep demographics as a single JSON blob (hidden input in template)
+    # Demographics JSON blob (from your hidden input)
     survey_data = models.LongStringField(blank=True)
 
 
-# -------------- Common base page (adds progress + instructions flag) -------------
+# ------------------- Common base page (progress + instructions flag) -------------------
 
 class _BasePage(Page):
     instructions = False
@@ -211,11 +238,8 @@ class Consent(_BasePage):
 
 
 class Demographics(_BasePage):
-    """
-    Your template should collect answers and put JSON into:
-        <input type="hidden" name="survey_data" id="survey_data">
-    We rely on vanilla oTree form handling (no custom post()).
-    """
+    # Template should write JSON into:
+    #   <input type="hidden" name="survey_data" id="survey_data">
     form_model = 'player'
     form_fields = ['survey_data']
 
@@ -224,49 +248,35 @@ class Instructions(_BasePage):
     instructions = True
 
 
-# ------------------------------ Practice pages -----------------------------------
+# -------------------------------- Practice pages --------------------------------------
 
 class _PracticePage(_BasePage):
     instructions = True
-    practice_id = None  # set in concrete subclasses
+    practice_id = None  # set in subclasses
 
     @classmethod
     def _get_settings(cls, player: Player) -> dict:
-        """Return normalized settings for this practice page."""
         s = (player.session.vars.get('practice_settings', {})
              .get(f'practice_{cls.practice_id}', {})).copy()
-
         img = s.get('image')
-        if img:
-            # Your template expects js_vars.settings.full_image_path
-            s['full_image_path'] = _full_image_url(player, f'practice/{img}')
-        else:
-            s['full_image_path'] = ''
-
-        # Ensure presence of keys your Vue code reads
+        s['full_image_path'] = _full_image_url(player, f'practice/{img}') if img else ''
         s.setdefault('title', f'Practice {cls.practice_id}')
         s.setdefault('main_text', '')
         s.setdefault('right_answer', [])
-
         return s
 
     @classmethod
     def vars_for_template(cls, player: Player):
-        """Expose settings to the Django template."""
         return dict(settings=cls._get_settings(player))
 
     @classmethod
     def js_vars(cls, player: Player):
-        """Expose the same settings for your Vue component."""
         return dict(settings=cls._get_settings(player))
 
     @classmethod
     def is_displayed(cls, player: Player):
-        """Optional per-page gating via session.vars['user_settings']['practice_pages']."""
         pps = player.session.vars.get('user_settings', {}).get('practice_pages', {})
-        if pps:
-            return pps.get(cls.__name__, True)
-        return True
+        return pps.get(cls.__name__, True) if pps else True
 
 
 class Practice1(_PracticePage):
