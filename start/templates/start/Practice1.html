@@ -1,26 +1,20 @@
 {% extends "global/Page.html" %}
 {% load otree static %}
 
-{% block title %}{% endblock %}
-
 {% block content %}
 
 <script>
-  // Provided by creating_session (from the XLSX meta or session config)
-  window.interpreter_title  = {{ session.vars.interpreter_title  | json }};
+  window.interpreter_title   = {{ session.vars.interpreter_title | json }};
   window.interpreter_choices = {{ session.vars.interpreter_choices | json }};
 </script>
 
-{% include view.instructions_path %}
-
 <div id="app">
   {% verbatim %}
-  <h1 class="mb-3">{{ title }}</h1>
-
-  <div v-if="main_text" v-html="main_text" class="mb-3"></div>
+  <h1>{{ title }}</h1>
+  <div v-html="main_text"></div>
 
   <div class="text-center my-3" v-if="image_path">
-    <img :src="image_path" alt="" :width="500">
+    <img :src="image_path" :alt="title" :width="500">
   </div>
 
   <form id="form" @submit.prevent="checkChoices">
@@ -33,18 +27,15 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="(sweet, index) in sweets" :key="index">
-          <td>{{ sweet.name }}</td>
-          <td><input type="radio" :name="'choice_'+index" v-model="sweet.choice" :value="true"  @change="resetError"></td>
-          <td><input type="radio" :name="'choice_'+index" v-model="sweet.choice" :value="false" @change="resetError"></td>
+        <tr v-for="(opt, idx) in sweets" :key="idx">
+          <td>{{ opt.name }}</td>
+          <td><input type="radio" v-model="opt.choice" :value="true"  @change="error=false"></td>
+          <td><input type="radio" v-model="opt.choice" :value="false" @change="error=false"></td>
         </tr>
       </tbody>
     </table>
 
-    <button :disabled="!allChoicesMade" type="button" @click="checkChoices" class="btn btn-primary">
-      Next
-    </button>
-
+    <button :disabled="!allChoicesMade" type="button" class="btn btn-primary" @click="checkChoices">Next</button>
     <p v-if="error" class="alert alert-danger my-3">Error: please, check your answers!</p>
   </form>
   {% endverbatim %}
@@ -52,39 +43,36 @@
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
-  const app = Vue.createApp({
-    data() {
-      const sweets = (window.interpreter_choices || []).map((name) => ({ name, choice: null }));
-      const ra = (js_vars.settings.right_answer || []).map(i => Boolean(parseInt(i, 10)));
-
-      return {
-        image_path: js_vars.settings.full_image_path || '',
-        title: js_vars.settings.title || 'Practice',
-        main_text: js_vars.settings.main_text || '',
-        interpreter_title: window.interpreter_title || 'Interpretation',
-        sweets,
-        correctAnswers: ra,
-        error: false,
-      }
-    },
-    methods: {
-      resetError() { this.error = false; },
-      checkChoices() {
-        if (this.correctAnswers.length !== this.sweets.length) {
-          this.error = true; return;
-        }
-        const ok = this.sweets.every((u, i) => u.choice === this.correctAnswers[i]);
-        this.error = !ok;
-        if (ok) {
-          document.getElementById('form').submit();
-        }
-      }
-    },
-    computed: {
-      allChoicesMade() { return this.sweets.every(s => s.choice !== null); }
+const app = Vue.createApp({
+  data() {
+    const answers = (js_vars.settings.right_answer || []);
+    const sweets  = (window.interpreter_choices || []).map(n => ({ name: n, choice: null }));
+    return {
+      title: js_vars.settings.title,
+      main_text: js_vars.settings.main_text,
+      image_path: js_vars.settings.full_image_path,
+      interpreter_title: window.interpreter_title || 'Interpretation',
+      sweets,
+      correctAnswers: answers.map(a => Boolean(parseInt(a))),
+      error: false,
     }
-  });
-  app.mount('#app');
+  },
+  computed: {
+    allChoicesMade() {
+      return this.sweets.every(s => s.choice !== null);
+    }
+  },
+  methods: {
+    checkChoices() {
+      if (this.correctAnswers.length !== this.sweets.length) {
+        this.error = true; return;
+      }
+      const ok = this.sweets.every((u, i) => u.choice === this.correctAnswers[i]);
+      this.error = !ok;
+      if (ok) document.getElementById('form').submit();
+    }
+  }
+});
+app.mount('#app');
 </script>
-
 {% endblock %}
