@@ -47,10 +47,15 @@ const app = Vue.createApp({
   data() {
     const answers = (js_vars.settings.right_answer || []);
     const sweets  = (window.interpreter_choices || []).map(n => ({ name: n, choice: null }));
+
+    // ADD: your placeholder URL
+    const placeholder = 'https://placehold.co/600x400?text=Practice+Image';
+
     return {
       title: js_vars.settings.title,
       main_text: js_vars.settings.main_text,
-      image_path: js_vars.settings.full_image_path,
+      // CHANGE: use placeholder if full_image_path is empty
+      image_path: (js_vars.settings.full_image_path && String(js_vars.settings.full_image_path).trim()) || placeholder,
       interpreter_title: window.interpreter_title || 'Interpretation',
       sweets,
       correctAnswers: answers.map(a => Boolean(parseInt(a))),
@@ -75,4 +80,6 @@ const app = Vue.createApp({
 });
 app.mount('#app');
 </script>
+
 {% endblock %}
+
