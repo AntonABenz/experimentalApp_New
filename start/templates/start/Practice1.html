@@ -50,7 +50,7 @@ const app = Vue.createApp({
     const answers = (s.right_answer || []);
     const sweets  = (window.interpreter_choices || []).map(n => ({ name: n, choice: null }));
 
-    // ✅ Inline SVG placeholder (no external host)
+    // Inline SVG placeholder (no network or CSP issues)
     const placeholder =
       'data:image/svg+xml;utf8,' +
       encodeURIComponent(
@@ -63,18 +63,13 @@ const app = Vue.createApp({
          </svg>`
       );
 
-    const image_path = (s.full_image_path && String(s.full_image_path).trim()) || placeholder;
-
-    // 👇 quick visibility check in console
-    console.log('page_settings:', s, 'image_path:', image_path);
-
     return {
       title: s.title || 'Practice 1',
       main_text: s.main_text || '',
-      image_path,
+      image_path: (s.full_image_path && String(s.full_image_path).trim()) || placeholder,
       interpreter_title: window.interpreter_title || 'Interpretation',
       sweets,
-      correctAnswers: answers.map(a => Boolean(parseInt(a))),
+      correctAnswers: answers.map(a => Boolean(parseInt(a))), // OK for now
       error: false,
     }
   },
@@ -93,8 +88,8 @@ const app = Vue.createApp({
 app.mount('#app');
 </script>
 
-
 {% endblock %}
+
 
 
 
