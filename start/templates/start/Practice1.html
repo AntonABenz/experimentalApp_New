@@ -50,23 +50,36 @@ const app = Vue.createApp({
     const answers = (s.right_answer || []);
     const sweets  = (window.interpreter_choices || []).map(n => ({ name: n, choice: null }));
 
-    // placeholder (no files needed)
-    const placeholder = 'https://placehold.co/600x400?text=Practice+Image';
+    // ✅ Inline SVG placeholder (no external host)
+    const placeholder =
+      'data:image/svg+xml;utf8,' +
+      encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400">
+           <rect width="100%" height="100%" fill="#eee"/>
+           <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
+                 font-family="Arial, Helvetica, sans-serif" font-size="28" fill="#333">
+             Practice Image
+           </text>
+         </svg>`
+      );
+
+    const image_path = (s.full_image_path && String(s.full_image_path).trim()) || placeholder;
+
+    // 👇 quick visibility check in console
+    console.log('page_settings:', s, 'image_path:', image_path);
 
     return {
       title: s.title || 'Practice 1',
       main_text: s.main_text || '',
-      image_path: (s.full_image_path && String(s.full_image_path).trim()) || placeholder,
+      image_path,
       interpreter_title: window.interpreter_title || 'Interpretation',
       sweets,
-      correctAnswers: answers.map(a => Boolean(parseInt(a))), // we can harden later
+      correctAnswers: answers.map(a => Boolean(parseInt(a))),
       error: false,
     }
   },
   computed: {
-    allChoicesMade() {
-      return this.sweets.every(s => s.choice !== null);
-    }
+    allChoicesMade() { return this.sweets.every(s => s.choice !== null); }
   },
   methods: {
     checkChoices() {
@@ -80,7 +93,9 @@ const app = Vue.createApp({
 app.mount('#app');
 </script>
 
+
 {% endblock %}
+
 
 
 
