@@ -208,7 +208,6 @@ class Demographics(_BasePage):
 class Instructions(_BasePage):
     instructions = True
 
-
 class _PracticePage(_BasePage):
     instructions = True
     practice_id = None  # override in subclasses
@@ -230,8 +229,8 @@ class _PracticePage(_BasePage):
         s.setdefault('right_answer', [])
         return s
 
-    def vars_for_template(self):  # <-- REMOVE @classmethod, change cls to self
-        return dict(settings=self._get_settings(self.player))
+    def vars_for_template(self):
+        return dict(settings=type(self)._get_settings(self.player))
 
     @classmethod
     def js_vars(cls, player: Player):
