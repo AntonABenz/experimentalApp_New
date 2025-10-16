@@ -212,17 +212,9 @@ class _PracticePage(_BasePage):
         if img:
             s['full_image_path'] = _full_image_url(player, f'practice/{img}')
         else:
-            # Provide inline SVG placeholder when no image
-            placeholder_svg = (
-                '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400">'
-                '<rect width="100%" height="100%" fill="#eee"/>'
-                '<text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"'
-                ' font-family="Arial, Helvetica, sans-serif" font-size="28" fill="#333">'
-                f'Practice {cls.practice_id} Image'
-                '</text>'
-                '</svg>'
-            )
-            s['full_image_path'] = 'data:image/svg+xml;utf8,' + placeholder_svg.replace(' ', '%20').replace('<', '%3C').replace('>', '%3E').replace('"', '%22')
+            # Provide a simple placeholder - let the frontend handle it
+            # Or use an external placeholder service
+            s['full_image_path'] = f'https://via.placeholder.com/600x400/eeeeee/333333?text=Practice+{cls.practice_id}'
         # ensure keys exist
         s.setdefault('title', f'Practice {cls.practice_id}')
         s.setdefault('main_text', '')
