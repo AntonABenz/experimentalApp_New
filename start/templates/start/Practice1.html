@@ -1,23 +1,21 @@
 {% extends "global/Page.html" %}
 {% load otree static %}
-
 {% block content %}
-
 <script>
   window.interpreter_title   = {{ session.vars.interpreter_title | json }};
   window.interpreter_choices = {{ session.vars.interpreter_choices | json }};
   window.page_settings       = {{ settings | json }}; 
 </script>
-
 <div id="app">
   {% verbatim %}
   <h1>{{ title }}</h1>
   <div v-html="main_text"></div>
-
-  <div class="text-center my-3" v-if="image_path">
-    <img :src="image_path" :alt="title" :width="500">
+  
+  <!-- Always show image div, remove v-if -->
+  <div class="text-center my-3">
+    <img :src="image_path" :alt="title" style="max-width: 600px; width: 100%; height: auto;" @error="onImageError">
   </div>
-
+  
   <form id="form" @submit.prevent="checkChoices">
     <table class="table">
       <thead>
@@ -35,48 +33,42 @@
         </tr>
       </tbody>
     </table>
-
     <button :disabled="!allChoicesMade" type="button" class="btn btn-primary" @click="checkChoices">Next</button>
     <p v-if="error" class="alert alert-danger my-3">Error: please, check your answers!</p>
   </form>
   {% endverbatim %}
 </div>
-
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
 const app = Vue.createApp({
   data() {
     const s = window.page_settings || {};
+    console.log('=== DEBUG: page_settings =', s);
+    console.log('=== DEBUG: full_image_path =', s.full_image_path);
+    
     const answers = (s.right_answer || []);
     const sweets  = (window.interpreter_choices || []).map(n => ({ name: n, choice: null }));
-
-    // Inline SVG placeholder (no network or CSP issues)
-    const placeholder =
-      'data:image/svg+xml;utf8,' +
-      encodeURIComponent(
-        `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400">
-           <rect width="100%" height="100%" fill="#eee"/>
-           <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
-                 font-family="Arial, Helvetica, sans-serif" font-size="28" fill="#333">
-             Practice Image
-           </text>
-         </svg>`
-      );
-
+    
     return {
       title: s.title || 'Practice 1',
       main_text: s.main_text || '',
-      image_path: (s.full_image_path && String(s.full_image_path).trim()) || placeholder,
+      image_path: s.full_image_path || 'https://via.placeholder.com/600x400/eeeeee/333333?text=No+Image',
       interpreter_title: window.interpreter_title || 'Interpretation',
       sweets,
-      correctAnswers: answers.map(a => Boolean(parseInt(a))), // OK for now
+      correctAnswers: answers.map(a => Boolean(parseInt(a))),
       error: false,
     }
+  },
+  mounted() {
+    console.log('=== DEBUG: Vue mounted, image_path =', this.image_path);
   },
   computed: {
     allChoicesMade() { return this.sweets.every(s => s.choice !== null); }
   },
   methods: {
+    onImageError(e) {
+      console.error('=== DEBUG: Image failed to load:', e.target.src);
+    },
     checkChoices() {
       if (this.correctAnswers.length !== this.sweets.length) { this.error = true; return; }
       const ok = this.sweets.every((u, i) => u.choice === this.correctAnswers[i]);
@@ -87,10 +79,4 @@ const app = Vue.createApp({
 });
 app.mount('#app');
 </script>
-
 {% endblock %}
-
-
-
-
-
