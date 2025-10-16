@@ -222,8 +222,7 @@ class _PracticePage(_BasePage):
         if img:
             s['full_image_path'] = _full_image_url(player, f'practice/{img}')
         else:
-            # Provide a simple placeholder - let the frontend handle it
-            # Or use an external placeholder service
+            # Simple, reliable placeholder
             s['full_image_path'] = f'https://via.placeholder.com/600x400/eeeeee/333333?text=Practice+{cls.practice_id}'
         # ensure keys exist
         s.setdefault('title', f'Practice {cls.practice_id}')
@@ -231,9 +230,8 @@ class _PracticePage(_BasePage):
         s.setdefault('right_answer', [])
         return s
 
-    @classmethod
-    def vars_for_template(cls, player: Player):
-        return dict(settings=cls._get_settings(player))
+    def vars_for_template(self):  # <-- REMOVE @classmethod, change cls to self
+        return dict(settings=self._get_settings(self.player))
 
     @classmethod
     def js_vars(cls, player: Player):
