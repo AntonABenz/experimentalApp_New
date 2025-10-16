@@ -229,8 +229,9 @@ class _PracticePage(_BasePage):
         s.setdefault('right_answer', [])
         return s
 
-    def vars_for_template(self):
-        return dict(settings=type(self)._get_settings(self.player))
+    @classmethod
+    def vars_for_template(cls, player: Player):
+        return dict(settings=cls._get_settings(player))
 
     @classmethod
     def js_vars(cls, player: Player):
@@ -240,7 +241,6 @@ class _PracticePage(_BasePage):
     def is_displayed(cls, player: Player):
         pps = player.session.vars.get('user_settings', {}).get('practice_pages', {})
         return pps.get(cls.__name__, True) if pps else True
-
 
 class Practice1(_PracticePage): practice_id = 1
 class Practice2(_PracticePage): practice_id = 2
