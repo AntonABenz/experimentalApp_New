@@ -1,19 +1,25 @@
 {% extends "global/Page.html" %}
 {% load otree static %}
 {% block content %}
+
+<!-- Debug: check if settings exists -->
 <script>
-  window.interpreter_title   = {{ session.vars.interpreter_title | json }};
-  window.interpreter_choices = {{ session.vars.interpreter_choices | json }};
-  window.page_settings       = {{ settings | json }}; 
+  console.log('Settings from Django:', {{ settings|json }});
 </script>
+
+<script>
+  window.interpreter_title   = {{ session.vars.interpreter_title|json }};
+  window.interpreter_choices = {{ session.vars.interpreter_choices|json }};
+  window.page_settings       = {{ settings|json }}; 
+</script>
+
 <div id="app">
   {% verbatim %}
   <h1>{{ title }}</h1>
   <div v-html="main_text"></div>
   
-  <!-- Always show image div, remove v-if -->
   <div class="text-center my-3">
-    <img :src="image_path" :alt="title" style="max-width: 600px; width: 100%; height: auto;" @error="onImageError">
+    <img :src="image_path" :alt="title" style="max-width: 600px; width: 100%; height: auto;">
   </div>
   
   <form id="form" @submit.prevent="checkChoices">
@@ -38,14 +44,15 @@
   </form>
   {% endverbatim %}
 </div>
+
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
+console.log('About to create Vue app');
+console.log('window.page_settings =', window.page_settings);
+
 const app = Vue.createApp({
   data() {
     const s = window.page_settings || {};
-    console.log('=== DEBUG: page_settings =', s);
-    console.log('=== DEBUG: full_image_path =', s.full_image_path);
-    
     const answers = (s.right_answer || []);
     const sweets  = (window.interpreter_choices || []).map(n => ({ name: n, choice: null }));
     
@@ -60,15 +67,12 @@ const app = Vue.createApp({
     }
   },
   mounted() {
-    console.log('=== DEBUG: Vue mounted, image_path =', this.image_path);
+    console.log('Vue mounted! image_path =', this.image_path);
   },
   computed: {
     allChoicesMade() { return this.sweets.every(s => s.choice !== null); }
   },
   methods: {
-    onImageError(e) {
-      console.error('=== DEBUG: Image failed to load:', e.target.src);
-    },
     checkChoices() {
       if (this.correctAnswers.length !== this.sweets.length) { this.error = true; return; }
       const ok = this.sweets.every((u, i) => u.choice === this.correctAnswers[i]);
@@ -77,6 +81,8 @@ const app = Vue.createApp({
     }
   }
 });
+
 app.mount('#app');
+console.log('Vue app mounted');
 </script>
 {% endblock %}
