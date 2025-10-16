@@ -133,12 +133,16 @@ class C(BaseConstants):
 class Subsession(BaseSubsession):
     def creating_session(self):
         sv = self.session.vars
-
-        # 1) Try Excel (explicit) — set this in Session -> Configure settings:
-        #    practice_xlsx: "disjunctionExpTest8EN_1.xlsx"
+    
+        # 1) Try Excel (explicit)
         xlsx_name = self.session.config.get('practice_xlsx')
+        logger.info(f"=== DIAGNOSTIC: practice_xlsx config value = {xlsx_name}")
+        
         if xlsx_name:
             ps, meta = _load_practice_from_xlsx(xlsx_name)
+            logger.info(f"=== DIAGNOSTIC: Loaded practice_settings keys = {list(ps.keys())}")
+            logger.info(f"=== DIAGNOSTIC: practice_1 data = {ps.get('practice_1', 'NOT FOUND')}")
+            
             if ps:
                 sv['practice_settings'] = ps
                 # interpreter meta
@@ -146,18 +150,24 @@ class Subsession(BaseSubsession):
                 sv['interpreter_choices'] = [
                     s.strip() for s in meta.get('interpreter_choices', '').split(';') if s.strip()
                 ]
-
-        # 2) Fallback: if nothing loaded, keep empty structures (your page shows blank)
+                logger.info(f"=== DIAGNOSTIC: Successfully set practice_settings in session.vars")
+            else:
+                logger.warning("=== DIAGNOSTIC: ps is empty, Excel found but no practice sheets loaded")
+        else:
+            logger.warning("=== DIAGNOSTIC: practice_xlsx not found in session config")
+    
+        # 2) Fallback: if nothing loaded, keep empty structures
         sv.setdefault('practice_settings', {})
         sv.setdefault('interpreter_title', 'Interpretation')
         sv.setdefault('interpreter_choices', ['Choice 1', 'Choice 2'])
-
+    
         # Tiny flag for debug panel
         sv.setdefault(
             'desc',
             'Practice data prepared.' if sv['practice_settings'] else 'No practice_* sheets found in Excel.',
         )
-
+        
+        logger.info(f"=== DIAGNOSTIC: Final session.vars practice_settings = {sv.get('practice_settings', {})}")
 
 class Group(BaseGroup):
     pass
