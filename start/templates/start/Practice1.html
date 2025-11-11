@@ -1,5 +1,6 @@
-{% extends "global/Page.html" %}
+{% extends "otree/Page.html" %}
 {% load otree static %}
+ 
 {% block content %}
 
 <!-- Debug: check if settings exists -->
@@ -14,8 +15,8 @@
 </script>
 
 <div id="app">
-  {% verbatim %}
-  <h1>{{ title }}</h1>
+  
+  <h1>[[ title ]]</h1>
   <div v-html="main_text"></div>
   
   <div class="text-center my-3">
@@ -26,14 +27,14 @@
     <table class="table">
       <thead>
         <tr>
-          <th scope="col">{{ interpreter_title }}</th>
+          <th scope="col">[[ interpreter_title ]]</th>
           <th scope="col">Yes</th>
           <th scope="col">No</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="(opt, idx) in sweets" :key="idx">
-          <td>{{ opt.name }}</td>
+          <td>[[ opt.name ]]</td>
           <td><input type="radio" v-model="opt.choice" :value="true"  @change="error=false"></td>
           <td><input type="radio" v-model="opt.choice" :value="false" @change="error=false"></td>
         </tr>
@@ -42,7 +43,7 @@
     <button :disabled="!allChoicesMade" type="button" class="btn btn-primary" @click="checkChoices">Next</button>
     <p v-if="error" class="alert alert-danger my-3">Error: please, check your answers!</p>
   </form>
-  {% endverbatim %}
+  
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
@@ -59,7 +60,7 @@ const app = Vue.createApp({
     return {
       title: s.title || 'Practice 1',
       main_text: s.main_text || '',
-      image_path: s.full_image_path || 'https://via.placeholder.com/600x400/eeeeee/333333?text=No+Image',
+      image_path: s.full_image_path || 'https://picsum.photos/200/300?text=No+Image',
       interpreter_title: window.interpreter_title || 'Interpretation',
       sweets,
       correctAnswers: answers.map(a => Boolean(parseInt(a))),
@@ -82,6 +83,7 @@ const app = Vue.createApp({
   }
 });
 
+app.config.compilerOptions.delimiters = ['[[', ']]'];
 app.mount('#app');
 console.log('Vue app mounted');
 </script>
