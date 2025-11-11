@@ -130,10 +130,10 @@ class C(BaseConstants):
     NUM_ROUNDS = 1
 
 
-class Subsession(BaseSubsession):
-    def creating_session(self):
+def creating_session(subsession):
+        self = subsession
         sv = self.session.vars
-    
+        print('sanity check: creating_session in start app')
         # 1) Try Excel (explicit)
         xlsx_name = self.session.config.get('practice_xlsx')
         logger.info(f"=== DIAGNOSTIC: practice_xlsx config value = {xlsx_name}")
@@ -168,6 +168,8 @@ class Subsession(BaseSubsession):
         )
         
         logger.info(f"=== DIAGNOSTIC: Final session.vars practice_settings = {sv.get('practice_settings', {})}")
+class Subsession(BaseSubsession):
+    pass
 
 class Group(BaseGroup):
     pass
@@ -209,6 +211,7 @@ class Instructions(_BasePage):
     instructions = True
 
 class _PracticePage(_BasePage):
+    template_name = 'start/Practice1.html'  # overridden dynamically
     instructions = True
     practice_id = None  # override in subclasses
 
@@ -222,7 +225,7 @@ class _PracticePage(_BasePage):
             s['full_image_path'] = _full_image_url(player, f'practice/{img}')
         else:
             # Simple, reliable placeholder
-            s['full_image_path'] = f'https://via.placeholder.com/600x400/eeeeee/333333?text=Practice+{cls.practice_id}'
+            s['full_image_path'] = f'https://picsum.photos/200/300?text=Practice+{cls.practice_id}'
         # ensure keys exist
         s.setdefault('title', f'Practice {cls.practice_id}')
         s.setdefault('main_text', '')
