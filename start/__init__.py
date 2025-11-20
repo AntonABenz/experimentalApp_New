@@ -1,21 +1,28 @@
+# start/__init__.py
 from otree.api import *
 import logging
 import re
 from pathlib import Path
+
 import pandas as pd  
 
 logger = logging.getLogger("benzapp.start_pages")
 
-# Optional helper from your repo (used to turn /static rel paths into URLs)
+# Optional helper from img_desc app; falls back to /static if not present
 try:
     from img_desc.utils import get_url_for_image as _img_url_helper
 except Exception:
     _img_url_helper = None
 
 
-# ------------------------------ helpers --------------------------------------
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _full_image_url(player, rel_path: str) -> str:
-    """Resolve a relative static path to a URL, with optional repo helper."""
+    """
+    Resolve a relative static path to a URL, using img_desc helper if available.
+    """
     if _img_url_helper:
         try:
             return _img_url_helper(player, rel_path)
@@ -30,7 +37,10 @@ def _num_from_name(name: str) -> int:
 
 
 def _kv_sheet_to_dict(df) -> dict:
-    """Expect 2 columns named 'name' and 'value' (case-insensitive)."""
+    """
+    Expect 2 columns named 'name' and 'value' (case-insensitive).
+    Returns a dict {name: value}.
+    """
     df = df.rename(columns={c: str(c).strip().lower() for c in df.columns})
     if not {'name', 'value'}.issubset(df.columns):
         return {}
@@ -47,15 +57,21 @@ def _kv_sheet_to_dict(df) -> dict:
 
 def _load_practice_from_xlsx(xlsx_filename: str):
     """
-    Loads:
-      - Settings/meta tab (key/value): may contain s3_base/s3path, interpreter_* etc.
-      - Practice_N tabs (key/value rows): title, main_text, image, image_url, right_answer_1..K
+    Load practice_* tabs and optional meta/settings tab.
+
+    Practice_N sheets: key/value rows with keys like
+        title, main_text, image, image_url,
+        right_answer_1, right_answer_2, ...
+
+    Meta/Settings sheet: key/value rows with keys like
+        interpreter_title, interpreter_choices, s3_base/s3path, etc.
     """
+    # Look in repo root, /data, or /start/data
     root = Path(__file__).resolve().parents[1]
     candidates = [
-        root / xlsx_filename,                  # exact string as passed
-        root / 'data' / xlsx_filename,         # repo/data/<file>
-        root / 'start' / 'data' / xlsx_filename,  # start/data/<file>
+        root / xlsx_filename,
+        root / 'data' / xlsx_filename,
+        root / 'start' / 'data' / xlsx_filename,
     ]
     xlsx_path = next((p for p in candidates if p.exists()), None)
     if not xlsx_path:
@@ -64,32 +80,33 @@ def _load_practice_from_xlsx(xlsx_filename: str):
 
     book = pd.read_excel(xlsx_path, sheet_name=None, dtype=str, engine='openpyxl')
 
-    # ---- meta/settings (optional) ----
+    # --- optional meta/settings sheet ---
     meta = {}
     for tab in ('meta', 'settings'):
         if tab in book:
             meta.update(_kv_sheet_to_dict(book[tab]))
 
-    # ---- practice_* tabs ----
+    # --- practice_* sheets ---
     practice_settings = {}
     for sheet_name, df in book.items():
-        sname = str(sheet_name).strip().lower()
-        if not sname.startswith('practice_'):
+        s = str(sheet_name).strip().lower()
+        if not s.startswith('practice_'):
             continue
         kv = _kv_sheet_to_dict(df)
         if not kv:
             continue
 
-        title = kv.get('title', f'Practice {_num_from_name(sname)}')
+        title = kv.get('title', f'Practice {_num_from_name(s)}')
         main_text = kv.get('main_text', '')
 
-        img = kv.get('image', '').strip()
-        if img and ('.' not in img):  # allow 'c' -> 'c.png'
+        img = (kv.get('image') or '').strip()
+        if img and '.' not in img:
             img = f'{img}.png'
 
-        image_url = kv.get('image_url', '').strip()  # full URL (optional)
+        # NEW: optional full URL column
+        image_url = (kv.get('image_url') or '').strip()
 
-        # collect right_answer_1..K preserving numeric order
+        # collect ordered right_answer_1 .. right_answer_k
         ra_pairs = []
         for k, v in kv.items():
             m = re.fullmatch(r'right_answer_(\d+)', k)
@@ -99,7 +116,7 @@ def _load_practice_from_xlsx(xlsx_filename: str):
         ra_pairs.sort(key=lambda t: t[0])
         right_answer = [p[1] for p in ra_pairs]
 
-        practice_settings[sname] = {
+        practice_settings[s] = {
             'title': title,
             'main_text': main_text,
             'image': img,
@@ -107,7 +124,7 @@ def _load_practice_from_xlsx(xlsx_filename: str):
             'right_answer': right_answer,
         }
 
-    # sensible defaults for interpreter fields if not in meta
+    # defaults if meta missing
     if 'interpreter_title' not in meta:
         meta['interpreter_title'] = 'Interpretation'
     if 'interpreter_choices' not in meta:
@@ -119,7 +136,10 @@ def _load_practice_from_xlsx(xlsx_filename: str):
     return practice_settings, meta
 
 
-# ------------------------------ oTree models ---------------------------------
+# ---------------------------------------------------------------------------
+# oTree models
+# ---------------------------------------------------------------------------
+
 class C(BaseConstants):
     NAME_IN_URL = 'start'
     PLAYERS_PER_GROUP = None
@@ -131,7 +151,7 @@ def creating_session(subsession):
     sv = self.session.vars
     logger.info('creating_session: start app')
 
-    # Accept either 'practice_xlsx' (explicit) or your existing 'filename' key.
+    # Accept either 'practice_xlsx' or existing 'filename' from SESSION_CONFIGS
     xlsx_name = (
         self.session.config.get('practice_xlsx')
         or self.session.config.get('filename')
@@ -153,7 +173,6 @@ def creating_session(subsession):
     else:
         logger.warning("No Excel specified in session config")
 
-    # Defaults (safe if Excel missing)
     sv.setdefault('practice_settings', {})
     sv.setdefault('sheet_settings', {})
     sv.setdefault('interpreter_title', 'Interpretation')
@@ -176,7 +195,10 @@ class Player(BasePlayer):
     survey_data = models.LongStringField(blank=True)
 
 
-# ------------------------------ Pages ----------------------------------------
+# ---------------------------------------------------------------------------
+# Pages
+# ---------------------------------------------------------------------------
+
 class _BasePage(Page):
     instructions = False
     instructions_path = "start/includes/instructions.html"
@@ -217,12 +239,9 @@ class _PracticePage(_BasePage):
         key = f'practice_{cls.practice_id}'
         s = (player.session.vars.get('practice_settings', {}).get(key, {})).copy()
 
-        # Build full image URL:
-        # 1) Use full row URL if present
-        # 2) Else compose s3_base/s3path + /practice/<image>
-        # 3) Else /static/start/practice/<image>
-        # 4) Else Picsum placeholder
+        # ---- resolve image URL ----
         meta = player.session.vars.get('sheet_settings', {}) or {}
+        # Settings sheet: name = s3_base or s3path, value = https://bucket/prefix
         s3_base = (meta.get('s3_base') or meta.get('s3path') or '').rstrip('/')
 
         img_url = (s.get('image_url') or '').strip()
@@ -238,12 +257,9 @@ class _PracticePage(_BasePage):
             full = f'https://picsum.photos/200/300?text=Practice+{cls.practice_id}'
 
         s['full_image_path'] = full
-
-        # Ensure keys
         s.setdefault('title', f'Practice {cls.practice_id}')
         s.setdefault('main_text', '')
         s.setdefault('right_answer', [])
-
         return s
 
     @classmethod
