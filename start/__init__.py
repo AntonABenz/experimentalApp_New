@@ -4,7 +4,7 @@ import logging
 import re
 from pathlib import Path
 
-import pandas as pd  
+import pandas as pd  # needs pandas + openpyxl in requirements.txt
 
 logger = logging.getLogger("benzapp.start_pages")
 
