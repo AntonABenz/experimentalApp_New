@@ -1,177 +1,90 @@
-{% extends "global/Page.html" %}
+{% extends "otree/Page.html" %}
 {% load otree static %}
-
-{% block title %}
-
-{% endblock %}
-
+ 
 {% block content %}
 
-<style>
-    .input-group {
-        max-width: 100%;
-    }
+<!-- Debug: check if settings exists -->
+<script>
+  console.log('Settings from Django:', {{ settings|json }});
+</script>
 
-    .input-kids {
-        min-width: 200px;
-    }
+<script>
+  window.interpreter_title   = {{ session.vars.interpreter_title|json }};
+  window.interpreter_choices = {{ session.vars.interpreter_choices|json }};
+  window.page_settings       = {{ settings|json }}; 
+</script>
 
-    [v-cloak] {
-        display: none
-    }
-
-    .error {
-        border: 1px solid red;
-        border-radius: 5px !important;
-    }
-</style>
 <div id="app">
-    {% verbatim %}
-
-    <h1>{{title}}</h1>
-    <div v-html="main_text"></div>
-
-    <div class="text-center">
-        <div class="image my-3">
-            <img :src="image_path" alt="" :width="500">
-        </div>
-    </div>
-    <div class="text-center">
-        <div class="text-center">
-            <div class="row my-3">
-                <div class=" col mb-3" v-for="(allowedList,index) in allowedValues" :key="index">
-                    <div v-if="allowedList.length">
-                        <p class="font-weight-bold">Text field {{index+1}}:</p>
-                        <ul class="list-group">
-                            <li class="list-group-item" v-for="value in allowedList" :key="value">{{ value }}</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-
-
-            <ul class="list-group list-group-flush my-3" v-cloak>
-                <li class="list-group-item d-flex" v-for="(item, itemIndex) in items" :key="itemIndex"
-                    style="    flex-flow: nowrap">
-                    <div class="input-group mb-3 d-flex align-items-baseline" style="    flex-flow: nowrap">
-                        <div class="prefix mx-3 text-nowrap" v-if="prefix">{{prefix}}</div>
-                        <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex"
-                            class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
-                            <input type="text" v-model.trim="field.value" class="form-control input-kids" disabled
-                                :class="{ error: isError(field) }" :placeholder="`Field ${fieldIndex+1}`" required
-                                @input="hideError">
-                            <span class="input-group-tex mx-3 text-nowrap">{{ field.suffix }}</span>
-                        </div>
-                        <button @click="addItem" style="flex-basis: 75px;" type="button" class="btn btn-success"
-                            disabled>+</button>
-                        <button @click="removeItem(itemIndex)" type="button" disabled class="btn btn-danger"
-                            style="flex-basis: 75px;">-</button>
-
-                    </div>
-                </li>
-            </ul>
-            <p v-if="error" class="my-3 alert alert-danger">{{ errorMessage }}</p>
-        </div>
-
-
-    </div>
-
+  
+  <h1>[[ title ]]</h1>
+  <div v-html="main_text"></div>
+  
+  <div class="text-center my-3">
+    <img :src="image_path" :alt="title" style="max-width: 600px; width: 100%; height: auto;">
+  </div>
+  
+  <form id="form" @submit.prevent="checkChoices">
+    <table class="table">
+      <thead>
+        <tr>
+          <th scope="col">[[ interpreter_title ]]</th>
+          <th scope="col">Yes</th>
+          <th scope="col">No</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="(opt, idx) in sweets" :key="idx">
+          <td>[[ opt.name ]]</td>
+          <td><input type="radio" v-model="opt.choice" :value="true"  @change="error=false"></td>
+          <td><input type="radio" v-model="opt.choice" :value="false" @change="error=false"></td>
+        </tr>
+      </tbody>
+    </table>
+    <button :disabled="!allChoicesMade" type="button" class="btn btn-primary" @click="checkChoices">Next</button>
+    <p v-if="error" class="alert alert-danger my-3">Error: please, check your answers!</p>
+  </form>
+  
 </div>
-<button class="btn btn-primary" type="submit">Next</button>
 
-{% endverbatim %}
-</div>
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
-    window.prefix = {{ session.vars.prefix | json }};
-    window.suffixes = {{ session.vars.suffixes | json }}
-    window.allowedValues = {{ session.vars.allowed_values | json }}
+console.log('About to create Vue app');
+console.log('window.page_settings =', window.page_settings);
+
+const app = Vue.createApp({
+  data() {
+    const s = window.page_settings || {};
+    const answers = (s.right_answer || []);
+    const sweets  = (window.interpreter_choices || []).map(n => ({ name: n, choice: null }));
+    
+    return {
+      title: s.title || 'Practice 5',
+      main_text: s.main_text || '',
+      image_path: s.full_image_path || 'https://picsum.photos/200/300?text=No+Image',
+      interpreter_title: window.interpreter_title || 'Interpretation',
+      sweets,
+      correctAnswers: answers.map(a => Boolean(parseInt(a))),
+      error: false,
+    }
+  },
+  mounted() {
+    console.log('Vue mounted! image_path =', this.image_path);
+  },
+  computed: {
+    allChoicesMade() { return this.sweets.every(s => s.choice !== null); }
+  },
+  methods: {
+    checkChoices() {
+      if (this.correctAnswers.length !== this.sweets.length) { this.error = true; return; }
+      const ok = this.sweets.every((u, i) => u.choice === this.correctAnswers[i]);
+      this.error = !ok;
+      if (ok) document.getElementById('form').submit();
+    }
+  }
+});
+
+app.config.compilerOptions.delimiters = ['[[', ']]'];
+app.mount('#app');
+console.log('Vue app mounted');
 </script>
-<script>
-    const app = Vue.createApp({
-        data() {
-
-            let fields = window.suffixes.map((suffix, index) => ({
-                value: '',
-                suffix: suffix,
-                allowedValues: window.allowedValues[index].map(item => item.toLowerCase())
-            }));
-            return {
-                prefix: window.prefix,
-                allowedValues: window.allowedValues,
-                image_path: js_vars.settings.full_image_path,
-                title: js_vars.settings.title,
-                main_text: js_vars.settings.main_text,
-                items: [{ fields: fields }],
-                error: false,
-                errorMessage: '',
-            }
-        },
-        methods: {
-            addItem() {
-                if (this.items.length < this.maxItems) {
-                    let fields = window.suffixes.map((suffix, index) => ({
-                        value: '',
-                        suffix: suffix,
-                        allowedValues: window.allowedValues[index].map(item => item.toLowerCase())
-                    }));
-                    this.items.push({ fields: fields });
-                }
-            },
-            removeItem(index) {
-                if (this.items.length > this.minItems) {
-                    this.items.splice(index, 1);
-                }
-            },
-            validate() {
-
-                if (!this.isValid()) {
-                    this.error = true;
-                    this.errorMessage = this.getErrMessage
-                    this.validated = true;
-                } else {
-                    this.error = false;
-
-                    this.validated = true;
-                    this.error = false;
-                    $('#form').submit()
-                }
-            },
-            isValid() {
-
-
-                return this.items.every((item) => {
-
-                    return item.fields.every((field) => {
-                        return field.allowedValues.includes(field.value.toLowerCase())
-                    })
-                });
-            },
-            hideError() {
-                this.error = false;
-                this.validated = false;
-            },
-            isError(field) {
-
-                return this.validated && !field.allowedValues.includes(field.value.toLowerCase().trim());
-
-            }
-        },
-        computed: {
-            isFormComplete() {
-                return this.items.every(item => item.field1 !== '' && item.field2 !== '');
-            }
-        }
-    })
-    app.mount('#app')
-</script>
-
-
-
-
-
-
-
-
-
 {% endblock %}
