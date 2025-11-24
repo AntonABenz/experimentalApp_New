@@ -6,71 +6,100 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------
-#  IMAGE URL BUILDER — ALWAYS USES S3, NEVER STATIC
+#  IMAGE URL BUILDER — FIXED FOR S3
 # -------------------------------------------------------------------
 
 def build_s3_url(player, filename: str) -> str:
-    """Builds an S3 URL using the settings sheet base."""
+    """
+    Build final S3 URL for images.
+
+    Rules:
+    - read base from Excel settings sheet
+    - if sheet gives only bucket root, append /practice
+    - fallback always points to .../practice/<filename>
+    """
     settings = player.session.vars.get('sheet_settings', {})
     base = settings.get('s3path_base')
 
-    if not base:
-        # fallback: still return a plausible S3 url
-        return f"https://disjunction-experiment-pictures-zas2025.s3.eu-central-1.amazonaws.com/practice/{filename}"
+    default_base = "https://disjunction-experiment-pictures-zas2025.s3.eu-central-1.amazonaws.com/practice"
 
-    if base.endswith('/'):
-        return base + filename
-    return base + '/' + filename
+    # No base provided → fallback to default (previous behavior)
+    if not base:
+        base = default_base
+    else:
+        base = base.rstrip("/")
+
+        # If user gives bucket root, automatically append /practice
+        if base.endswith(".amazonaws.com"):
+            base = base + "/practice"
+
+    return f"{base}/{filename}"
 
 
 # -------------------------------------------------------------------
-#  EXCEL LOADER (loads practice_1, practice_2, ...)
+#  KEY/VALUE SHEET PARSER
 # -------------------------------------------------------------------
 
 def _kv_sheet_to_dict(df) -> dict:
+    """Parses sheets with columns: name | value | comment (optional)."""
     df = df.rename(columns={c: str(c).strip().lower() for c in df.columns})
+
     if not {'name', 'value'}.issubset(df.columns):
         return {}
 
     out = {}
     for _, r in df.iterrows():
-        k = str(r.get('name') or '').strip()
-        if k:
+        key = str(r.get('name') or '').strip()
+        if key:
             v = r.get('value')
-            out[k] = '' if pd.isna(v) else str(v).strip()
+            out[key] = '' if pd.isna(v) else str(v).strip()
+
     return out
 
 
+# -------------------------------------------------------------------
+#  LOAD PRACTICE SHEETS + SETTINGS FROM EXCEL
+# -------------------------------------------------------------------
+
 def _load_practices(xlsx_filename: str):
+    """Loads settings sheet + all practice_# sheets."""
     root = Path(__file__).resolve().parents[1]
     candidates = [
         root / xlsx_filename,
-        root / 'data' / xlsx_filename,
-        root / 'start' / 'data' / xlsx_filename,
+        root / "data" / xlsx_filename,
+        root / "start" / "data" / xlsx_filename,
     ]
-    xlsx_path = next((p for p in candidates if p.exists()), None)
 
+    xlsx_path = next((p for p in candidates if p.exists()), None)
     if not xlsx_path:
         logger.error(f"Excel not found: {xlsx_filename}")
         return {}, {}
 
+    # Load all sheets
     book = pd.read_excel(xlsx_path, sheet_name=None, dtype=str)
 
-    # ---- METADATA (s3path_base, interpreter choices, etc.) ----
+    # ---- SETTINGS SHEET ----
     meta = {}
     if "settings" in book:
-    # Re-read settings sheet without header: col 0 = key, col 1 = value
-        settings_df = pd.read_excel(xlsx_path, sheet_name="settings", header=None, dtype=str)
+        # Settings sheet does NOT have headers → read manually
+        settings_df = pd.read_excel(
+            xlsx_path,
+            sheet_name="settings",
+            header=None,
+            dtype=str
+        )
+        # Force columns into name/value
         settings_df = settings_df.rename(columns={0: "name", 1: "value"})
         meta = _kv_sheet_to_dict(settings_df)
 
-    # ---- PRACTICE PAGES ----
+    # ---- PRACTICE SHEET LOADING ----
     practice_settings = {}
     for tab, df in book.items():
         name = tab.lower().strip()
         if not name.startswith("practice_"):
             continue
 
+        # practices DO have name/value/comment header row
         kv = _kv_sheet_to_dict(df)
         if not kv:
             continue
@@ -78,6 +107,7 @@ def _load_practices(xlsx_filename: str):
         img = kv.get('image', '')
         ext = meta.get('extension', 'png')
 
+        # append extension if needed
         if img and not img.lower().endswith(f".{ext}"):
             img = f"{img}.{ext}"
 
@@ -95,7 +125,7 @@ def _load_practices(xlsx_filename: str):
 
 
 # -------------------------------------------------------------------
-# OTree models
+#  OTree MODELS
 # -------------------------------------------------------------------
 
 class C(BaseConstants):
@@ -110,23 +140,30 @@ def creating_session(subsession):
 
     xlsx = cfg.get("filename")
     if not xlsx:
-        raise RuntimeError("Session config must include a valid 'filename' pointing to the Excel file.")
+        raise RuntimeError("Session config must include 'filename' pointing to the Excel file.")
 
+    # Load everything
     ps, meta = _load_practices(xlsx)
 
+    # Save for use in templates
     session.vars["practice_settings"] = ps
     session.vars["sheet_settings"] = meta
 
+    # INTERPRETER CHOICES
     ic = meta.get('interpreter_choices')
     if ic:
         session.vars["interpreter_choices"] = [x.strip() for x in ic.split(';')]
     else:
-        # fallback: number of answers
+        # fallback: number of answers in first practice sheet
         first = list(ps.values())[0]
         n = len(first.get('right_answer', []))
         session.vars["interpreter_choices"] = [f"Choice {i}" for i in range(1, n + 1)]
 
-    session.vars.setdefault("interpreter_title", meta.get("interpreter_title", "Interpretation"))
+    # interpreter title
+    session.vars.setdefault(
+        "interpreter_title",
+        meta.get("interpreter_title", "Interpretation")
+    )
 
 
 class Subsession(BaseSubsession):
@@ -142,19 +179,15 @@ class Player(BasePlayer):
 
 
 # -------------------------------------------------------------------
-# Base Page
+#  BASE PAGE + PRACTICE PAGE LOADER
 # -------------------------------------------------------------------
 
 class _BasePage(Page):
     pass
 
 
-# -------------------------------------------------------------------
-# Practice Page Template Loader
-# -------------------------------------------------------------------
-
 class _PracticePage(_BasePage):
-    template_name = 'start/Practice1.html'
+    template_name = "start/Practice1.html"
     practice_id = None
 
     @classmethod
@@ -162,7 +195,6 @@ class _PracticePage(_BasePage):
         key = f"practice_{cls.practice_id}"
         s = player.session.vars["practice_settings"][key].copy()
 
-        # Build S3 URL
         filename = s.get("image", "")
         s["full_image_path"] = build_s3_url(player, filename)
 
@@ -185,12 +217,13 @@ class Practice5(_PracticePage): practice_id = 5
 class Practice6(_PracticePage): practice_id = 6
 class Practice7(_PracticePage): practice_id = 7
 
-
 class Consent(_BasePage): pass
 class Demographics(_BasePage):
     form_model = 'player'
     form_fields = ['survey_data']
+
 class Instructions(_BasePage): pass
+
 class EndOfIntro(_BasePage): pass
 
 
