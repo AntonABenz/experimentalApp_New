@@ -6,31 +6,19 @@ def as_bool(v, default=False):
     return v in ('1', 'true', 'True', True)
 
 SESSION_CONFIGS = [
-
     dict(
         name='full_study',
         display_name='Full study',
         app_sequence=['start', 'img_desc'],
         num_demo_participants=4,
-
-        # Excel for ALL practice pages
-        practice_xlsx='disjunctionExpTest8EN_1.xlsx',
-
-        instructions_path='',
-        expand_slots=True,
-        prolific_enabled=True,
+        filename='disjunctionExpTest8EN_1.xlsx',
     ),
-
     dict(
         name='practice_pages',
         display_name='Practice pages only',
         app_sequence=['start'],
-        num_demo_participants=2,
-
-        practice_xlsx='disjunctionExpTest8EN_1.xlsx',
-
-        expand_slots=False,
-        prolific_enabled=False,
+        num_demo_participants=4,
+        filename='disjunctionExpTest8EN_1.xlsx',
     ),
 ]
 
