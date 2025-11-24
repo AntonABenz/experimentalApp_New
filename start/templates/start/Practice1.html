@@ -22,39 +22,36 @@
              style="max-width: 600px; width: 100%; height: auto;">
     </div>
 
-    <!-- Form -->
-    <form id="practice-form" @submit.prevent="validate">
+    <!-- Table (NO inner form) -->
+    <table class="table">
+        <thead>
+            <tr>
+                <th>[[ interpreter_title ]]</th>
+                <th>Yes</th>
+                <th>No</th>
+            </tr>
+        </thead>
 
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>[[ interpreter_title ]]</th>
-                    <th>Yes</th>
-                    <th>No</th>
-                </tr>
-            </thead>
+        <tbody>
+            <tr v-for="(row, idx) in rows" :key="idx">
+                <td>[[ row.name ]]</td>
+                <td><input type="radio" v-model="row.choice" :value="true"></td>
+                <td><input type="radio" v-model="row.choice" :value="false"></td>
+            </tr>
+        </tbody>
+    </table>
 
-            <tbody>
-                <tr v-for="(row, idx) in rows" :key="idx">
-                    <td>[[ row.name ]]</td>
-                    <td><input type="radio" v-model="row.choice" :value="true"></td>
-                    <td><input type="radio" v-model="row.choice" :value="false"></td>
-                </tr>
-            </tbody>
-        </table>
+    <p v-if="error" class="alert alert-danger">
+        Please check your answers.
+    </p>
 
-        <p v-if="error" class="alert alert-danger">
-            Please check your answers.
-        </p>
-
-        <button type="button"
-                class="btn btn-primary"
-                :disabled="!allChosen"
-                @click="validate">
-            Next
-        </button>
-
-    </form>
+    <!-- This button now submits the OUTER oTree form -->
+    <button type="button"
+            class="btn btn-primary"
+            :disabled="!allChosen"
+            @click="validate">
+        Next
+    </button>
 
 </div>
 
@@ -62,7 +59,6 @@
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 
 <script>
-
 const app = Vue.createApp({
 
     data() {
@@ -80,6 +76,7 @@ const app = Vue.createApp({
                 choice: null,
             })),
 
+            // from Excel: right_answer_1..4 like '1','1','0','1'
             correct: (S.right_answer || []).map(x => Boolean(parseInt(x))),
             error: false,
         };
@@ -93,27 +90,30 @@ const app = Vue.createApp({
 
     methods: {
         validate() {
+            // must choose Yes/No for all rows
             if (!this.allChosen) {
                 this.error = true;
                 return;
             }
 
-            if (this.correct.length !== this.rows.length) {
-                this.error = true;
-                return;
+            // optional correctness check
+            if (this.correct.length && this.correct.length === this.rows.length) {
+                const ok = this.rows.every((r, i) => r.choice === this.correct[i]);
+                this.error = !ok;
+                if (!ok) return;
             }
 
-            const ok = this.rows.every((r, i) => r.choice === this.correct[i]);
-            this.error = !ok;
-
-            if (ok) document.getElementById("practice-form").submit();
+            // submit the OUTER oTree form (with csrf + hidden fields)
+            const outerForm = document.querySelector('form');
+            if (outerForm) {
+                outerForm.submit();
+            }
         }
     }
 });
 
 app.config.compilerOptions.delimiters = ["[[", "]]"];
 app.mount("#app");
-
 </script>
 
 {% endblock %}
