@@ -245,9 +245,9 @@ class _PracticePage(_BasePage):
         # 1) get base from Settings: image_path OR s3_base/s3path
         #    (so your "image_path" cell in Settings is actually used)
         base = (
-            meta.get('image_path')
+            meta.get('s3path')
             or meta.get('s3_base')
-            or meta.get('s3path')
+            or meta.get('s3_path')
             or ''
         ).rstrip('/')
 
