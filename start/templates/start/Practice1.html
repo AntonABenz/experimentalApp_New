@@ -3,7 +3,6 @@
 
 {% block content %}
 
-<!-- Pass Django -> JS -->
 <script>
     window.page_settings       = {{ settings|json }};
     window.interpreter_choices = {{ session.vars.interpreter_choices|json }};
@@ -11,15 +10,21 @@
 </script>
 
 <div id="app">
+
     <h1>[[ title ]]</h1>
+
+    <!-- Main text with HTML support -->
     <div v-html="main_text"></div>
 
+    <!-- Image -->
     <div class="text-center my-3">
         <img :src="image_path" :alt="title"
              style="max-width: 600px; width: 100%; height: auto;">
     </div>
 
+    <!-- Form -->
     <form id="practice-form" @submit.prevent="validate">
+
         <table class="table">
             <thead>
                 <tr>
@@ -48,14 +53,18 @@
                 @click="validate">
             Next
         </button>
+
     </form>
+
 </div>
 
-<!-- Vue 3 -->
+<!-- Vue -->
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 
 <script>
+
 const app = Vue.createApp({
+
     data() {
         const S  = window.page_settings || {};
         const IC = window.interpreter_choices || [];
@@ -68,11 +77,11 @@ const app = Vue.createApp({
 
             rows: IC.map(label => ({
                 name: label,
-                choice: null
+                choice: null,
             })),
 
             correct: (S.right_answer || []).map(x => Boolean(parseInt(x))),
-            error: false
+            error: false,
         };
     },
 
@@ -103,4 +112,8 @@ const app = Vue.createApp({
 });
 
 app.config.compilerOptions.delimiters = ["[[", "]]"];
-app.mo
+app.mount("#app");
+
+</script>
+
+{% endblock %}
