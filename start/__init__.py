@@ -59,7 +59,10 @@ def _load_practices(xlsx_filename: str):
     # ---- METADATA (s3path_base, interpreter choices, etc.) ----
     meta = {}
     if "settings" in book:
-        meta = _kv_sheet_to_dict(book["settings"])
+    # Re-read settings sheet without header: col 0 = key, col 1 = value
+        settings_df = pd.read_excel(xlsx_path, sheet_name="settings", header=None, dtype=str)
+        settings_df = settings_df.rename(columns={0: "name", 1: "value"})
+        meta = _kv_sheet_to_dict(settings_df)
 
     # ---- PRACTICE PAGES ----
     practice_settings = {}
