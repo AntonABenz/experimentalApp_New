@@ -106,6 +106,9 @@ def creating_session(subsession):
     cfg = session.config
 
     xlsx = cfg.get("filename")
+    if not xlsx:
+        raise RuntimeError("Session config must include a valid 'filename' pointing to the Excel file.")
+
     ps, meta = _load_practices(xlsx)
 
     session.vars["practice_settings"] = ps
