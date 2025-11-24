@@ -239,20 +239,41 @@ class _PracticePage(_BasePage):
         key = f'practice_{cls.practice_id}'
         s = (player.session.vars.get('practice_settings', {}).get(key, {})).copy()
 
-        # ---- resolve image URL ----
+        # -------- resolve image URL --------
         meta = player.session.vars.get('sheet_settings', {}) or {}
-        # Settings sheet: name = s3_base or s3path, value = https://bucket/prefix
-        s3_base = (meta.get('s3_base') or meta.get('s3path') or '').rstrip('/')
 
-        img_url = (s.get('image_url') or '').strip()
-        img_fn = (s.get('image') or '').strip()
+        # 1) get base from Settings: image_path OR s3_base/s3path
+        #    (so your "image_path" cell in Settings is actually used)
+        base = (
+            meta.get('image_path')
+            or meta.get('s3_base')
+            or meta.get('s3path')
+            or ''
+        ).rstrip('/')
 
+        # 2) values from Practice_N sheet
+        img_url = (s.get('image_url') or '').strip()   # optional full URL
+        img     = (s.get('image') or '').strip()       # e.g. "d-A-AB-BC-ABC-Test"
+
+        # add extension if not present
+        if img and '.' not in img:
+            img = f'{img}.png'
+
+        # 3) precedence:
+        #    a) image_url (already full)
+        #    b) image_path + /practice/ + image
+        #    c) static / placeholder
         if img_url and (img_url.startswith('http://') or img_url.startswith('https://') or img_url.startswith('s3://')):
             full = img_url
-        elif img_fn and s3_base:
-            full = f"{s3_base}/practice/{img_fn}"
-        elif img_fn:
-            full = _full_image_url(player, f'practice/{img_fn}')
+        elif img and base:
+            # if img already contains a slash, don't force "practice/"
+            if '/' in img:
+                rel = img
+            else:
+                rel = f'practice/{img}'
+            full = f'{base}/{rel}'
+        elif img:
+            full = _full_image_url(player, f'practice/{img}')
         else:
             full = f'https://picsum.photos/200/300?text=Practice+{cls.practice_id}'
 
@@ -274,7 +295,6 @@ class _PracticePage(_BasePage):
     def is_displayed(cls, player: Player):
         pps = player.session.vars.get('user_settings', {}).get('practice_pages', {})
         return pps.get(cls.__name__, True) if pps else True
-
 
 class Practice1(_PracticePage): practice_id = 1
 class Practice2(_PracticePage): practice_id = 2
