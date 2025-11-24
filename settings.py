@@ -30,7 +30,7 @@ SESSION_CONFIGS = [
         name='full_study',
         display_name='Full study',
         app_sequence=['start', 'img_desc'],
-        num_demo_participants=1,
+        num_demo_participants=4,
 
         # IMPORTANT: Feed correct Excel file into start/init.py
         practice_xlsx=EXCEL_FILE,
@@ -44,7 +44,7 @@ SESSION_CONFIGS = [
         name='practice_pages',
         display_name='Practice pages only',
         app_sequence=['start'],
-        num_demo_participants=1,
+        num_demo_participants=4,
 
         practice_xlsx=EXCEL_FILE,
         filename=EXCEL_FILE,
