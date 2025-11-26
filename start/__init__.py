@@ -154,7 +154,9 @@ def creating_session(subsession):
     session.vars["practice_settings"] = ps
     session.vars["sheet_settings"] = meta
 
-    # INTERPRETER CHOICES
+    # ------------------------------------------------------------------
+    # INTERPRETER CHOICES (for medals Yes/No pages)
+    # ------------------------------------------------------------------
     ic = meta.get("interpreter_choices")
     if ic:
         session.vars["interpreter_choices"] = [x.strip() for x in ic.split(";")]
@@ -168,6 +170,40 @@ def creating_session(subsession):
     session.vars.setdefault(
         "interpreter_title", meta.get("interpreter_title", "Interpretation")
     )
+
+    # ------------------------------------------------------------------
+    # TEXT-FIELD INTERFACE CONFIG (suffixes + allowed values) for
+    # Practice 4–7
+    # ------------------------------------------------------------------
+    # suffix_1, suffix_2, ...
+    suffixes = []
+    i = 1
+    while True:
+        key = f"suffix_{i}"
+        if key not in meta:
+            break
+        val = meta.get(key)
+        if val:
+            suffixes.append(val)
+        i += 1
+    session.vars["suffixes"] = suffixes
+
+    # allowed_values_1, allowed_values_2, ...
+    allowed_values = []
+    i = 1
+    while True:
+        key = f"allowed_values_{i}"
+        if key not in meta:
+            break
+        raw = meta.get(key, "")
+        if raw:
+            allowed_values.append(
+                [x.strip() for x in raw.split(";") if x.strip()]
+            )
+        else:
+            allowed_values.append([])
+        i += 1
+    session.vars["allowed_values"] = allowed_values
 
 
 class Subsession(BaseSubsession):
