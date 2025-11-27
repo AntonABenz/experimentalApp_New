@@ -4,7 +4,7 @@
 {% block content %}
 
 <script>
-  // expose server vars
+  // data from Python
   window.suffixes      = {{ session.vars.suffixes|json }};
   window.allowedValues = {{ session.vars.allowed_values|json }};
   window.page_settings = {{ settings|json }};
@@ -14,7 +14,6 @@
   [v-cloak] { display: none; }
   .input-group { max-width: fit-content; }
   .input-kids { min-width: 200px; }
-  .input-marbles { min-width: 200px; }
 </style>
 
 <div id="app" v-cloak>
@@ -22,18 +21,15 @@
   <h1>[[ title ]]</h1>
   <div v-html="main_text"></div>
 
-  <div class="text-center my-3">
-    <div class="image">
-      <img :src="image_path"
-           :alt="title"
-           :width="500"
-           style="max-width: 600px; width: 100%; height:auto;">
-    </div>
+  <div class="text-center my-3" v-if="image_path">
+    <img :src="image_path"
+         :alt="title"
+         style="max-width: 600px; width: 100%; height:auto;">
   </div>
 
-  <!-- OPTIONS LEGEND: what can be typed into each field -->
+  <!-- OPTIONS LEGEND -->
   <div class="my-3">
-    <h5>What you can type into each text field</h5>
+    <h4>What you can type into each text field</h4>
     <table class="table table-sm">
       <thead>
         <tr>
@@ -66,12 +62,17 @@
           <div v-for="(field, fieldIndex) in item.fields"
                :key="fieldIndex"
                class="align-items-baseline input-group mb-3 d-flex flex-nowrap">
-            <input type="text"
-                   v-model.trim="field.value"
-                   class="form-control input-kids"
-                   :placeholder="`Field ${fieldIndex+1}`"
-                   required
-                   @input="hideError">
+
+            <!-- TEXT FIELD WITH AUTOCOMPLETE -->
+            <input
+              type="text"
+              v-model.trim="field.value"
+              class="form-control input-kids"
+              :placeholder="`Field ${fieldIndex+1}`"
+              :list="fieldIndex === 0 ? 'options-first' : 'options-second'"
+              required
+              @input="hideError"
+            >
             <span class="input-group-text mx-3 text-nowrap">
               [[ field.suffix ]]
             </span>
@@ -93,11 +94,24 @@
     </ul>
 
     <p v-if="error" class="alert alert-danger">
-      [[ errorMessage || 'Please check your answers.' ]]
+      [[ errorMessage || 'Please, check your answers.' ]]
     </p>
   </div>
 
-  <!-- IMPORTANT: this button just calls validate(), we submit the outer oTree form there -->
+  <!-- AUTOCOMPLETE SOURCES -->
+  <datalist id="options-first">
+    <option v-for="(opt, i) in allowedValues[0]"
+            :key="'f1-' + i"
+            :value="opt"></option>
+  </datalist>
+
+  <datalist id="options-second">
+    <option v-for="(opt, i) in allowedValues[1]"
+            :key="'f2-' + i"
+            :value="opt"></option>
+  </datalist>
+
+  <!-- IMPORTANT: button only calls validate(); outer oTree form is submitted in JS -->
   <button :disabled="!isFormComplete"
           class="btn btn-primary"
           type="button"
@@ -111,30 +125,26 @@
 <script>
 const app = Vue.createApp({
   data() {
-    const s            = window.page_settings || {};
-    const suffixes     = Array.isArray(window.suffixes) ? window.suffixes : [];
-    const allowedVals  = Array.isArray(window.allowedValues) ? window.allowedValues : [];
+    const s           = window.page_settings   || {};
+    const suffixes    = Array.isArray(window.suffixes)      ? window.suffixes      : [];
+    const allowedVals = Array.isArray(window.allowedValues) ? window.allowedValues : [];
 
     // initial row
     const seedFields = suffixes.map((suffix, i) => ({
       value: '',
       suffix,
-      // lowercased allowed values for this field
-      allowedValues: Array.isArray(allowedVals[i])
+      allowedLower: Array.isArray(allowedVals[i])
         ? allowedVals[i].map(v => String(v).toLowerCase())
         : []
     }));
 
-    // image path (prefer full_image_path)
+    // image path (optional)
     let image_path = s.full_image_path || s.image_url || '';
     if (!image_path && s.image) {
       const name = (typeof s.image === 'string' && s.image.includes('.'))
         ? s.image
         : `${s.image}.png`;
       image_path = `/static/start/practice/${name}`;
-    }
-    if (!image_path) {
-      image_path = 'https://picsum.photos/200/300?text=No+Image';
     }
 
     return {
@@ -143,7 +153,6 @@ const app = Vue.createApp({
       image_path,
 
       allowedValues: allowedVals,
-
       suffixes,
       items: [{ fields: seedFields }],
 
@@ -156,7 +165,6 @@ const app = Vue.createApp({
   },
 
   computed: {
-    // show enough rows in the legend for all options
     maxOptionsRows() {
       const a = this.allowedValues[0] ? this.allowedValues[0].length : 0;
       const b = this.allowedValues[1] ? this.allowedValues[1].length : 0;
@@ -169,23 +177,29 @@ const app = Vue.createApp({
       );
     },
 
-    // For this page we only require all fields filled, not matching a predefined answer.
     isFormComplete() {
+      // For this “options practice” page, we only require all fields filled.
       return this.isFormFull;
     },
 
-    // normalized user inputs (lowercased)
+    // Lowercased, trimmed values, used for validation
     flattenValues() {
       return this.items.map(item =>
         item.fields.map(field =>
           String(field.value).trim().replace(/\s+/g, ' ').toLowerCase()
         )
       );
-    }
+    },
   },
 
   methods: {
     validate() {
+      if (!this.isFormComplete) {
+        this.error = true;
+        this.errorMessage = 'Please fill in all fields.';
+        return;
+      }
+
       if (!this.isValid()) {
         this.error = true;
         this.errorMessage = 'Please use only the allowed phrases shown above.';
@@ -194,19 +208,21 @@ const app = Vue.createApp({
 
       this.error = false;
 
-      // submit the outer oTree form (from otree/Page.html)
+      // Submit the OUTER oTree form
       const outerForm = document.querySelector('form');
       if (outerForm) outerForm.submit();
     },
 
-    // For this "what you can type" practice page:
-    // each field must contain one of its allowedValues; no strict solution pattern.
+    // Each field must be one of its allowed options (if any)
     isValid() {
-      return this.items.every(item =>
-        item.fields.every((field, i) => {
-          const allowed = Array.isArray(field.allowedValues) ? field.allowedValues : [];
-          const v = String(field.value).trim().toLowerCase();
-          return allowed.length === 0 || allowed.includes(v);
+      const user = this.flattenValues;
+
+      return user.every((row, rowIdx) =>
+        row.every((val, colIdx) => {
+          const allowed = Array.isArray(this.items[rowIdx].fields[colIdx].allowedLower)
+            ? this.items[rowIdx].fields[colIdx].allowedLower
+            : [];
+          return allowed.length === 0 || allowed.includes(val);
         })
       );
     },
@@ -214,14 +230,11 @@ const app = Vue.createApp({
     addItem() {
       if (this.items.length >= this.maxItems) return;
 
-      const suffixes    = this.suffixes;
-      const allowedVals = this.allowedValues;
-
-      const fields = suffixes.map((suffix, i) => ({
+      const fields = this.suffixes.map((suffix, i) => ({
         value: '',
         suffix,
-        allowedValues: Array.isArray(allowedVals[i])
-          ? allowedVals[i].map(v => String(v).toLowerCase())
+        allowedLower: Array.isArray(this.allowedValues[i])
+          ? this.allowedValues[i].map(v => String(v).toLowerCase())
           : []
       }));
 
