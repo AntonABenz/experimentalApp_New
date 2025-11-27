@@ -3,15 +3,8 @@
  
 {% block content %}
 
-<!-- Debug: check if settings exists -->
 <script>
-  console.log('Settings from Django:', {{ settings|json }});
-</script>
-
-<script>
-  window.interpreter_title   = {{ session.vars.interpreter_title|json }};
-  window.interpreter_choices = {{ session.vars.interpreter_choices|json }};
-  window.page_settings       = {{ settings|json }}; 
+  window.page_settings = {{ settings|json }};
 </script>
 
 <div id="app">
@@ -20,71 +13,126 @@
   <div v-html="main_text"></div>
   
   <div class="text-center my-3">
-    <img :src="image_path" :alt="title" style="max-width: 600px; width: 100%; height: auto;">
+    <img :src="image_path"
+         :alt="title"
+         style="max-width: 600px; width: 100%; height: auto;">
   </div>
-  
-  <form id="form" @submit.prevent="checkChoices">
-    <table class="table">
-      <thead>
-        <tr>
-          <th scope="col">[[ interpreter_title ]]</th>
-          <th scope="col">Yes</th>
-          <th scope="col">No</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="(opt, idx) in sweets" :key="idx">
-          <td>[[ opt.name ]]</td>
-          <td><input type="radio" v-model="opt.choice" :value="true"  @change="error=false"></td>
-          <td><input type="radio" v-model="opt.choice" :value="false" @change="error=false"></td>
-        </tr>
-      </tbody>
-    </table>
-    <button :disabled="!allChoicesMade" type="button" class="btn btn-primary" @click="checkChoices">Next</button>
-    <p v-if="error" class="alert alert-danger my-3">Error: please, check your answers!</p>
-  </form>
+
+  <!-- Table with TWO text fields per row -->
+  <table class="table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>First value</th>
+        <th>Second value</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr v-for="(row, idx) in rows" :key="idx">
+        <td>[[ idx + 1 ]]</td>
+        <td>
+          <input type="text"
+                 class="form-control"
+                 v-model.trim="row.v1"
+                 @input="error=false">
+        </td>
+        <td>
+          <input type="text"
+                 class="form-control"
+                 v-model.trim="row.v2"
+                 @input="error=false">
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p v-if="error" class="alert alert-danger my-3">
+    [[ errorMessage || 'Error: please, check your answers!' ]]
+  </p>
+
+  <!-- IMPORTANT: this button just calls validate() -->
+  <button :disabled="!isComplete"
+          type="button"
+          class="btn btn-primary"
+          @click="validate">
+    Next
+  </button>
   
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
-console.log('About to create Vue app');
-console.log('window.page_settings =', window.page_settings);
-
 const app = Vue.createApp({
   data() {
     const s = window.page_settings || {};
-    const answers = (s.right_answer || []);
-    const sweets  = (window.interpreter_choices || []).map(n => ({ name: n, choice: null }));
-    
+    const rawAnswers = Array.isArray(s.right_answer) ? s.right_answer : [];
+
+    // Excel has values like "2;2", "2;0", "2;4"
+    const correct_answers = rawAnswers.map(r =>
+      String(r)
+        .split(';')
+        .map(x => x.trim())
+    );
+
+    // one row per right_answer, 2 fields each
+    const rows = correct_answers.map(() => ({ v1: '', v2: '' }));
+
     return {
       title: s.title || 'Practice 5',
       main_text: s.main_text || '',
       image_path: s.full_image_path || 'https://picsum.photos/200/300?text=No+Image',
-      interpreter_title: window.interpreter_title || 'Interpretation',
-      sweets,
-      correctAnswers: answers.map(a => Boolean(parseInt(a))),
+
+      correct_answers,
+      rows,
+
       error: false,
+      errorMessage: '',
+    };
+  },
+
+  computed: {
+    isComplete() {
+      return this.rows.every(r => r.v1 !== '' && r.v2 !== '');
     }
   },
-  mounted() {
-    console.log('Vue mounted! image_path =', this.image_path);
-  },
-  computed: {
-    allChoicesMade() { return this.sweets.every(s => s.choice !== null); }
-  },
+
   methods: {
-    checkChoices() {
-      if (this.correctAnswers.length !== this.sweets.length) { this.error = true; return; }
-      const ok = this.sweets.every((u, i) => u.choice === this.correctAnswers[i]);
+    validate() {
+      if (!this.isComplete) {
+        this.error = true;
+        this.errorMessage = 'Please fill in all fields.';
+        return;
+      }
+
+      // normalize: trim + collapse spaces
+      const norm = s => String(s).trim().replace(/\s+/g, ' ');
+
+      const user = this.rows.map(r => [norm(r.v1), norm(r.v2)]);
+      const key  = this.correct_answers.map(pair => pair.map(norm));
+
+      // strict row-wise equality
+      const ok = user.length === key.length &&
+        user.every((row, i) =>
+          row.length === key[i].length &&
+          row[0] === key[i][0] &&
+          row[1] === key[i][1]
+        );
+
       this.error = !ok;
-      if (ok) document.getElementById('form').submit();
+      if (!ok) {
+        this.errorMessage = 'Some values are incorrect. Please try again.';
+        return;
+      }
+
+      // correct → submit the OUTER oTree form
+      const outerForm = document.querySelector('form');
+      if (outerForm) outerForm.submit();
     }
   }
 });
 
 app.config.compilerOptions.delimiters = ['[[', ']]'];
 app.mount('#app');
-console.log('Vue app mounted');
 </script>
+
 {% endblock %}
