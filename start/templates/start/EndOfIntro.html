@@ -1,0 +1,36 @@
+{% extends "otree/Page.html" %}
+{% load otree static %}
+
+{% block title %}
+    Before the main task
+{% endblock %}
+
+{% block content %}
+
+<div class="container">
+
+    <h2 class="mb-3">Before you start the main experiment</h2>
+
+    {# Text loaded from the Excel "settings" sheet -> EndOfIntroText #}
+    {# You can format that cell with HTML, it will be rendered here. #}
+    {% if session.vars.EndOfIntroText %}
+        <div class="mb-4">
+            {{ session.vars.EndOfIntroText|safe }}
+        </div>
+    {% else %}
+        <p class="mb-4">
+            You have completed the practice part.  
+            On the next pages, you will work on the real task.
+            Please read the instructions carefully and answer as accurately as you can.
+        </p>
+    {% endif %}
+
+    <p class="text-muted">
+        When you are ready, click <strong>Next</strong> to begin the main experiment.
+    </p>
+
+    {{ next_button }}
+
+</div>
+
+{% endblock %}
