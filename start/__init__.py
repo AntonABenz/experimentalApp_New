@@ -1,5 +1,5 @@
 from otree.api import *
-import logging, re
+import logging
 from pathlib import Path
 import pandas as pd
 
@@ -137,7 +137,7 @@ class C(BaseConstants):
     NUM_ROUNDS = 1
 
 
-def creating_session(subsession):
+def creating_session(subsession: BaseSubsession):
     session = subsession.session
     cfg = session.config
 
@@ -205,6 +205,9 @@ def creating_session(subsession):
         i += 1
     session.vars["allowed_values"] = allowed_values
 
+    # End-of-intro text (used by EndOfIntro page)
+    session.vars["EndOfIntroText"] = meta.get("EndOfIntroText", "")
+
 
 class Subsession(BaseSubsession):
     pass
@@ -231,7 +234,7 @@ class _PracticePage(_BasePage):
     template_name = None  # subclasses must set this
 
     @classmethod
-    def _settings(cls, player):
+    def _settings(cls, player: Player):
         key = f"practice_{cls.practice_id}"
         s = player.session.vars["practice_settings"][key].copy()
 
@@ -241,11 +244,11 @@ class _PracticePage(_BasePage):
         return s
 
     @classmethod
-    def vars_for_template(cls, player):
+    def vars_for_template(cls, player: Player):
         return dict(settings=cls._settings(player))
 
     @classmethod
-    def js_vars(cls, player):
+    def js_vars(cls, player: Player):
         return dict(settings=cls._settings(player))
 
 
@@ -286,8 +289,26 @@ class Practice7(_PracticePage):
     template_name = "start/Practice4.html"
 
 
+# -------------------------------------------------------------------
+#  NON-PRACTICE PAGES
+# -------------------------------------------------------------------
+
 class Consent(_BasePage):
-    pass
+    """
+    First page: also captures Prolific params into participant.vars
+    so img_desc can use them later.
+    """
+
+    def before_next_page(self):
+        # Only do this when running a Prolific study
+        if self.session.config.get("for_prolific"):
+            r = self.request
+            p = self.participant
+
+            # Names must match placeholders in the Prolific Study URL
+            p.vars["prolific_id"] = r.GET.get("PROLIFIC_PID")
+            p.vars["study_id"] = r.GET.get("STUDY_ID")
+            p.vars["session_id"] = r.GET.get("SESSION_ID")
 
 
 class Demographics(_BasePage):
@@ -300,7 +321,14 @@ class Instructions(_BasePage):
 
 
 class EndOfIntro(_BasePage):
-    pass
+    """
+    Final practice page: just shows some text from the Excel settings sheet.
+    """
+
+    def vars_for_template(self):
+        return dict(
+            end_of_intro_text=self.session.vars.get("EndOfIntroText", "")
+        )
 
 
 page_sequence = [
