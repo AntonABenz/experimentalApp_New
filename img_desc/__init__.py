@@ -1,5 +1,6 @@
-from otree.api import *
+# img_desc/__init__.py
 
+from otree.api import *
 import json
 import logging
 from pprint import pprint
@@ -7,14 +8,14 @@ from pprint import pprint
 from django.db import models as djmodels
 from django.forms.models import model_to_dict
 
-from reading_xls.get_data import get_data  
+from .utils import get_url_for_image, get_completion_info, increase_space
+from reading_xls.get_data import get_data  # reads your Excel / sheet
 
-logger = logging.getLogger("benzapp.models")
+logger = logging.getLogger("benzapp.img_desc")
 
 PRODUCER = "P"
 INTERPRETER = "I"
 
-# Prolific completion URL stub (was in old utils)
 STUBURL = "https://app.prolific.co/submissions/complete?cc="
 
 
@@ -25,7 +26,7 @@ STUBURL = "https://app.prolific.co/submissions/complete?cc="
 class Constants(BaseConstants):
     name_in_url = "img_desc"
     players_per_group = None
-    # Upper bound; actual number of rounds comes from Excel (group_enumeration.max())
+    # upper bound; real num rounds computed from Excel (group_enumeration.max)
     num_rounds = 85
 
     STUBURL = STUBURL
@@ -33,6 +34,7 @@ class Constants(BaseConstants):
     API_ERR = "API_ERROR"
     FALLBACK_URL = STUBURL + PLACEMENT_ERR
     API_ERR_URL = STUBURL + API_ERR
+
     INTERPRETER = INTERPRETER
     PRODUCER = PRODUCER
 
@@ -42,76 +44,100 @@ class Constants(BaseConstants):
 # =====================================================================
 
 class Subsession(BaseSubsession):
-    # study/batch info
+    # index of currently active batch (1,2,...)
     active_batch = models.IntegerField()
 
-    # Prolific-study level data (copied to players)
+    # Prolific-study level data (shared for session)
     study_id = models.StringField()
     completion_code = models.StringField()
     full_return_url = models.StringField()
 
     @property
     def get_active_batch(self):
-        return self.users.filter(batch=self.active_batch)
+        """
+        Return Batch rows for the current active batch in THIS oTree session.
+        (we link via session_code, not FK)
+        """
+        return Batch.objects.filter(
+            session_code=self.session.code,
+            batch=self.active_batch,
+        )
 
     def expand_slots(self):
         """
-        Use Prolific API to increase slots for current study.
-        Implemented lazily to avoid circular imports.
+        Optional: expand Prolific slots using Prolific API.
+        Only used if session.config['expand_slots'] is True.
         """
-        from .utils import increase_space  # lazy import
-
         study_id = self.study_id
         max_users = self.session.vars.get("max_users", 0)
         batch_size = self.session.vars.get("batch_size", 0)
 
-        if study_id:
-            logger.info(
-                f"Trying to expand slots at study {study_id} for {batch_size} more users "
-                f"(max users {max_users}). oTree session {self.session.code}"
-            )
-            # safeguard: not more than oTree session size
-            max_users = min(max_users, self.session.num_participants)
-
-            pprint(
-                increase_space(
-                    study_id=study_id, num_extra=batch_size, max_users=max_users
-                )
-            )
-        else:
+        if not study_id:
             logger.warning(
-                "No study id data is available! Slot expansion failed. "
+                "No study id data is available! slot expansion failed. "
                 f"params: study_id: {study_id}, max_users: {max_users}, "
                 f"batch_size: {batch_size}"
             )
+            return
+
+        logger.info(
+            f"Trying to expand slots at study {study_id} for {batch_size} more users "
+            f"(max users {max_users}). oTree session {self.session.code}"
+        )
+
+        # just a safeguard not to go beyond number of oTree participants
+        max_users = min(max_users, self.session.num_participants)
+
+        pprint(
+            increase_space(
+                study_id=study_id,
+                num_extra=batch_size,
+                max_users=max_users,
+            )
+        )
 
     def check_for_batch_completion(self):
         """
-        If all Batch rows of the current batch are processed,
-        move to the next batch and (optionally) expand Prolific slots.
+        Check if all Batch rows in the current active batch are marked processed.
+        If yes:
+          - move to next batch
+          - optionally expand Prolific slots
         """
-        s = self
-        session = s.session
-        active_batch = s.active_batch
+        session = self.session
+        active_batch = self.active_batch
+
         logger.info(
-            f"oTree session {session.code}. Quick check if batch {active_batch} is completed"
+            f"oTree session {session.code}. "
+            f"Quick check if batch {active_batch} is completed"
         )
-        q = session.batches.filter(batch=s.active_batch, processed=False)
+
+        q = Batch.objects.filter(
+            session_code=session.code,
+            batch=active_batch,
+            processed=False,
+        )
+
         logger.info(
             f"CURRENT ACTIVE BATCH: {active_batch}; NON PROCESSED SLOTS: {q.count()}"
         )
-        if not q.exists():
-            session.vars["active_batch"] = active_batch + 1
-            logger.info(
-                f"oTree session {session.code}. Batch {active_batch} is completed. "
-                f"Moving to batch {active_batch + 1}"
-            )
-            Subsession.objects.filter(session=session).update(
-                active_batch=active_batch + 1
-            )
-            if session.config.get("expand_slots", False):
-                logger.info(f"Trying to expand slots for session {session.code}")
-                self.expand_slots()
+
+        if q.exists():
+            return
+
+        # batch completed → advance
+        session.vars["active_batch"] = active_batch + 1
+        logger.info(
+            f"oTree session {session.code}. Batch {active_batch} is completed. "
+            f"Moving to batch {active_batch + 1}"
+        )
+
+        Subsession.objects.filter(session=session).update(
+            active_batch=active_batch + 1
+        )
+
+        if session.config.get("expand_slots", False):
+            logger.info(f"Trying to expand slots for session {session.code}")
+            self.expand_slots()
 
 
 class Group(BaseGroup):
@@ -119,41 +145,50 @@ class Group(BaseGroup):
 
 
 # =====================================================================
-# BATCH MODEL (extra Django model)
+# BATCH MODEL (EXTRA DJANGO MODEL)
+#   NOTE: This is a *pure* Django model, no FK to oTree Session/Participant.
 # =====================================================================
 
 class Batch(djmodels.Model):
+    """
+    Stores trial info and matching for one 'slot' (id_in_group) across rounds.
+
+    IMPORTANT: We link to oTree objects via *codes*:
+      - session_code: oTree session.code
+      - owner_code:   oTree participant.code (or null if unassigned)
+    """
+
     def __str__(self) -> str:
-        if self.owner:
-            return f"batch: {self.batch}; round: {self.round_number}; belongs to: {self.owner.code}"
-        return f"batch: {self.batch}; round: {self.round_number}; doesnt belongs to anyone yet"
+        if self.owner_code:
+            return (
+                f"session: {self.session_code}; batch: {self.batch}; "
+                f"round: {self.round_number}; belongs to: {self.owner_code}"
+            )
+        return (
+            f"session: {self.session_code}; batch: {self.batch}; "
+            f"round: {self.round_number}; unassigned"
+        )
 
-    # IMPORTANT: use string model names for oTree’s built-in models in oTree 5
-    session = djmodels.ForeignKey(
-        "otree.Session",
-        on_delete=djmodels.CASCADE,
-        related_name="batches",
-    )
-    owner = djmodels.ForeignKey(
-        "otree.Participant",
-        on_delete=djmodels.CASCADE,
-        related_name="infos",
-        null=True,
-    )
+    # link to oTree session via CODE, not FK
+    session_code = djmodels.CharField(max_length=32)
 
-    sentences = models.LongStringField()
-    rewards = models.LongStringField()
-    condition = models.StringField()
-    item_nr = models.StringField()
-    image = models.StringField()
-    round_number = models.IntegerField()
-    role = models.StringField()
-    batch = models.IntegerField()
-    id_in_group = models.IntegerField()
-    partner_id = models.IntegerField()
-    busy = models.BooleanField(initial=False)
-    processed = models.BooleanField(initial=False)
+    # link to participant via CODE, not FK
+    owner_code = djmodels.CharField(max_length=32, null=True, blank=True)
 
+    # design fields (use plain Django fields)
+    sentences = djmodels.TextField()           # JSON-encoded list-of-lists
+    rewards = djmodels.TextField(blank=True)   # JSON-encoded list-of-int / None
+    condition = djmodels.CharField(max_length=64)
+    item_nr = djmodels.CharField(max_length=64)
+    image = djmodels.CharField(max_length=256)
+    round_number = djmodels.IntegerField()
+    role = djmodels.CharField(max_length=1)    # "P" or "I"
+    batch = djmodels.IntegerField()
+    id_in_group = djmodels.IntegerField()
+    partner_id = djmodels.IntegerField()
+
+    busy = djmodels.BooleanField(default=False)
+    processed = djmodels.BooleanField(default=False)
 
 
 # =====================================================================
@@ -168,7 +203,7 @@ class Player(BasePlayer):
 
     feedback = models.LongStringField(label="")
 
-    # PROLIFIC-related data
+    # PROLIFIC fields (copied from participant vars or API)
     prolific_id = models.StringField()
     prol_study_id = models.StringField()
     prol_session_id = models.StringField()
@@ -182,7 +217,7 @@ class Player(BasePlayer):
     end_decision_time = djmodels.DateTimeField(null=True)
     decision_seconds = models.FloatField()
 
-    # link back to Batch row
+    # "link" to Batch via Django FK (to our own model; this is allowed)
     link = djmodels.ForeignKey(
         to=Batch,
         on_delete=djmodels.CASCADE,
@@ -190,36 +225,45 @@ class Player(BasePlayer):
         null=True,
     )
 
-    # ----- convenience role property -----
-
+    # ---- convenience ----
     def role(self):
         return self.inner_role
 
-    # ----- Excel / Batch helpers -----
+    # ---- helpers based on Batch rows ----
 
     def get_sentences_data(self):
-        if self.link:
+        if not self.link:
+            return []
+        try:
             if self.link.partner_id == 0:
                 return json.loads(self.link.sentences)
             else:
                 return json.loads(self.get_previous_batch().get("sentences"))
-        return []
+        except Exception as e:
+            logger.error("Error parsing sentences JSON")
+            logger.error(e)
+            return []
 
     def get_previous_batch(self):
-        if self.inner_role == INTERPRETER:
-            l = self.link
-            if l.partner_id == 0:
-                return dict(sentences="[]")
-            obj = self.session.batches.get(
-                batch=self.subsession.active_batch - 1,
-                role=PRODUCER,
-                partner_id=l.id_in_group,
-                id_in_group=l.partner_id,
-                condition=l.condition,
-            )
-            return model_to_dict(obj)
-        else:
+        """
+        For Interpreter, look into previous batch's producer info.
+        """
+        if self.inner_role != INTERPRETER:
             return dict(sentences="[]")
+
+        l = self.link
+        if l.partner_id == 0:
+            return dict(sentences="[]")
+
+        obj = Batch.objects.get(
+            session_code=self.session.code,
+            batch=self.subsession.active_batch - 1,
+            role=PRODUCER,
+            partner_id=l.id_in_group,
+            id_in_group=l.partner_id,
+            condition=l.condition,
+        )
+        return model_to_dict(obj)
 
     def update_batch(self):
         if not self.link:
@@ -231,71 +275,92 @@ class Player(BasePlayer):
         self.link.save()
 
     def mark_data_processed(self):
+        """
+        Mark all Batch rows for this participant as processed and
+        trigger batch-completion check.
+        """
         self.participant.vars["full_study_completed"] = True
-        Batch.objects.filter(owner=self.participant).update(processed=True)
+
+        Batch.objects.filter(
+            session_code=self.session.code,
+            owner_code=self.participant.code,
+        ).update(processed=True)
+
         self.subsession.check_for_batch_completion()
 
     def get_full_sentences(self):
         prefix = self.session.vars.get("prefix", "")
         suffixes = self.session.vars.get("suffixes") or []
         sentences = self.get_sentences_data() or []
-        sentences = [sublist for sublist in sentences if "" not in sublist]
+        # remove empty inner lists
+        sentences = [sub for sub in sentences if "" not in sub]
+
         res = []
         for sentence in sentences:
-            expansion_list = [
+            expansion = [
                 str(item) for pair in zip(sentence, suffixes) for item in pair
             ]
             if prefix:
-                expansion_list.insert(0, prefix)
-            full_sentence = " ".join(expansion_list)
-            res.append(full_sentence)
+                expansion.insert(0, prefix)
+            res.append(" ".join(expansion))
         return res
 
     def get_image_url(self):
-        # lazy import to avoid circular deps
-        from .utils import get_url_for_image
-
         image = self.link.image if self.link else ""
         return get_url_for_image(self, image)
 
-    # ----- main round initialisation -----
+    # ---- main per-round initialisation ----
 
     def start(self):
         """
-        Called once per round to:
-        - link the participant to a free Batch row on round 1
-        - set self.link and self.inner_role each round
-        - initialise PROLIFIC-related fields
+        Run once per round:
+          - round 1: assign a free Batch "slot" (id_in_group) in active batch
+          - every round: set self.link and inner_role, sentences
+          - if Prolific: set completion info etc. on round 1
         """
+        session = self.session
+        subsession = self.subsession
 
-        # round 1: pick a free slot in active batch and mark as busy
+        # --- ROUND 1: assign free slot ---
         if self.round_number == 1:
-            active_batch = self.session.batches.filter(
-                batch=self.subsession.active_batch,
+            active_batch_qs = Batch.objects.filter(
+                session_code=session.code,
+                batch=subsession.active_batch,
             )
-            try:
-                free_user_id = (
-                    active_batch.filter(busy=False, owner__isnull=True)
-                    .first()
-                    .id_in_group
-                )
-            except AttributeError:
+
+            free = active_batch_qs.filter(
+                busy=False,
+                owner_code__isnull=True,
+            ).order_by("id_in_group").first()
+
+            if not free:
                 logger.error(
-                    f"No more free slots for participant {self.participant.code}!!!"
+                    f"No more free slots for participant {self.participant.code} "
+                    f"in session {session.code}!"
                 )
-                # mark as faulty → redirect to fallback later
                 self.faulty = True
                 return
 
-            free_user = active_batch.filter(busy=False, id_in_group=free_user_id)
-            free_user.update(busy=True, owner=self.participant)
+            free_id = free.id_in_group
+            active_batch_qs.filter(
+                busy=False,
+                id_in_group=free_id,
+            ).update(
+                busy=True,
+                owner_code=self.participant.code,
+            )
 
-        # link to Batch row for this round
+        # --- EVERY ROUND: link to our Batch row ---
         try:
-            self.link = self.participant.infos.get(round_number=self.round_number)
+            self.link = Batch.objects.get(
+                session_code=session.code,
+                owner_code=self.participant.code,
+                round_number=self.round_number,
+            )
         except Batch.DoesNotExist:
             logger.error(
-                f"Player {self.participant.code} has no Batch for round {self.round_number}"
+                f"Player {self.participant.code} has no Batch row for "
+                f"round {self.round_number} in session {session.code}"
             )
             self.faulty = True
             return
@@ -303,13 +368,11 @@ class Player(BasePlayer):
         self.inner_role = self.link.role
         self.inner_sentences = json.dumps(self.get_sentences_data())
 
-        # Prolific-specific initialisation (only once on round 1)
-        if self.round_number == 1 and self.session.config.get("for_prolific"):
-            from .utils import get_completion_info  # lazy import
-
-            vars = self.participant.vars
-            prol_study_id = vars.get("study_id")
-            prol_session_id = vars.get("session_id")
+        # --- PROLIFIC: only once on round 1, if enabled ---
+        if self.round_number == 1 and session.config.get("for_prolific"):
+            vars_ = self.participant.vars
+            prol_study_id = vars_.get("study_id")
+            prol_session_id = vars_.get("session_id")
 
             ERR_COMPLETION_INFO = dict(
                 completion_code=Constants.API_ERR,
@@ -317,21 +380,23 @@ class Player(BasePlayer):
             )
 
             if prol_study_id:
-                # If not already set on subsession, set it now
-                if not self.subsession.study_id:
+                # first participant with this study id sets subsession info
+                if not subsession.study_id:
                     completion_info = get_completion_info(prol_study_id)
                     if completion_info:
-                        Subsession.objects.filter(session=self.session).update(
-                            study_id=prol_study_id, **completion_info
+                        Subsession.objects.filter(session=session).update(
+                            study_id=prol_study_id,
+                            **completion_info,
                         )
-                # If participant's study id matches subsession study id → copy
-                if prol_study_id == self.subsession.study_id:
+
+                # same study id → copy subsession-level info
+                if prol_study_id == subsession.study_id:
                     completion_info = dict(
-                        completion_code=self.subsession.completion_code,
-                        full_return_url=self.subsession.full_return_url,
+                        completion_code=subsession.completion_code,
+                        full_return_url=subsession.full_return_url,
                     )
-                # Different study id → fetch individually
                 else:
+                    # different study id → query individually
                     completion_info = get_completion_info(prol_study_id)
                     if not completion_info:
                         completion_info = ERR_COMPLETION_INFO
@@ -339,7 +404,7 @@ class Player(BasePlayer):
                 completion_info = ERR_COMPLETION_INFO
 
             for_update = dict(
-                prolific_id=vars.get("prolific_id"),
+                prolific_id=vars_.get("prolific_id"),
                 prol_study_id=prol_study_id,
                 prol_session_id=prol_session_id,
                 **completion_info,
@@ -348,30 +413,35 @@ class Player(BasePlayer):
             try:
                 if not prol_study_id:
                     raise Exception("Study_id from prolific is not available")
-                if not vars.get("prolific_id"):
+                if not vars_.get("prolific_id"):
                     raise Exception("prolific_id from prolific is not available")
-                if not vars.get("session_id"):
+                if not vars_.get("session_id"):
                     raise Exception("session_id from prolific is not available")
-            except Exception as E:
+            except Exception as e:
                 logger.error("Trouble getting prolific data")
-                logger.error(str(E))
+                logger.error(str(e))
             finally:
-                Player.objects.filter(participant=self.participant).update(**for_update)
+                Player.objects.filter(participant=self.participant).update(
+                    **for_update
+                )
                 if prol_session_id:
                     self.participant.label = prol_session_id
 
 
 # =====================================================================
-# CREATING_SESSION (Excel → Batches + settings)
+# SESSION CREATION: Excel → Batch rows + session.vars
 # =====================================================================
 
 def creating_session(subsession: Subsession):
     """
-    Called once when the oTree session is created.
-    Loads Excel via reading_xls.get_data and populates Batch table and session.vars.
+    Called once per session (per round=1).
+    Uses reading_xls.get_data(filename) to:
+      - build Batch table for this session
+      - populate session.vars with settings / practice info
     """
-    subsession.active_batch = 1
     session = subsession.session
+
+    subsession.active_batch = 1
 
     if subsession.round_number != 1:
         return
@@ -380,40 +450,43 @@ def creating_session(subsession: Subsession):
 
     filename = session.config.get("filename")
     if not filename:
-        raise RuntimeError("Session config must include 'filename' pointing to the Excel file.")
+        raise RuntimeError(
+            "Session config must include 'filename' pointing to the Excel / sheet."
+        )
 
-    excel_data = get_data(filename)
-    data_df = excel_data.get("data")
-    session.vars["user_data"] = data_df
+    excel_data = get_data(filename)   # <-- your existing reading_xls helper
+    df = excel_data.get("data")
 
-    df = data_df
+    session.vars["user_data"] = df
     session.vars["num_rounds"] = int(df.group_enumeration.max())
 
     logger.info(f'TOTAL NUM ROUNDS:: {session.vars["num_rounds"]}')
+
     assert (
         df.group_enumeration.max() <= Constants.num_rounds
     ), "PLEASE SET NUMBER OF ROUNDS IN OTREE HIGHER!"
 
-    dbatches = df.to_dict(orient="records")
-    raws = [
-        dict(
-            session=session,
-            batch=i.get("Exp"),
-            item_nr=i.get("Item.Nr"),
-            condition=i.get("Condition"),
-            image=i.get("Item"),
-            round_number=i.get("group_enumeration"),
-            role=i.get("role"),
-            id_in_group=i.get("id"),
-            partner_id=i.get("partner_id"),
-            sentences=i.get("sentences"),
+    # --- create Batch rows in DB ---
+    records = df.to_dict(orient="records")
+    batch_objs = []
+    for r in records:
+        batch_objs.append(
+            Batch(
+                session_code=session.code,
+                batch=r.get("Exp"),
+                item_nr=r.get("Item.Nr"),
+                condition=r.get("Condition"),
+                image=r.get("Item"),
+                round_number=r.get("group_enumeration"),
+                role=r.get("role"),
+                id_in_group=r.get("id"),
+                partner_id=r.get("partner_id"),
+                sentences=r.get("sentences"),
+            )
         )
-        for i in dbatches
-    ]
-    raws = [Batch(**r) for r in raws]
-    Batch.objects.bulk_create(raws)
+    Batch.objects.bulk_create(batch_objs)
 
-    # practice & general settings (shared with start app)
+    # --- practice + general settings (also used by start app) ---
     session.vars["practice_settings"] = excel_data.get("practice_settings")
     session.vars["practice_pages"] = excel_data.get("practice_pages")
     session.vars["user_settings"] = excel_data.get("settings")
@@ -427,8 +500,8 @@ def creating_session(subsession: Subsession):
 
     allowed_values = settings.get("allowed_values") or []
     allowed_values = [
-        [item for item in sublist if item != ""]
-        for sublist in allowed_values
+        [item for item in sub if item != ""]
+        for sub in allowed_values
     ]
     session.vars["allowed_values"] = allowed_values
     session.vars["allowed_regex"] = settings.get("allowed_regex") or []
@@ -444,7 +517,10 @@ def creating_session(subsession: Subsession):
 
     assert len(session.vars.get("suffixes", [])) == len(
         session.vars.get("allowed_values", [])
-    ), "Number of provided fields should coincide with number of allowed values sets."
+    ), (
+        "Number of provided fields should coincide with number of "
+        "allowed values sets."
+    )
 
     session.vars["interpreter_choices"] = settings.get("interpreter_choices")
     session.vars["interpreter_input_type"] = settings.get(
@@ -455,9 +531,11 @@ def creating_session(subsession: Subsession):
     )
     session.vars["interpreter_title"] = settings.get("interpreter_title")
 
+    # --- capacity checks & batch sizes ---
     unique_ids = df.id.unique()
-    unique_ids_wz = list(filter(lambda x: x != 0, unique_ids))
+    unique_ids_wz = [x for x in unique_ids if x != 0]
     unique_exps = df[df.Exp != 0].Exp.unique()
+
     batch_size = len(unique_ids_wz)
     max_users = batch_size * len(unique_exps)
 
@@ -480,13 +558,13 @@ def creating_session(subsession: Subsession):
 # PAGES
 # =====================================================================
 
-from ._builtin import Page, WaitPage  # oTree’s generated base classes
+from ._builtin import Page, WaitPage
 from django.shortcuts import redirect
 
 
 class FaultyCatcher(Page):
     """
-    If player has no slot / batch, redirect to fallback URL.
+    If player couldn't get a slot (no free Batch row), redirect to fallback URL.
     """
 
     def is_displayed(self):
@@ -506,17 +584,15 @@ class Q(Page):
     instructions = True
 
     def is_displayed(self):
-        # Ensure Player.start() has been called before we render anything
+        # ensure Player.start() runs before we show anything
         if not self.player.faulty:
             self.player.start()
-        # Only display while still within actual number of rounds from Excel
         return self.round_number <= self.session.vars["num_rounds"]
 
     def vars_for_template(self):
         if self.player.link:
             return dict(d=model_to_dict(self.player.link))
-        else:
-            return dict(d="")
+        return dict(d="")
 
     def post(self):
         logger.info(
@@ -524,11 +600,9 @@ class Q(Page):
             f'session {self.session.code}; round {self.round_number}; '
             f'participant label {self.player.participant.label}'
         )
-        time_vars = [
-            "start_decision_time",
-            "end_decision_time",
-        ]
-        for t in time_vars:
+
+        # timings
+        for t in ["start_decision_time", "end_decision_time"]:
             v = self.request.POST.get(t)
             if v:
                 setattr(self.player, t, v)
@@ -541,26 +615,29 @@ class Q(Page):
                 logger.error("Failed to set duration of decision page")
                 logger.error(e)
 
-        if self.player.inner_role == PRODUCER:
-            field_name = "producer_decision"
-        else:
-            field_name = "interpreter_decision"
+        # save decisions
+        field_name = (
+            "producer_decision"
+            if self.player.inner_role == PRODUCER
+            else "interpreter_decision"
+        )
 
         raw_decisions = self.request.POST.get(field_name)
         if raw_decisions:
             decisions = json.loads(raw_decisions)
             if self.player.inner_role == PRODUCER:
-                flatten_decisions = [list(i.values()) for i in decisions]
-                self.player.producer_decision = json.dumps(flatten_decisions)
-                self.player.inner_sentences = json.dumps(flatten_decisions)
-            if self.player.inner_role == INTERPRETER:
-                flatten_decisions = [i.get("choice") for i in decisions]
-                self.player.interpreter_decision = json.dumps(flatten_decisions)
+                flatten = [list(i.values()) for i in decisions]
+                self.player.producer_decision = json.dumps(flatten)
+                self.player.inner_sentences = json.dumps(flatten)
+            else:
+                flatten = [i.get("choice") for i in decisions]
+                self.player.interpreter_decision = json.dumps(flatten)
 
         return super().post()
 
     def before_next_page(self):
         self.player.update_batch()
+
         logger.info(
             f'before_next_page. participant {self.player.participant.code}; '
             f'session {self.session.code}; round {self.round_number}; '
@@ -586,7 +663,6 @@ class Feedback(Page):
     form_fields = ["feedback"]
 
     def is_displayed(self):
-        # After last real round only
         return self.round_number == self.session.vars["num_rounds"]
 
 
@@ -600,8 +676,8 @@ class FinalForProlific(Page):
     def get(self):
         if self.player.full_return_url:
             return redirect(self.player.full_return_url)
-        FALLBACK_URL = "https://cnn.com"
-        return redirect(FALLBACK_URL)
+        # fallback if Prolific URL missing
+        return redirect("https://cnn.com")
 
 
 page_sequence = [
@@ -610,4 +686,3 @@ page_sequence = [
     Feedback,
     FinalForProlific,
 ]
-
