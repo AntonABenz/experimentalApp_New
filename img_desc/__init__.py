@@ -85,7 +85,7 @@ class Subsession(BaseSubsession):
             f"(max users {max_users}). oTree session {self.session.code}"
         )
 
-        # just a safeguard not to go beyond number of oTree participants
+        # safeguard: don't go beyond oTree participants
         max_users = min(max_users, self.session.num_participants)
 
         pprint(
@@ -145,18 +145,35 @@ class Group(BaseGroup):
 
 
 # =====================================================================
-# BATCH MODEL (EXTRA DJANGO MODEL)
-#   NOTE: This is a *pure* Django model, no FK to oTree Session/Participant.
+# BATCH MODEL (ExtraModel, oTree-native)
 # =====================================================================
 
-class Batch(djmodels.Model):
+class Batch(ExtraModel):
     """
     Stores trial info and matching for one 'slot' (id_in_group) across rounds.
 
     IMPORTANT: We link to oTree objects via *codes*:
       - session_code: oTree session.code
-      - owner_code:   oTree participant.code (or null if unassigned)
+      - owner_code:   oTree participant.code (or '' if unassigned)
     """
+
+    session_code = models.StringField()
+    owner_code = models.StringField(blank=True, initial="")  # participant.code or ""
+
+    # design fields
+    sentences = models.LongStringField()          # JSON-encoded list-of-lists
+    rewards = models.LongStringField(blank=True, initial="")  # JSON-encoded, may be empty
+    condition = models.StringField()
+    item_nr = models.StringField()
+    image = models.StringField()
+    round_number = models.IntegerField()
+    role = models.StringField()                   # "P" or "I"
+    batch = models.IntegerField()
+    id_in_group = models.IntegerField()
+    partner_id = models.IntegerField()
+
+    busy = models.BooleanField(initial=False)
+    processed = models.BooleanField(initial=False)
 
     def __str__(self) -> str:
         if self.owner_code:
@@ -168,27 +185,6 @@ class Batch(djmodels.Model):
             f"session: {self.session_code}; batch: {self.batch}; "
             f"round: {self.round_number}; unassigned"
         )
-
-    # link to oTree session via CODE, not FK
-    session_code = djmodels.CharField(max_length=32)
-
-    # link to participant via CODE, not FK
-    owner_code = djmodels.CharField(max_length=32, null=True, blank=True)
-
-    # design fields (use plain Django fields)
-    sentences = djmodels.TextField()           # JSON-encoded list-of-lists
-    rewards = djmodels.TextField(blank=True)   # JSON-encoded list-of-int / None
-    condition = djmodels.CharField(max_length=64)
-    item_nr = djmodels.CharField(max_length=64)
-    image = djmodels.CharField(max_length=256)
-    round_number = djmodels.IntegerField()
-    role = djmodels.CharField(max_length=1)    # "P" or "I"
-    batch = djmodels.IntegerField()
-    id_in_group = djmodels.IntegerField()
-    partner_id = djmodels.IntegerField()
-
-    busy = djmodels.BooleanField(default=False)
-    processed = djmodels.BooleanField(default=False)
 
 
 # =====================================================================
@@ -217,26 +213,32 @@ class Player(BasePlayer):
     end_decision_time = djmodels.DateTimeField(null=True)
     decision_seconds = models.FloatField()
 
-    # "link" to Batch via Django FK (to our own model; this is allowed)
-    link = djmodels.ForeignKey(
-        to=Batch,
-        on_delete=djmodels.CASCADE,
-        related_name="players",
-        null=True,
-    )
+    # store ID of Batch row (ExtraModel) instead of a Django FK
+    link_id = models.IntegerField(initial=0)
 
     # ---- convenience ----
     def role(self):
         return self.inner_role
 
+    @property
+    def link(self):
+        """Convenience accessor for the Batch row for this round."""
+        if not self.link_id:
+            return None
+        try:
+            return Batch.objects.get(id=self.link_id)
+        except Batch.DoesNotExist:
+            return None
+
     # ---- helpers based on Batch rows ----
 
     def get_sentences_data(self):
-        if not self.link:
+        link = self.link
+        if not link:
             return []
         try:
-            if self.link.partner_id == 0:
-                return json.loads(self.link.sentences)
+            if link.partner_id == 0:
+                return json.loads(link.sentences)
             else:
                 return json.loads(self.get_previous_batch().get("sentences"))
         except Exception as e:
@@ -252,7 +254,7 @@ class Player(BasePlayer):
             return dict(sentences="[]")
 
         l = self.link
-        if l.partner_id == 0:
+        if not l or l.partner_id == 0:
             return dict(sentences="[]")
 
         obj = Batch.objects.get(
@@ -266,13 +268,14 @@ class Player(BasePlayer):
         return model_to_dict(obj)
 
     def update_batch(self):
-        if not self.link:
+        link = self.link
+        if not link:
             return
         if self.inner_role == PRODUCER:
-            self.link.sentences = self.producer_decision
+            link.sentences = self.producer_decision
         if self.inner_role == INTERPRETER:
-            self.link.rewards = self.interpreter_decision
-        self.link.save()
+            link.rewards = self.interpreter_decision
+        link.save()
 
     def mark_data_processed(self):
         """
@@ -315,7 +318,7 @@ class Player(BasePlayer):
         """
         Run once per round:
           - round 1: assign a free Batch "slot" (id_in_group) in active batch
-          - every round: set self.link and inner_role, sentences
+          - every round: set self.link_id, inner_role, sentences
           - if Prolific: set completion info etc. on round 1
         """
         session = self.session
@@ -330,7 +333,7 @@ class Player(BasePlayer):
 
             free = active_batch_qs.filter(
                 busy=False,
-                owner_code__isnull=True,
+                owner_code="",
             ).order_by("id_in_group").first()
 
             if not free:
@@ -352,7 +355,7 @@ class Player(BasePlayer):
 
         # --- EVERY ROUND: link to our Batch row ---
         try:
-            self.link = Batch.objects.get(
+            row = Batch.objects.get(
                 session_code=session.code,
                 owner_code=self.participant.code,
                 round_number=self.round_number,
@@ -365,7 +368,8 @@ class Player(BasePlayer):
             self.faulty = True
             return
 
-        self.inner_role = self.link.role
+        self.link_id = row.id
+        self.inner_role = row.role
         self.inner_sentences = json.dumps(self.get_sentences_data())
 
         # --- PROLIFIC: only once on round 1, if enabled ---
@@ -386,7 +390,8 @@ class Player(BasePlayer):
                     if completion_info:
                         Subsession.objects.filter(session=session).update(
                             study_id=prol_study_id,
-                            **completion_info,
+                            completion_code=completion_info["completion_code"],
+                            full_return_url=completion_info["full_return_url"],
                         )
 
                 # same study id → copy subsession-level info
@@ -466,13 +471,14 @@ def creating_session(subsession: Subsession):
         df.group_enumeration.max() <= Constants.num_rounds
     ), "PLEASE SET NUMBER OF ROUNDS IN OTREE HIGHER!"
 
-    # --- create Batch rows in DB ---
+    # --- create Batch rows in DB (ExtraModel) ---
     records = df.to_dict(orient="records")
     batch_objs = []
     for r in records:
         batch_objs.append(
             Batch(
                 session_code=session.code,
+                owner_code="",  # unassigned at start
                 batch=r.get("Exp"),
                 item_nr=r.get("Item.Nr"),
                 condition=r.get("Condition"),
