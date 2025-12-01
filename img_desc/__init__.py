@@ -54,14 +54,11 @@ class Subsession(BaseSubsession):
 
     @property
     def get_active_batch(self):
-        """
-        Return Batch rows for the current active batch in THIS oTree session.
-        (we link via session_code, not FK)
-        """
-        return Batch.objects.filter(
+        return Batch.filter(
             session_code=self.session.code,
             batch=self.active_batch,
         )
+
 
     def expand_slots(self):
         """
@@ -111,17 +108,17 @@ class Subsession(BaseSubsession):
             f"Quick check if batch {active_batch} is completed"
         )
 
-        q = Batch.objects.filter(
+        q = Batch.filter(
             session_code=session.code,
             batch=active_batch,
             processed=False,
         )
-
+        
         logger.info(
-            f"CURRENT ACTIVE BATCH: {active_batch}; NON PROCESSED SLOTS: {q.count()}"
+            f"CURRENT ACTIVE BATCH: {active_batch}; NON PROCESSED SLOTS: {len(q)}"
         )
-
-        if q.exists():
+        
+        if q:
             return
 
         # batch completed → advance
@@ -148,32 +145,18 @@ class Group(BaseGroup):
 # BATCH MODEL (ExtraModel, oTree-native)
 # =====================================================================
 
+# =====================================================================
+# BATCH MODEL (ExtraModel, oTree-native)
+# =====================================================================
+
 class Batch(ExtraModel):
     """
     Stores trial info and matching for one 'slot' (id_in_group) across rounds.
 
-    IMPORTANT: We link to oTree objects via *codes*:
+    We link to oTree objects via codes:
       - session_code: oTree session.code
-      - owner_code:   oTree participant.code (or '' if unassigned)
+      - owner_code:   oTree participant.code (or "" if unassigned)
     """
-
-    session_code = models.StringField()
-    owner_code = models.StringField(blank=True, initial="")  # participant.code or ""
-
-    # design fields
-    sentences = models.LongStringField()          # JSON-encoded list-of-lists
-    rewards = models.LongStringField(blank=True, initial="")  # JSON-encoded, may be empty
-    condition = models.StringField()
-    item_nr = models.StringField()
-    image = models.StringField()
-    round_number = models.IntegerField()
-    role = models.StringField()                   # "P" or "I"
-    batch = models.IntegerField()
-    id_in_group = models.IntegerField()
-    partner_id = models.IntegerField()
-
-    busy = models.BooleanField(initial=False)
-    processed = models.BooleanField(initial=False)
 
     def __str__(self) -> str:
         if self.owner_code:
@@ -185,6 +168,27 @@ class Batch(ExtraModel):
             f"session: {self.session_code}; batch: {self.batch}; "
             f"round: {self.round_number}; unassigned"
         )
+
+    # link to oTree session via CODE, not FK
+    session_code = models.StringField()
+
+    # link to participant via CODE, not FK
+    owner_code = models.StringField(blank=True)
+
+    # design fields
+    sentences = models.LongStringField()          # JSON-encoded list-of-lists
+    rewards = models.LongStringField(blank=True)  # JSON-encoded list-of-int / None
+    condition = models.StringField()
+    item_nr = models.StringField()
+    image = models.StringField()
+    round_number = models.IntegerField()
+    role = models.StringField()   # "P" or "I"
+    batch = models.IntegerField()
+    id_in_group = models.IntegerField()
+    partner_id = models.IntegerField()
+
+    busy = models.BooleanField(initial=False)
+    processed = models.BooleanField(initial=False)
 
 
 # =====================================================================
@@ -226,9 +230,10 @@ class Player(BasePlayer):
         if not self.link_id:
             return None
         try:
-            return Batch.objects.get(id=self.link_id)
-        except Batch.DoesNotExist:
+            return Batch.get(id=self.link_id)
+        except LookupError:
             return None
+
 
     # ---- helpers based on Batch rows ----
 
@@ -257,15 +262,26 @@ class Player(BasePlayer):
         if not l or l.partner_id == 0:
             return dict(sentences="[]")
 
-        obj = Batch.objects.get(
-            session_code=self.session.code,
-            batch=self.subsession.active_batch - 1,
-            role=PRODUCER,
-            partner_id=l.id_in_group,
-            id_in_group=l.partner_id,
-            condition=l.condition,
-        )
+        try:
+            obj = Batch.get(
+                session_code=self.session.code,
+                batch=self.subsession.active_batch - 1,
+                role=PRODUCER,
+                partner_id=l.id_in_group,
+                id_in_group=l.partner_id,
+                condition=l.condition,
+            )
+        except LookupError:
+            logger.error(
+                "Previous batch row not found for session=%s, partner_id=%s, id_in_group=%s",
+                self.session.code,
+                l.partner_id,
+                l.id_in_group,
+            )
+            return dict(sentences="[]")
+
         return model_to_dict(obj)
+
 
     def update_batch(self):
         link = self.link
@@ -284,10 +300,13 @@ class Player(BasePlayer):
         """
         self.participant.vars["full_study_completed"] = True
 
-        Batch.objects.filter(
+        for b in Batch.filter(
             session_code=self.session.code,
-            owner_code=self.participant.code,
-        ).update(processed=True)
+            owner_code=self.participant.code,):
+                
+            b.processed = True
+            b.save()
+
 
         self.subsession.check_for_batch_completion()
 
@@ -326,51 +345,46 @@ class Player(BasePlayer):
 
         # --- ROUND 1: assign free slot ---
         if self.round_number == 1:
-            active_batch_qs = Batch.objects.filter(
+            # all rows for this session & active batch, currently free
+            candidates = Batch.filter(
                 session_code=session.code,
                 batch=subsession.active_batch,
-            )
-
-            free = active_batch_qs.filter(
                 busy=False,
                 owner_code="",
-            ).order_by("id_in_group").first()
-
-            if not free:
+            )
+            if not candidates:
                 logger.error(
                     f"No more free slots for participant {self.participant.code} "
                     f"in session {session.code}!"
                 )
                 self.faulty = True
                 return
-
-            free_id = free.id_in_group
-            active_batch_qs.filter(
-                busy=False,
-                id_in_group=free_id,
-            ).update(
-                busy=True,
-                owner_code=self.participant.code,
-            )
-
+        
+            # pick lowest id_in_group (to mimic order_by("id_in_group").first())
+            free = sorted(candidates, key=lambda b: b.id_in_group)[0]
+            free.busy = True
+            free.owner_code = self.participant.code
+            free.save()
+        
         # --- EVERY ROUND: link to our Batch row ---
         try:
-            row = Batch.objects.get(
+            row = Batch.get(
                 session_code=session.code,
                 owner_code=self.participant.code,
                 round_number=self.round_number,
             )
-        except Batch.DoesNotExist:
+        except LookupError:
             logger.error(
                 f"Player {self.participant.code} has no Batch row for "
                 f"round {self.round_number} in session {session.code}"
             )
             self.faulty = True
             return
-
+        
         self.link_id = row.id
         self.inner_role = row.role
         self.inner_sentences = json.dumps(self.get_sentences_data())
+        
 
         # --- PROLIFIC: only once on round 1, if enabled ---
         if self.round_number == 1 and session.config.get("for_prolific"):
@@ -474,24 +488,20 @@ def creating_session(subsession: Subsession):
 
     # --- create Batch rows in DB (ExtraModel) ---
     records = df.to_dict(orient="records")
-    batch_objs = []
     for r in records:
-        batch_objs.append(
-            Batch(
-                session_code=session.code,
-                owner_code="",  # unassigned at start
-                batch=r.get("Exp"),
-                item_nr=r.get("Item.Nr"),
-                condition=r.get("Condition"),
-                image=r.get("Item"),
-                round_number=r.get("group_enumeration"),
-                role=r.get("role"),
-                id_in_group=r.get("id"),
-                partner_id=r.get("partner_id"),
-                sentences=r.get("sentences"),
-            )
+        Batch.create(
+            session_code=session.code,
+            owner_code="",  # unassigned at start
+            batch=r.get("Exp"),
+            item_nr=r.get("Item.Nr"),
+            condition=r.get("Condition"),
+            image=r.get("Item"),
+            round_number=r.get("group_enumeration"),
+            role=r.get("role"),
+            id_in_group=r.get("id"),
+            partner_id=r.get("partner_id"),
+            sentences=r.get("sentences"),
         )
-    Batch.objects.bulk_create(batch_objs)
 
     # --- practice + general settings (also used by start app) ---
     session.vars["practice_settings"] = excel_data.get("practice_settings")
