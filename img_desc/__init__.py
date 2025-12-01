@@ -1,5 +1,4 @@
 from otree.api import *
-from otree.models import Session, Participant
 
 import json
 import logging
@@ -8,7 +7,7 @@ from pprint import pprint
 from django.db import models as djmodels
 from django.forms.models import model_to_dict
 
-from reading_xls.get_data import get_data  # same helper you used before
+from reading_xls.get_data import get_data  
 
 logger = logging.getLogger("benzapp.models")
 
@@ -124,26 +123,24 @@ class Group(BaseGroup):
 # =====================================================================
 
 class Batch(djmodels.Model):
-    """
-    Extra model storing Excel trial data and assignment to participants.
-    """
-
     def __str__(self) -> str:
         if self.owner:
             return f"batch: {self.batch}; round: {self.round_number}; belongs to: {self.owner.code}"
         return f"batch: {self.batch}; round: {self.round_number}; doesnt belongs to anyone yet"
 
+    # IMPORTANT: use string model names for oTree’s built-in models in oTree 5
     session = djmodels.ForeignKey(
-        to=Session,
+        "otree.Session",
         on_delete=djmodels.CASCADE,
         related_name="batches",
     )
     owner = djmodels.ForeignKey(
-        to=Participant,
+        "otree.Participant",
         on_delete=djmodels.CASCADE,
         related_name="infos",
         null=True,
     )
+
     sentences = models.LongStringField()
     rewards = models.LongStringField()
     condition = models.StringField()
@@ -156,6 +153,7 @@ class Batch(djmodels.Model):
     partner_id = models.IntegerField()
     busy = models.BooleanField(initial=False)
     processed = models.BooleanField(initial=False)
+
 
 
 # =====================================================================
