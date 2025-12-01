@@ -375,8 +375,11 @@ class Player(BasePlayer):
         # --- PROLIFIC: only once on round 1, if enabled ---
         if self.round_number == 1 and session.config.get("for_prolific"):
             vars_ = self.participant.vars
+            # support both prolific_id and prolific_pid, just in case
+            prolific_id = vars_.get("prolific_id") or vars_.get("prolific_pid")
+            
             prol_study_id = vars_.get("study_id")
-            prol_session_id = vars_.get("session_id")
+            prol_session_id = vars_.get("prolific_session_id") 
 
             ERR_COMPLETION_INFO = dict(
                 completion_code=Constants.API_ERR,
@@ -409,7 +412,7 @@ class Player(BasePlayer):
                 completion_info = ERR_COMPLETION_INFO
 
             for_update = dict(
-                prolific_id=vars_.get("prolific_id"),
+                prolific_id=prolific_id,
                 prol_study_id=prol_study_id,
                 prol_session_id=prol_session_id,
                 **completion_info,
@@ -417,18 +420,16 @@ class Player(BasePlayer):
 
             try:
                 if not prol_study_id:
-                    raise Exception("Study_id from prolific is not available")
-                if not vars_.get("prolific_id"):
-                    raise Exception("prolific_id from prolific is not available")
-                if not vars_.get("session_id"):
-                    raise Exception("session_id from prolific is not available")
+                    raise Exception("study_id from Prolific is not available")
+                if not prolific_id:
+                    raise Exception("prolific_id / prolific_pid from Prolific is not available")
+                if not prol_session_id:
+                    raise Exception("prolific_session_id from Prolific is not available")
             except Exception as e:
-                logger.error("Trouble getting prolific data")
+                logger.error("Trouble getting Prolific data")
                 logger.error(str(e))
             finally:
-                Player.objects.filter(participant=self.participant).update(
-                    **for_update
-                )
+                Player.objects.filter(participant=self.participant).update(**for_update)
                 if prol_session_id:
                     self.participant.label = prol_session_id
 
