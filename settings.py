@@ -45,13 +45,10 @@ SESSION_CONFIG_DEFAULTS = dict(
 # -------------------------------------------------------------------
 # img_desc + start use participant.vars for Prolific + a completion flag
 PARTICIPANT_FIELDS = [
-    # used by start.Consent + img_desc.Player.start()
-    'prolific_id',          # from PROLIFIC_PID
-    'study_id',             # from STUDY_ID
-    'session_id',           # from SESSION_ID
-    'full_study_completed', # set when img_desc finishes
-    'prolific_pid',
-    'prolific_session_id',
+    'prolific_id',          
+    'study_id',
+    'prolific_session_id',  
+    'full_study_completed',
 ]
 
 # All keys you store in session.vars in start + img_desc
