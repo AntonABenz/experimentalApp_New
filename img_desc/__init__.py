@@ -563,8 +563,6 @@ def creating_session(subsession: Subsession):
 # =====================================================================
 # PAGES
 # =====================================================================
-
-from ._builtin import Page, WaitPage
 from django.shortcuts import redirect
 
 
