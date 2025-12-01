@@ -12,7 +12,7 @@ SESSION_CONFIGS = [
         name='full_study',
         display_name='Full study',
         app_sequence=['start', 'img_desc'],
-        num_demo_participants=4,
+        num_demo_participants=8,
         filename='disjunctionExpTest8EN_1.xlsx',
 
         # used by img_desc + start.Consent
