@@ -299,16 +299,16 @@ class Consent(_BasePage):
     so img_desc can use them later.
     """
 
-    def before_next_page(self):
+    @staticmethod
+    def before_next_page(player, timeout_happened=False):
         # Only do this when running a Prolific study
-        if self.session.config.get("for_prolific"):
-            r = self.request
-            p = self.participant
+        if not player.session.config.get("for_prolific"):
+            return
 
-            # Names must match placeholders in the Prolific Study URL
-            p.vars["prolific_id"] = r.GET.get("PROLIFIC_PID")
-            p.vars["study_id"] = r.GET.get("STUDY_ID")
-            p.vars["session_id"] = r.GET.get("SESSION_ID")
+        p = player.participant
+        p.vars["prolific_id"] = p.label
+        p.vars.setdefault("study_id", None)
+        p.vars.setdefault("prolific_session_id", None)
 
 
 class Demographics(_BasePage):
