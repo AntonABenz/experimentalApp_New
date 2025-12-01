@@ -1,203 +1,216 @@
 # img_desc/utils.py
-import requests
+
 import json
 import logging
-from os import environ
-from otree.models import Participant
-from django.http import JsonResponse, HttpResponse
-from django.views.generic import View
-from django.views.decorators.csrf import csrf_exempt
-from django.utils.decorators import method_decorator
-from django.shortcuts import redirect
-from django.utils import timezone
-import pandas as pd
+import os
 
-logger = logging.getLogger("img_desc.utils")
+import requests
+
+logger = logging.getLogger("benzapp.utils")
 
 # -------------------------------------------------------------------
-#  PROLIFIC API KEY
+#  PROLIFIC CONFIG
 # -------------------------------------------------------------------
 
-PROLIFIC_API_KEY = environ.get("PROLIFIC_API_KEY")
+PROLIFIC_API_KEY = os.environ.get("PROLIFIC_API_KEY")
+
 if not PROLIFIC_API_KEY:
-    raise ValueError("PROLIFIC_API_KEY not set in environment variables!")
+    # IMPORTANT: do NOT crash if the key is missing
+    logger.warning(
+        "PROLIFIC_API_KEY not set; Prolific API features (balance, "
+        "increase_space, completion lookup) are disabled."
+    )
 
 STUBURL = "https://app.prolific.co/submissions/complete?cc="
 
-HEADERS = {
+BASE_HEADERS = {
     "Content-Type": "application/json",
-    "Authorization": f"Token {PROLIFIC_API_KEY}",
 }
+if PROLIFIC_API_KEY:
+    BASE_HEADERS["Authorization"] = f"Token {PROLIFIC_API_KEY}"
+
+BALANCE_URL = (
+    "https://api.prolific.co/api/v1/workspaces/"
+    "647787b9fe04daac6e2e944e/balance/"
+)
+
 
 # -------------------------------------------------------------------
-#  IMAGE URL BUILDER — S3
+#  IMAGE URL HELPER (used by Player.get_image_url)
 # -------------------------------------------------------------------
 
-def get_url_for_image(player, img, extension=None):
+def get_url_for_image(player, img: str, extension: str | None = None) -> str:
     """
-    Called by Player.get_image_url()
+    Build full URL for an image, using session.vars entries that were
+    loaded from the Excel sheet in creating_session.
     """
-    s3path = player.session.vars.get("s3path")
-    extension = extension or player.session.vars.get("extension")
+    s3path = player.session.vars.get("s3path") or ""
+    ext = extension or player.session.vars.get("extension") or "png"
 
-    if not img:
-        return "https://picsum.photos/400/300?text=No+Image"
+    # if img already has an extension, don't duplicate
+    if img and not img.lower().endswith(f".{ext}"):
+        img = f"{img}.{ext}"
 
-    if img.endswith(f".{extension}"):
-        return f"{s3path}{img}"
-    return f"{s3path}{img}.{extension}"
+    return f"{s3path}{img}"
 
 
 # -------------------------------------------------------------------
 #  PROLIFIC API HELPERS
 # -------------------------------------------------------------------
 
-def get_study(study_id):
-    url = f"https://api.prolific.co/api/v1/studies/{study_id}/"
-    try:
-        res = requests.get(url, headers=HEADERS)
-        if res.status_code != 200:
-            logger.warning(f"Could not fetch study {study_id}: {res.status_code}")
-            return None
-        return res.json()
-    except Exception as e:
-        logger.error(f"Error fetching study {study_id}: {e}")
+def _can_call_prolific() -> bool:
+    if not PROLIFIC_API_KEY:
+        logger.warning(
+            "Attempted to call Prolific API but PROLIFIC_API_KEY is not set. "
+            "Skipping API call."
+        )
+        return False
+    return True
+
+
+def get_balance():
+    """
+    Returns Prolific workspace balance JSON, or None if unavailable.
+    """
+    if not _can_call_prolific():
         return None
 
+    try:
+        resp = requests.get(BALANCE_URL, headers=BASE_HEADERS, timeout=10)
+    except Exception as e:
+        logger.warning(f"Error calling Prolific balance API: {e}")
+        return None
 
-def get_completion_info(study_id):
+    if resp.status_code != 200:
+        logger.warning(
+            f"Get error trying to get balance. Status code: {resp.status_code}"
+        )
+        return None
+
+    return resp.json()
+
+
+def get_study(study_id: str):
     """
-    Called once per study (only first participant triggers this).
-    Fetches completion code + auto redirect URL.
+    Fetches study info from Prolific. Returns JSON or None.
+    """
+    if not _can_call_prolific():
+        return None
+
+    url = f"https://api.prolific.co/api/v1/studies/{study_id}/"
+
+    try:
+        resp = requests.get(url, headers=BASE_HEADERS, timeout=10)
+    except Exception as e:
+        logger.warning(f"Error calling Prolific get_study({study_id}): {e}")
+        return None
+
+    if resp.status_code != 200:
+        logger.warning(
+            f"Get error trying to get data for study {study_id}. "
+            f"Status code: {resp.status_code}"
+        )
+        return None
+
+    return resp.json()
+
+
+def get_completion_info(study_id: str):
+    """
+    Returns dict(completion_code=..., full_return_url=...) or None.
+
+    If the Prolific API is unavailable, caller should fall back to
+    'API_ERROR' codes (which your img_desc app already does).
     """
     study_data = get_study(study_id)
     if not study_data:
-        return dict(
-            completion_code="API_ERROR",
-            full_return_url=f"{STUBURL}API_ERROR",
-        )
+        logger.warning(f"Failed to get study data for {study_id}")
+        return None
+
+    if isinstance(study_data, dict) and study_data.get("error"):
+        logger.warning(f"Get error trying to get data for study {study_id}")
+        return None
 
     completion_codes = study_data.get("completion_codes", [])
+
+    # First COMPLETED code, or "NO_CODE"
     completed_code = next(
-        (c["code"] for c in completion_codes if c.get("code_type") == "COMPLETED"),
-        "NO_CODE"
+        (
+            cinfo.get("code")
+            for cinfo in completion_codes
+            if cinfo.get("code_type") == "COMPLETED"
+        ),
+        "NO_CODE",
     )
 
     full_return_url = f"{STUBURL}{completed_code}"
+    logger.info(
+        f"full_return_url: {full_return_url}; completed_code: {completed_code}"
+    )
 
-    logger.info(f"Completion code fetched: {completed_code}")
     return dict(
         completion_code=completed_code,
         full_return_url=full_return_url,
     )
 
 
-def increase_space(study_id, num_extra, max_users):
+def increase_space(study_id: str, num_extra: int, max_users: int):
     """
-    Uses Prolific API to increase available slots.
-    Called at batch rollover.
+    Attempts to increase 'total_available_places' on Prolific, but
+    only if PROLIFIC_API_KEY is set.
+
+    Returns JSON response or None.
     """
-    study_info = get_study(study_id)
-    if not study_info:
+    if not _can_call_prolific():
         return None
 
-    current_places = int(study_info.get("total_available_places", 0))
-    if current_places >= max_users:
-        logger.warning("Slot increase rejected: maximum user count reached.")
+    study = get_study(study_id)
+    if not study:
+        logger.warning("Something wrong with response when getting study data.")
         return None
-
-    url = f"https://api.prolific.co/api/v1/studies/{study_id}/"
-    payload = json.dumps({"total_available_places": current_places + num_extra})
-
-    logger.info(
-        f"PATCH: Increasing Prolific places from {current_places} → "
-        f"{current_places + num_extra}"
-    )
 
     try:
-        response = requests.patch(url, headers=HEADERS, data=payload)
-        if response.status_code != 200:
-            logger.warning(f"Error increasing places: {response.status_code}")
-            return None
-        return response.json()
-    except Exception as e:
-        logger.error(f"Error calling Prolific PATCH: {e}")
+        num_current_places = int(study.get("total_available_places"))
+    except (TypeError, ValueError):
+        logger.warning(
+            "SOMETHING WRONG WITH RESPONSE OF DATA GETTING OF THE STUDY"
+        )
         return None
 
+    if num_current_places >= max_users:
+        logger.warning(
+            f"QUOTA EXCEEDED. Num of current places: {num_current_places}. "
+            f"Max users: {max_users}"
+        )
+        return None
 
-# -------------------------------------------------------------------
-#  PROLIFIC WEBHOOK → FREE SLOTS WHEN RETURNED / REJECTED
-# -------------------------------------------------------------------
+    new_places = num_current_places + num_extra
+    url = f"https://api.prolific.co/api/v1/studies/{study_id}/"
+    payload = json.dumps({"total_available_places": new_places})
 
-RETURNED_STATUSES = ["RETURNED", "TIMED-OUT", "REJECTED"]
-STATUS_CHANGE = "submission.status.change"
+    logger.info(
+        f"calling prolific api requesting to increase places to {new_places} "
+        f"in study {study_id}"
+    )
+    logger.info(f"payload: {payload}; url: {url}")
 
+    try:
+        resp = requests.patch(url, headers=BASE_HEADERS, data=payload, timeout=10)
+    except Exception as e:
+        logger.warning(f"Error calling Prolific increase_space({study_id}): {e}")
+        return None
 
-@method_decorator(csrf_exempt, name="dispatch")
-class HookView(View):
-    """
-    Accessible at:  /img_desc/prolific_hook
-    """
+    if resp.status_code != 200:
+        logger.warning(
+            f"Get error trying to increase places in study {study_id}. "
+            f"Status code: {resp.status_code}"
+        )
+        return None
 
-    def post(self, request, *args, **kwargs):
-        try:
-            body = json.loads(request.body.decode("utf-8"))
-        except Exception:
-            return JsonResponse({"message": "invalid json"})
+    logger.info(f"response.status_code: {resp.status_code}")
+    logger.info(f"response.text: {resp.text}")
 
-        logger.info("Webhook received:")
-        logger.info(body)
-
-        if body.get("event_type") != STATUS_CHANGE:
-            return JsonResponse({"message": "ignored"})
-
-        if body.get("status") not in RETURNED_STATUSES:
-            return JsonResponse({"message": "ignored event"})
-
-        session_id = body.get("resource_id")
-        pid = body.get("participant_id")
-
-        participants = Participant.objects.filter(label=session_id)
-        if not participants.exists():
-            msg = f"Webhook: No participant with session_id {session_id}"
-            logger.warning(msg)
-            return JsonResponse({"message": msg})
-
-        messages = []
-
-        for p in participants:
-            if p.vars.get("full_study_completed"):
-                msg = f"{p.code} completed study; slot not freed"
-                messages.append(msg)
-                continue
-
-            freed = p.infos.update(busy=False, owner=None)
-            if freed:
-                msg = f"Slot freed for player {p.code} (Prolific PID={pid})"
-            else:
-                msg = f"No slot to free for player {p.code}"
-
-            logger.info(msg)
-            messages.append(msg)
-
-        return JsonResponse({"message": messages})
-
-
-# -------------------------------------------------------------------
-#  EXPORT (OPTIONAL, SAME AS OLD VERSION)
-# -------------------------------------------------------------------
-
-class PandasExport(View):
-    content_type = "text/csv"
-    url_name = None
-
-    def get(self, request, *args, **kwargs):
-        df = self.get_data({})
-        if df is None or df.empty:
-            return JsonResponse({"error": "no data"})
-
-        timestamp = timezone.now().strftime("%Y_%m_%d_%H_%M_%S")
-        csv_data = df.to_csv(index=False)
-        resp = HttpResponse(csv_data, content_type=self.content_type)
-        resp["Content-Disposition"] = f'attachment; filename="{self.url_name}_{timestamp}.csv"'
-        return resp
+    try:
+        return resp.json()
+    except Exception:
+        return None
