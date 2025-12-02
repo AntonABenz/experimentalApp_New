@@ -4,10 +4,10 @@ from otree.api import *
 import json
 import logging
 from pprint import pprint
+import os
 
-# FIX: Import db and text for correct oTree 5 SQL execution
-from otree.database import db
-from sqlalchemy import text
+# FIX: Use independent SQLAlchemy engine to bypass oTree wrappers
+from sqlalchemy import create_engine, text
 
 from django.db import models as djmodels
 from django.forms.models import model_to_dict
@@ -68,16 +68,43 @@ class Batch(ExtraModel):
 
 
 # =====================================================================
-# RAW SQL HELPERS (oTree 5 / SQLAlchemy Compatible)
+# SQL ENGINE HELPER (Independent Connection)
 # =====================================================================
+
+_custom_engine = None
+
+def get_engine():
+    """
+    Creates or returns a cached SQLAlchemy engine based on the environment.
+    This bypasses oTree's internal DBWrapper which hides the .engine attribute.
+    """
+    global _custom_engine
+    if _custom_engine:
+        return _custom_engine
+
+    # Get DB URL from environment (standard on Heroku)
+    db_url = os.environ.get('DATABASE_URL')
+    
+    if not db_url:
+        # Fallback for local testing (assumes standard oTree sqlite path)
+        db_url = "sqlite:///db.sqlite3"
+    else:
+        # Fix for Heroku: SQLAlchemy requires 'postgresql://', Heroku provides 'postgres://'
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+    _custom_engine = create_engine(db_url)
+    return _custom_engine
+
 
 def get_all_batches_sql(session_code):
     """
-    Fetch all batches for this session using oTree's db engine.
+    Fetch all batches for this session using custom engine.
     """
+    engine = get_engine()
     sql = text("SELECT * FROM img_desc_batch WHERE session_code = :session_code")
     
-    with db.engine.connect() as conn:
+    with engine.connect() as conn:
         result = conn.execute(sql, {'session_code': session_code})
         # .mappings() returns dict-like rows (SQLAlchemy 1.4+)
         return [dict(row) for row in result.mappings()]
@@ -89,12 +116,13 @@ def sql_update_batch(batch_id, **kwargs):
     if not kwargs:
         return
 
+    engine = get_engine()
     set_clauses = []
     params = {'id': batch_id}
     
     for k, v in kwargs.items():
         set_clauses.append(f"{k} = :{k}")
-        # Convert bools to integers for SQL compatibility if needed
+        # Convert bools to integers for SQL compatibility
         if isinstance(v, bool):
             params[k] = 1 if v else 0
         else:
@@ -103,10 +131,11 @@ def sql_update_batch(batch_id, **kwargs):
     sql_str = f"UPDATE img_desc_batch SET {', '.join(set_clauses)} WHERE id = :id"
     sql = text(sql_str)
     
-    with db.engine.connect() as conn:
+    with engine.connect() as conn:
         conn.execute(sql, params)
-        # Some DB drivers require explicit commit, though oTree usually autocommits
-        # We can force it if needed, but standard execute usually suffices.
+        # Commit usually implied in autocommit mode, but explicitly safe here
+        if hasattr(conn, 'commit'):
+            conn.commit()
 
 
 # =====================================================================
