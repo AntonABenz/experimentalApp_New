@@ -5,7 +5,6 @@ import json
 import logging
 from pprint import pprint
 
-# FIX: Use Django connection for raw SQL instead of otree.db.engine
 from django.db import connection 
 from django.db import models as djmodels
 from django.forms.models import model_to_dict
@@ -83,7 +82,7 @@ class Batch(ExtraModel):
 def get_session_batches(session_code):
     """
     Fetch all batches for a session using the internal objects_filter.
-    This bypasses model instance checks and returns a QuerySet.
+    This bypasses model instance checks and returns a QuerySet-like list.
     """
     return Batch.objects_filter(session_code=session_code)
 
@@ -445,8 +444,7 @@ class Player(BasePlayer):
                 logger.error("Trouble getting Prolific data")
                 logger.error(str(e))
             finally:
-                # FIX: Use self.in_all_rounds() to update standard models,
-                # do NOT use Player.objects.filter(...)
+                # FIX: use in_all_rounds() to update the player across rounds safely
                 for p in self.in_all_rounds():
                     for k, v in for_update.items():
                         setattr(p, k, v)
@@ -587,10 +585,12 @@ class Q(Page):
             player.start()
         return player.round_number <= player.session.vars["num_rounds"]
 
-    def vars_for_template(self):
-        if self.player.link:
+    # FIX: Use @staticmethod and 'player' arg to avoid 'self.player' AttributeError
+    @staticmethod
+    def vars_for_template(player):
+        if player.link:
             # We return dict version of link
-            l = self.player.link
+            l = player.link
             return dict(d={
                 k: getattr(l, k) for k in [
                     'sentences', 'rewards', 'condition', 'item_nr', 
@@ -639,24 +639,26 @@ class Q(Page):
 
         return super().post()
 
-    def before_next_page(self):
-        self.player.update_batch()
+    # FIX: Use @staticmethod and 'player' arg to avoid 'self.player' AttributeError
+    @staticmethod
+    def before_next_page(player, timeout_happened):
+        player.update_batch()
 
         logger.info(
-            f'before_next_page. participant {self.player.participant.code}; '
-            f'session {self.session.code}; round {self.round_number}; '
-            f'participant label {self.player.participant.label}'
+            f'before_next_page. participant {player.participant.code}; '
+            f'session {player.session.code}; round {player.round_number}; '
+            f'participant label {player.participant.label}'
         )
 
-        if self.round_number == self.session.vars["num_rounds"]:
+        if player.round_number == player.session.vars["num_rounds"]:
             logger.info(
-                f'Last round; participant {self.player.participant.code}; '
-                f'session {self.session.code}; round {self.round_number}; '
-                f'participant label {self.player.participant.label}'
+                f'Last round; participant {player.participant.code}; '
+                f'session {player.session.code}; round {player.round_number}; '
+                f'participant label {player.participant.label}'
             )
-            self.player.mark_data_processed()
+            player.mark_data_processed()
             try:
-                self.player.vars_dump = json.dumps(self.player.participant.vars)
+                player.vars_dump = json.dumps(player.participant.vars)
             except Exception as e:
                 logger.error("Failed to dump participant vars")
                 logger.error(e)
