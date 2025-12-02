@@ -4,7 +4,8 @@ from otree.api import *
 import json
 import logging
 from pprint import pprint
-from django.apps import apps  # <--- NEW IMPORT
+
+# REMOVED: from django.apps import apps 
 
 from django.db import models as djmodels
 from django.forms.models import model_to_dict
@@ -76,16 +77,25 @@ class Batch(ExtraModel):
 
 
 # =====================================================================
-# HELPER FOR RAW DJANGO ACCESS
+# HELPER FOR FILTERING (Python Side)
 # =====================================================================
 
-def get_batch_model():
+def get_all_batches(session_code):
     """
-    Returns the raw Django model for Batch, bypassing oTree wrappers.
-    This allows using .objects.filter() without restrictions.
+    Fetches all batches for the session using the safe oTree filter,
+    then we refine in Python to avoid 'ValueError' or 'AppRegistryNotReady'.
     """
-    # 'img_desc' is the app name, 'Batch' is the model name
-    return apps.get_model('img_desc', 'Batch')
+    # oTree allows filtering by session_code usually, or we grab all
+    # safely by just using .filter() with no args (equivalent to .all())
+    # and checking manually.
+    
+    # However, strictly speaking, the safest way in oTree 5 without touching
+    # internals is to grab everything for this session.
+    # We will use .filter() which returns a QuerySet-like object.
+    
+    # Hack: We use the hidden Django manager via _default_manager 
+    # BUT we do it inside functions so AppRegistry is ready.
+    return Batch._default_manager.filter(session_code=session_code)
 
 
 # =====================================================================
@@ -100,11 +110,8 @@ class Subsession(BaseSubsession):
 
     @property
     def get_active_batch(self):
-        BatchModel = get_batch_model()
-        return BatchModel.objects.filter(
-            session_code=self.session.code,
-            batch=self.active_batch,
-        )
+        # Use Python filtering on the queryset
+        return get_all_batches(self.session.code).filter(batch=self.active_batch)
 
     def expand_slots(self):
         study_id = self.study_id
@@ -143,18 +150,20 @@ class Subsession(BaseSubsession):
             f"Quick check if batch {active_batch} is completed"
         )
 
-        BatchModel = get_batch_model()
-        q = BatchModel.objects.filter(
-            session_code=session.code,
+        # Filter: session matches, batch matches, processed is False
+        # We use .filter() chaining on the manager
+        q = get_all_batches(session.code).filter(
             batch=active_batch,
-            processed=False,
+            processed=False
         )
         
+        # Note: len(q) triggers the DB query
+        count = q.count()
         logger.info(
-            f"CURRENT ACTIVE BATCH: {active_batch}; NON PROCESSED SLOTS: {len(q)}"
+            f"CURRENT ACTIVE BATCH: {active_batch}; NON PROCESSED SLOTS: {count}"
         )
         
-        if q:
+        if count > 0:
             return
 
         session.vars["active_batch"] = active_batch + 1
@@ -207,9 +216,8 @@ class Player(BasePlayer):
         if not self.link_id:
             return None
         try:
-            BatchModel = get_batch_model()
-            return BatchModel.objects.get(id=self.link_id)
-        except Exception: # Catch DoesNotExist generally
+            return Batch._default_manager.get(id=self.link_id)
+        except Exception: 
             return None
 
     def get_sentences_data(self):
@@ -235,8 +243,7 @@ class Player(BasePlayer):
             return dict(sentences="[]")
 
         try:
-            BatchModel = get_batch_model()
-            obj = BatchModel.objects.get(
+            obj = Batch._default_manager.get(
                 session_code=self.session.code,
                 batch=self.subsession.active_batch - 1,
                 role=PRODUCER,
@@ -267,12 +274,13 @@ class Player(BasePlayer):
 
     def mark_data_processed(self):
         self.participant.vars["full_study_completed"] = True
-        BatchModel = get_batch_model()
         
-        for b in BatchModel.objects.filter(
+        # Safe update loop
+        batches = Batch._default_manager.filter(
             session_code=self.session.code,
-            owner_code=self.participant.code,):
-                
+            owner_code=self.participant.code
+        )
+        for b in batches:
             b.processed = True
             b.save()
 
@@ -301,17 +309,20 @@ class Player(BasePlayer):
     def start(self):
         session = self.session
         subsession = self.subsession
-        BatchModel = get_batch_model()
 
         # --- ROUND 1: assign free slot ---
         if self.round_number == 1:
-            candidates = BatchModel.objects.filter(
+            # We use _default_manager here which is safe inside methods
+            candidates = Batch._default_manager.filter(
                 session_code=session.code,
                 batch=subsession.active_batch,
                 busy=False,
                 owner_code="",
             )
-            if not candidates:
+            
+            # Using count() is more efficient than checking list truthiness if DB is large,
+            # but for this logic either is fine.
+            if not candidates.exists():
                 logger.error(
                     f"No more free slots for participant {self.participant.code} "
                     f"in session {session.code}!"
@@ -319,8 +330,7 @@ class Player(BasePlayer):
                 self.faulty = True
                 return
         
-            # We need to be careful with sorting querysets from raw models
-            # It's better to convert to list if using python sort, or use .order_by
+            # Order by and grab first
             free = candidates.order_by('id_in_group').first()
             
             if free:
@@ -333,7 +343,7 @@ class Player(BasePlayer):
         
         # --- EVERY ROUND: link to our Batch row ---
         try:
-            row = BatchModel.objects.get(
+            row = Batch._default_manager.get(
                 session_code=session.code,
                 owner_code=self.participant.code,
                 round_number=self.round_number,
