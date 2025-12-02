@@ -7,6 +7,7 @@ from pprint import pprint
 
 from django.db import models as djmodels
 from django.forms.models import model_to_dict
+from django.shortcuts import redirect
 
 from .utils import get_url_for_image, get_completion_info, increase_space
 from reading_xls.get_data import get_data  # reads your Excel / sheet
@@ -40,6 +41,48 @@ class Constants(BaseConstants):
 
 
 # =====================================================================
+# BATCH MODEL (ExtraModel, oTree-native)
+# =====================================================================
+
+class Batch(ExtraModel):
+    """
+    Stores trial info and matching for one 'slot' (id_in_group) across rounds.
+    """
+
+    def __str__(self) -> str:
+        if self.owner_code:
+            return (
+                f"session: {self.session_code}; batch: {self.batch}; "
+                f"round: {self.round_number}; belongs to: {self.owner_code}"
+            )
+        return (
+            f"session: {self.session_code}; batch: {self.batch}; "
+            f"round: {self.round_number}; unassigned"
+        )
+
+    # link to oTree session via CODE, not FK
+    session_code = models.StringField()
+
+    # link to participant via CODE, not FK
+    owner_code = models.StringField(blank=True)
+
+    # design fields
+    sentences = models.LongStringField()          # JSON-encoded list-of-lists
+    rewards = models.LongStringField(blank=True)  # JSON-encoded list-of-int / None
+    condition = models.StringField()
+    item_nr = models.StringField()
+    image = models.StringField()
+    round_number = models.IntegerField()
+    role = models.StringField()   # "P" or "I"
+    batch = models.IntegerField()
+    id_in_group = models.IntegerField()
+    partner_id = models.IntegerField()
+
+    busy = models.BooleanField(initial=False)
+    processed = models.BooleanField(initial=False)
+
+
+# =====================================================================
 # SUBSESSION / GROUP
 # =====================================================================
 
@@ -54,11 +97,11 @@ class Subsession(BaseSubsession):
 
     @property
     def get_active_batch(self):
-        return Batch.filter(
+        # FIX: Use objects.filter
+        return Batch.objects.filter(
             session_code=self.session.code,
             batch=self.active_batch,
         )
-
 
     def expand_slots(self):
         """
@@ -108,7 +151,8 @@ class Subsession(BaseSubsession):
             f"Quick check if batch {active_batch} is completed"
         )
 
-        q = Batch.filter(
+        # FIX: Use objects.filter
+        q = Batch.objects.filter(
             session_code=session.code,
             batch=active_batch,
             processed=False,
@@ -139,56 +183,6 @@ class Subsession(BaseSubsession):
 
 class Group(BaseGroup):
     pass
-
-
-# =====================================================================
-# BATCH MODEL (ExtraModel, oTree-native)
-# =====================================================================
-
-# =====================================================================
-# BATCH MODEL (ExtraModel, oTree-native)
-# =====================================================================
-
-class Batch(ExtraModel):
-    """
-    Stores trial info and matching for one 'slot' (id_in_group) across rounds.
-
-    We link to oTree objects via codes:
-      - session_code: oTree session.code
-      - owner_code:   oTree participant.code (or "" if unassigned)
-    """
-
-    def __str__(self) -> str:
-        if self.owner_code:
-            return (
-                f"session: {self.session_code}; batch: {self.batch}; "
-                f"round: {self.round_number}; belongs to: {self.owner_code}"
-            )
-        return (
-            f"session: {self.session_code}; batch: {self.batch}; "
-            f"round: {self.round_number}; unassigned"
-        )
-
-    # link to oTree session via CODE, not FK
-    session_code = models.StringField()
-
-    # link to participant via CODE, not FK
-    owner_code = models.StringField(blank=True)
-
-    # design fields
-    sentences = models.LongStringField()          # JSON-encoded list-of-lists
-    rewards = models.LongStringField(blank=True)  # JSON-encoded list-of-int / None
-    condition = models.StringField()
-    item_nr = models.StringField()
-    image = models.StringField()
-    round_number = models.IntegerField()
-    role = models.StringField()   # "P" or "I"
-    batch = models.IntegerField()
-    id_in_group = models.IntegerField()
-    partner_id = models.IntegerField()
-
-    busy = models.BooleanField(initial=False)
-    processed = models.BooleanField(initial=False)
 
 
 # =====================================================================
@@ -230,8 +224,9 @@ class Player(BasePlayer):
         if not self.link_id:
             return None
         try:
-            return Batch.get(id=self.link_id)
-        except LookupError:
+            # FIX: Use objects.get
+            return Batch.objects.get(id=self.link_id)
+        except Batch.DoesNotExist:
             return None
 
 
@@ -263,7 +258,8 @@ class Player(BasePlayer):
             return dict(sentences="[]")
 
         try:
-            obj = Batch.get(
+            # FIX: Use objects.get
+            obj = Batch.objects.get(
                 session_code=self.session.code,
                 batch=self.subsession.active_batch - 1,
                 role=PRODUCER,
@@ -271,7 +267,7 @@ class Player(BasePlayer):
                 id_in_group=l.partner_id,
                 condition=l.condition,
             )
-        except LookupError:
+        except Batch.DoesNotExist:
             logger.error(
                 "Previous batch row not found for session=%s, partner_id=%s, id_in_group=%s",
                 self.session.code,
@@ -300,7 +296,8 @@ class Player(BasePlayer):
         """
         self.participant.vars["full_study_completed"] = True
 
-        for b in Batch.filter(
+        # FIX: Use objects.filter
+        for b in Batch.objects.filter(
             session_code=self.session.code,
             owner_code=self.participant.code,):
                 
@@ -345,8 +342,9 @@ class Player(BasePlayer):
 
         # --- ROUND 1: assign free slot ---
         if self.round_number == 1:
-            # all rows for this session & active batch, currently free
-            candidates = Batch.filter(
+            # FIX: Use objects.filter to avoid "ValueError: At least one argument..."
+            # because we are not filtering by a related model field like player=self.player
+            candidates = Batch.objects.filter(
                 session_code=session.code,
                 batch=subsession.active_batch,
                 busy=False,
@@ -368,12 +366,13 @@ class Player(BasePlayer):
         
         # --- EVERY ROUND: link to our Batch row ---
         try:
-            row = Batch.get(
+            # FIX: Use objects.get
+            row = Batch.objects.get(
                 session_code=session.code,
                 owner_code=self.participant.code,
                 round_number=self.round_number,
             )
-        except LookupError:
+        except Batch.DoesNotExist:
             logger.error(
                 f"Player {self.participant.code} has no Batch row for "
                 f"round {self.round_number} in session {session.code}"
@@ -574,24 +573,22 @@ def creating_session(subsession: Subsession):
 # =====================================================================
 # PAGES
 # =====================================================================
-from django.shortcuts import redirect
-
 
 class FaultyCatcher(Page):
     """
     If player couldn't get a slot (no free Batch row), redirect to fallback URL.
     """
 
+    # FIX: Use @staticmethod and 'player' arg to fix AttributeError
     @staticmethod
     def is_displayed(player):
         return player.faulty
 
     def get(self):
-        # 'get' is a standard view method, so 'self' is the Page here.
-        # self.player works correctly in this context.
         if self.player.faulty:
             return redirect(Constants.FALLBACK_URL)
         return super().get()
+
 
 class Q(Page):
     """
@@ -600,13 +597,12 @@ class Q(Page):
 
     instructions = True
 
+    # FIX: Use @staticmethod and 'player' arg to fix AttributeError
     @staticmethod
     def is_displayed(player):
         # ensure Player.start() runs before we show anything
         if not player.faulty:
             player.start()
-        
-        # Access session via the player object
         return player.round_number <= player.session.vars["num_rounds"]
 
     def vars_for_template(self):
@@ -687,10 +683,12 @@ class Feedback(Page):
 
 
 class FinalForProlific(Page):
-    def is_displayed(self):
+    # FIX: Use @staticmethod and 'player' arg for consistency
+    @staticmethod
+    def is_displayed(player):
         return (
-            self.session.config.get("for_prolific")
-            and self.round_number == self.session.vars["num_rounds"]
+            player.session.config.get("for_prolific")
+            and player.round_number == player.session.vars["num_rounds"]
         )
 
     def get(self):
