@@ -416,4 +416,156 @@ def creating_session(subsession: Subsession):
     if not filename:
         raise RuntimeError("Missing 'filename' in session config")
 
-    excel_data
+    excel_data = get_data(filename)
+    df = excel_data.get("data")
+
+    session.vars["user_data"] = df
+    session.vars["num_rounds"] = int(df.group_enumeration.max())
+
+    logger.info(f'TOTAL NUM ROUNDS: {session.vars["num_rounds"]}')
+    
+    # Create batches via oTree's built-in create method (this usually works fine for INSERT)
+    records = df.to_dict(orient="records")
+    for r in records:
+        Batch.create(
+            session_code=session.code,
+            owner_code="",
+            batch=r.get("Exp"),
+            item_nr=r.get("Item.Nr"),
+            condition=r.get("Condition"),
+            image=r.get("Item"),
+            round_number=r.get("group_enumeration"),
+            role=r.get("role"),
+            id_in_group=r.get("id"),
+            partner_id=r.get("partner_id"),
+            sentences=r.get("sentences"),
+        )
+
+    # Settings setup
+    session.vars["practice_settings"] = excel_data.get("practice_settings")
+    session.vars["practice_pages"] = excel_data.get("practice_pages")
+    session.vars["user_settings"] = excel_data.get("settings")
+    
+    settings = excel_data.get("settings") or {}
+    for k in ["s3path", "extension", "prefix", "interpreter_choices", 
+              "interpreter_input_type", "interpreter_input_choices", "interpreter_title"]:
+        session.vars[k] = settings.get(k)
+
+    session.vars["suffixes"] = settings.get("suffixes") or []
+    
+    av = settings.get("allowed_values") or []
+    session.vars["allowed_values"] = [[x for x in sub if x != ""] for sub in av]
+    session.vars["allowed_regex"] = settings.get("allowed_regex") or []
+    
+    session.vars["caseflag"] = settings.get("caseflag") in ["True", "true", "1", "t", "T"]
+    session.vars["EndOfIntroText"] = settings.get("EndOfIntroText", "")
+
+    # Capacity
+    unique_ids_wz = [x for x in df.id.unique() if x != 0]
+    unique_exps = df[df.Exp != 0].Exp.unique()
+    batch_size = len(unique_ids_wz)
+    max_users = batch_size * len(unique_exps)
+
+    if session.config.get("expand_slots"):
+        assert max_users <= session.num_participants
+
+    session.vars["max_users"] = max_users
+    session.vars["batch_size"] = batch_size
+    logger.info(f"{max_users=}; {batch_size=}")
+
+
+# =====================================================================
+# PAGES
+# =====================================================================
+
+class FaultyCatcher(Page):
+    @staticmethod
+    def is_displayed(player):
+        return player.faulty
+
+    def get(self):
+        if self.player.faulty:
+            return redirect(Constants.FALLBACK_URL)
+        return super().get()
+
+
+class Q(Page):
+    instructions = True
+
+    @staticmethod
+    def is_displayed(player):
+        if not player.faulty:
+            player.start()
+        return player.round_number <= player.session.vars["num_rounds"]
+
+    @staticmethod
+    def vars_for_template(player):
+        # FIX: Return None instead of "" to prevent TemplateRenderingError 
+        # when template accesses attributes (e.g. d.image)
+        if player.link:
+            return dict(d=player.link)
+        return dict(d=None)
+
+    def post(self):
+        logger.info(f"POST {self.participant.code} round {self.round_number}")
+        
+        for t in ["start_decision_time", "end_decision_time"]:
+            v = self.request.POST.get(t)
+            if v: setattr(self.player, t, v)
+
+        dec_sec = self.request.POST.get("decision_seconds")
+        if dec_sec:
+            try:
+                self.player.decision_seconds = float(dec_sec)
+            except: pass
+
+        field = "producer_decision" if self.player.inner_role == PRODUCER else "interpreter_decision"
+        raw = self.request.POST.get(field)
+        
+        if raw:
+            decisions = json.loads(raw)
+            if self.player.inner_role == PRODUCER:
+                flatten = [list(i.values()) for i in decisions]
+                self.player.producer_decision = json.dumps(flatten)
+                self.player.inner_sentences = json.dumps(flatten)
+            else:
+                flatten = [i.get("choice") for i in decisions]
+                self.player.interpreter_decision = json.dumps(flatten)
+
+        return super().post()
+
+    @staticmethod
+    def before_next_page(player, timeout_happened):
+        player.update_batch()
+        
+        if player.round_number == player.session.vars["num_rounds"]:
+            player.mark_data_processed()
+            try:
+                player.vars_dump = json.dumps(player.participant.vars)
+            except Exception as e:
+                logger.error(e)
+
+
+class Feedback(Page):
+    form_model = "player"
+    form_fields = ["feedback"]
+
+    def is_displayed(self):
+        return self.round_number == self.session.vars["num_rounds"]
+
+
+class FinalForProlific(Page):
+    @staticmethod
+    def is_displayed(player):
+        return (
+            player.session.config.get("for_prolific")
+            and player.round_number == player.session.vars["num_rounds"]
+        )
+
+    def get(self):
+        if self.player.full_return_url:
+            return redirect(self.player.full_return_url)
+        return redirect("https://cnn.com")
+
+
+page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
