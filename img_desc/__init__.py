@@ -75,15 +75,29 @@ class Batch(ExtraModel):
 
 
 # =====================================================================
-# MANAGER ACCESS HELPER
+# HELPER: BYPASS OTREE RESTRICTIONS
 # =====================================================================
 
-def get_batch_manager():
+def safe_filter(**kwargs):
     """
-    Access the underlying Django manager for the Batch model.
-    We access ._meta.model.objects to bypass oTree proxy restrictions.
+    Uses the internal Batch.objects_filter method to bypass the 
+    'ValueError: ... must be a model instance' check in oTree 5.
     """
-    return Batch._meta.model.objects
+    return Batch.objects_filter(**kwargs)
+
+def safe_get(**kwargs):
+    """
+    Equivalent to .get() but using the safe filter mechanism.
+    """
+    results = Batch.objects_filter(**kwargs)
+    # Convert queryset to list to check length safely
+    res_list = list(results)
+    if len(res_list) == 1:
+        return res_list[0]
+    elif len(res_list) == 0:
+        raise ValueError("Batch matching query does not exist.")
+    else:
+        raise ValueError("Batch returned more than one Batch.")
 
 
 # =====================================================================
@@ -98,7 +112,7 @@ class Subsession(BaseSubsession):
 
     @property
     def get_active_batch(self):
-        return get_batch_manager().filter(
+        return safe_filter(
             session_code=self.session.code,
             batch=self.active_batch,
         )
@@ -141,13 +155,15 @@ class Subsession(BaseSubsession):
         )
 
         # Use helper
-        q = get_batch_manager().filter(
+        q = safe_filter(
             session_code=session.code,
             batch=active_batch,
             processed=False,
         )
         
-        count = q.count()
+        # In oTree 5 objects_filter returns a QuerySet, so count() works, 
+        # or we can use len()
+        count = len(q)
         logger.info(
             f"CURRENT ACTIVE BATCH: {active_batch}; NON PROCESSED SLOTS: {count}"
         )
@@ -205,7 +221,7 @@ class Player(BasePlayer):
         if not self.link_id:
             return None
         try:
-            return get_batch_manager().get(id=self.link_id)
+            return safe_get(id=self.link_id)
         except Exception: 
             return None
 
@@ -232,7 +248,7 @@ class Player(BasePlayer):
             return dict(sentences="[]")
 
         try:
-            obj = get_batch_manager().get(
+            obj = safe_get(
                 session_code=self.session.code,
                 batch=self.subsession.active_batch - 1,
                 role=PRODUCER,
@@ -264,7 +280,7 @@ class Player(BasePlayer):
     def mark_data_processed(self):
         self.participant.vars["full_study_completed"] = True
         
-        batches = get_batch_manager().filter(
+        batches = safe_filter(
             session_code=self.session.code,
             owner_code=self.participant.code
         )
@@ -301,14 +317,19 @@ class Player(BasePlayer):
         # --- ROUND 1: assign free slot ---
         if self.round_number == 1:
             # Access manager via helper
-            candidates = get_batch_manager().filter(
+            candidates = safe_filter(
                 session_code=session.code,
                 batch=subsession.active_batch,
                 busy=False,
                 owner_code="",
             )
             
-            if not candidates.exists():
+            # Since candidates is a queryset-like, we can use sorting
+            # But let's be safe and list-ify it first for Python sorting
+            # just in case objects_filter returns something that doesn't support order_by
+            candidates_list = list(candidates)
+
+            if not candidates_list:
                 logger.error(
                     f"No more free slots for participant {self.participant.code} "
                     f"in session {session.code}!"
@@ -316,7 +337,9 @@ class Player(BasePlayer):
                 self.faulty = True
                 return
         
-            free = candidates.order_by('id_in_group').first()
+            # Python sort
+            candidates_list.sort(key=lambda b: b.id_in_group)
+            free = candidates_list[0]
             
             if free:
                 free.busy = True
@@ -328,7 +351,7 @@ class Player(BasePlayer):
         
         # --- EVERY ROUND: link to our Batch row ---
         try:
-            row = get_batch_manager().get(
+            row = safe_get(
                 session_code=session.code,
                 owner_code=self.participant.code,
                 round_number=self.round_number,
