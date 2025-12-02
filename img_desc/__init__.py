@@ -6,7 +6,7 @@ import logging
 from pprint import pprint
 import os
 
-# FIX: Use independent SQLAlchemy engine to bypass oTree wrappers
+# Use independent SQLAlchemy engine to bypass oTree wrappers
 from sqlalchemy import create_engine, text
 
 from django.db import models as djmodels
@@ -100,14 +100,17 @@ def get_engine():
 def get_all_batches_sql(session_code):
     """
     Fetch all batches for this session using custom engine.
+    Compatible with older SQLAlchemy versions (ResultProxy).
     """
     engine = get_engine()
     sql = text("SELECT * FROM img_desc_batch WHERE session_code = :session_code")
     
     with engine.connect() as conn:
-        result = conn.execute(sql, {'session_code': session_code})
-        # .mappings() returns dict-like rows (SQLAlchemy 1.4+)
-        return [dict(row) for row in result.mappings()]
+        result = conn.execute(sql, session_code=session_code)
+        
+        # Legacy-compatible way to convert rows to dicts
+        # .keys() returns column names, result is iterable
+        return [dict(zip(result.keys(), row)) for row in result]
 
 def sql_update_batch(batch_id, **kwargs):
     """
@@ -132,7 +135,7 @@ def sql_update_batch(batch_id, **kwargs):
     sql = text(sql_str)
     
     with engine.connect() as conn:
-        conn.execute(sql, params)
+        conn.execute(sql, **params)
         # Commit usually implied in autocommit mode, but explicitly safe here
         if hasattr(conn, 'commit'):
             conn.commit()
