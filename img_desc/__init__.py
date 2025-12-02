@@ -97,8 +97,8 @@ class Subsession(BaseSubsession):
 
     @property
     def get_active_batch(self):
-        # FIX: Use objects.filter
-        return Batch.objects.filter(
+        # FIX: Use _default_manager instead of objects
+        return Batch._default_manager.filter(
             session_code=self.session.code,
             batch=self.active_batch,
         )
@@ -151,8 +151,8 @@ class Subsession(BaseSubsession):
             f"Quick check if batch {active_batch} is completed"
         )
 
-        # FIX: Use objects.filter
-        q = Batch.objects.filter(
+        # FIX: Use _default_manager instead of objects
+        q = Batch._default_manager.filter(
             session_code=session.code,
             batch=active_batch,
             processed=False,
@@ -224,8 +224,8 @@ class Player(BasePlayer):
         if not self.link_id:
             return None
         try:
-            # FIX: Use objects.get
-            return Batch.objects.get(id=self.link_id)
+            # FIX: Use _default_manager instead of objects
+            return Batch._default_manager.get(id=self.link_id)
         except Batch.DoesNotExist:
             return None
 
@@ -258,8 +258,8 @@ class Player(BasePlayer):
             return dict(sentences="[]")
 
         try:
-            # FIX: Use objects.get
-            obj = Batch.objects.get(
+            # FIX: Use _default_manager instead of objects
+            obj = Batch._default_manager.get(
                 session_code=self.session.code,
                 batch=self.subsession.active_batch - 1,
                 role=PRODUCER,
@@ -296,8 +296,8 @@ class Player(BasePlayer):
         """
         self.participant.vars["full_study_completed"] = True
 
-        # FIX: Use objects.filter
-        for b in Batch.objects.filter(
+        # FIX: Use _default_manager instead of objects
+        for b in Batch._default_manager.filter(
             session_code=self.session.code,
             owner_code=self.participant.code,):
                 
@@ -342,9 +342,8 @@ class Player(BasePlayer):
 
         # --- ROUND 1: assign free slot ---
         if self.round_number == 1:
-            # FIX: Use objects.filter to avoid "ValueError: At least one argument..."
-            # because we are not filtering by a related model field like player=self.player
-            candidates = Batch.objects.filter(
+            # FIX: Use _default_manager.filter to bypass oTree's strict check
+            candidates = Batch._default_manager.filter(
                 session_code=session.code,
                 batch=subsession.active_batch,
                 busy=False,
@@ -366,8 +365,8 @@ class Player(BasePlayer):
         
         # --- EVERY ROUND: link to our Batch row ---
         try:
-            # FIX: Use objects.get
-            row = Batch.objects.get(
+            # FIX: Use _default_manager.get
+            row = Batch._default_manager.get(
                 session_code=session.code,
                 owner_code=self.participant.code,
                 round_number=self.round_number,
@@ -579,7 +578,6 @@ class FaultyCatcher(Page):
     If player couldn't get a slot (no free Batch row), redirect to fallback URL.
     """
 
-    # FIX: Use @staticmethod and 'player' arg to fix AttributeError
     @staticmethod
     def is_displayed(player):
         return player.faulty
@@ -597,7 +595,6 @@ class Q(Page):
 
     instructions = True
 
-    # FIX: Use @staticmethod and 'player' arg to fix AttributeError
     @staticmethod
     def is_displayed(player):
         # ensure Player.start() runs before we show anything
@@ -683,7 +680,6 @@ class Feedback(Page):
 
 
 class FinalForProlific(Page):
-    # FIX: Use @staticmethod and 'player' arg for consistency
     @staticmethod
     def is_displayed(player):
         return (
