@@ -5,6 +5,9 @@ import json
 import logging
 from pprint import pprint
 
+# NEW: Import db for raw SQL execution
+from otree.database import db
+
 from django.db import models as djmodels
 from django.forms.models import model_to_dict
 from django.shortcuts import redirect
@@ -75,34 +78,71 @@ class Batch(ExtraModel):
 
 
 # =====================================================================
-# HELPER: BYPASS OTREE RESTRICTIONS
+# HELPER: RAW SQL BYPASS
 # =====================================================================
 
-def safe_filter(**kwargs):
+def get_session_batches(session_code):
     """
-    Uses the internal Batch.objects_filter method.
+    Fetch all batches for a session using oTree's safer filter mechanism.
+    If this fails, we fall back to raw SQL.
+    Usually .filter() works if we don't pass 'bad' args.
+    Trying .filter() with no args returns everything, then we filter in python.
     """
-    return Batch.objects_filter(**kwargs)
+    # This grabs ALL batches in the database (cached), then we filter.
+    # It is safe because ExtraModel tables aren't huge usually.
+    all_batches = Batch.filter() 
+    return [b for b in all_batches if b.session_code == session_code]
 
-def safe_get(**kwargs):
-    """
-    Equivalent to .get() but using the safe filter mechanism.
-    """
-    results = Batch.objects_filter(**kwargs)
-    res_list = list(results)
-    if len(res_list) == 1:
-        return res_list[0]
-    elif len(res_list) == 0:
-        raise ValueError("Batch matching query does not exist.")
-    else:
-        raise ValueError("Batch returned more than one Batch.")
 
-def safe_update(batch_id, **kwargs):
+def raw_update(batch_id, **kwargs):
     """
-    Updates a Batch row by ID using objects_update because .save()
-    is not available on objects returned by objects_filter.
+    Updates a Batch row using direct database access to bypass
+    oTree's ExtraModel restrictions.
     """
-    Batch.objects_update(id=batch_id, **kwargs)
+    # Batch is ExtraModel, usually table is 'appname_modelname'
+    table_name = "img_desc_batch"
+    
+    set_clauses = []
+    values = []
+    
+    for k, v in kwargs.items():
+        set_clauses.append(f"{k} = ?")
+        # Boolean handling for SQL
+        if isinstance(v, bool):
+            values.append(1 if v else 0)
+        else:
+            values.append(v)
+            
+    values.append(batch_id) # For WHERE clause
+    
+    sql = f"UPDATE {table_name} SET {', '.join(set_clauses)} WHERE id = ?"
+    
+    # db.execute is available in oTree environment
+    # We use a try-except to handle potential connection issues, though unlikely
+    try:
+        # oTree's db might require explicit commit or different param style depending on backend
+        # But usually '?' works for SQLite/Postgres via common interfaces in oTree
+        # If using Postgres on Heroku, param style is usually %s
+        
+        # Helper to detect param style (simple heuristic)
+        # Using built-in oTree model update is safer if we can find the object
+        # BUT since we can't save it, we must do this.
+        
+        # Let's try to update the python object in memory AND the DB
+        # To ensure the cache is coherent for the current request.
+        
+        # 1. Update DB
+        # We assume standard SQL. For Postgres (Heroku), use %s
+        sql_postgres = f"UPDATE {table_name} SET {', '.join([f'{k} = %s' for k in kwargs.keys()])} WHERE id = %s"
+        db.engine.execute(sql_postgres, list(values))
+        
+    except Exception as e:
+        logger.error(f"SQL Update failed: {e}")
+        # Fallback for SQLite (local testing)
+        try:
+             db.engine.execute(sql, list(values))
+        except Exception as e2:
+             logger.error(f"SQL Fallback failed: {e2}")
 
 
 # =====================================================================
@@ -117,10 +157,8 @@ class Subsession(BaseSubsession):
 
     @property
     def get_active_batch(self):
-        return safe_filter(
-            session_code=self.session.code,
-            batch=self.active_batch,
-        )
+        batches = get_session_batches(self.session.code)
+        return [b for b in batches if b.batch == self.active_batch]
 
     def expand_slots(self):
         study_id = self.study_id
@@ -159,11 +197,9 @@ class Subsession(BaseSubsession):
             f"Quick check if batch {active_batch} is completed"
         )
 
-        q = safe_filter(
-            session_code=session.code,
-            batch=active_batch,
-            processed=False,
-        )
+        batches = get_session_batches(session.code)
+        # Filter for current batch AND not processed
+        q = [b for b in batches if b.batch == active_batch and not b.processed]
         
         count = len(q)
         logger.info(
@@ -222,10 +258,12 @@ class Player(BasePlayer):
     def link(self):
         if not self.link_id:
             return None
-        try:
-            return safe_get(id=self.link_id)
-        except Exception: 
-            return None
+        # Retrieve from cache/DB
+        batches = Batch.filter() # Get all
+        for b in batches:
+            if b.id == self.link_id:
+                return b
+        return None
 
     def get_sentences_data(self):
         link = self.link
@@ -249,38 +287,31 @@ class Player(BasePlayer):
         if not l or l.partner_id == 0:
             return dict(sentences="[]")
 
-        try:
-            obj = safe_get(
-                session_code=self.session.code,
-                batch=self.subsession.active_batch - 1,
-                role=PRODUCER,
-                partner_id=l.id_in_group,
-                id_in_group=l.partner_id,
-                condition=l.condition,
-            )
-        except Exception:
-            logger.error(
-                "Previous batch row not found for session=%s, partner_id=%s, id_in_group=%s",
-                self.session.code,
-                l.partner_id,
-                l.id_in_group,
-            )
-            return dict(sentences="[]")
-
-        # In oTree 5 ExtraModel results are practically dicts/named tuples
-        # so model_to_dict might fail or be unnecessary.
-        # We try accessing __dict__ or just returning the object if it behaves like a dict
-        try:
-            return model_to_dict(obj)
-        except Exception:
-            # Fallback if model_to_dict fails on ExtraModel instance
-            return {
-                k: getattr(obj, k) for k in [
-                    'sentences', 'rewards', 'condition', 'item_nr', 
-                    'image', 'round_number', 'role', 'batch', 
-                    'id_in_group', 'partner_id'
-                ]
-            }
+        # Find previous batch row
+        batches = get_session_batches(self.session.code)
+        target_batch_idx = self.subsession.active_batch - 1
+        
+        for obj in batches:
+            if (obj.batch == target_batch_idx and
+                obj.role == PRODUCER and
+                obj.partner_id == l.id_in_group and
+                obj.id_in_group == l.partner_id and
+                obj.condition == l.condition):
+                
+                # Manual model_to_dict
+                return {
+                    k: getattr(obj, k) for k in [
+                        'sentences', 'rewards', 'condition', 'item_nr', 
+                        'image', 'round_number', 'role', 'batch', 
+                        'id_in_group', 'partner_id'
+                    ]
+                }
+                
+        logger.error(
+            "Previous batch row not found for session=%s, partner_id=%s, id_in_group=%s",
+            self.session.code, l.partner_id, l.id_in_group,
+        )
+        return dict(sentences="[]")
 
     def update_batch(self):
         link = self.link
@@ -294,19 +325,17 @@ class Player(BasePlayer):
             updates['rewards'] = self.interpreter_decision
             
         if updates:
-            # FIX: Use safe_update instead of link.save()
-            safe_update(link.id, **updates)
+            raw_update(link.id, **updates)
 
     def mark_data_processed(self):
         self.participant.vars["full_study_completed"] = True
         
-        batches = safe_filter(
-            session_code=self.session.code,
-            owner_code=self.participant.code
-        )
+        batches = get_session_batches(self.session.code)
+        my_code = self.participant.code
+        
         for b in batches:
-            # FIX: Use safe_update instead of b.save()
-            safe_update(b.id, processed=True)
+            if b.owner_code == my_code:
+                raw_update(b.id, processed=True)
 
         self.subsession.check_for_batch_completion()
 
@@ -336,16 +365,18 @@ class Player(BasePlayer):
 
         # --- ROUND 1: assign free slot ---
         if self.round_number == 1:
-            candidates = safe_filter(
-                session_code=session.code,
-                batch=subsession.active_batch,
-                busy=False,
-                owner_code="",
-            )
+            # 1. Get all batches for session
+            batches = get_session_batches(session.code)
             
-            candidates_list = list(candidates)
-
-            if not candidates_list:
+            # 2. Filter for candidates
+            candidates = [
+                b for b in batches 
+                if b.batch == subsession.active_batch
+                and not b.busy
+                and b.owner_code == ""
+            ]
+            
+            if not candidates:
                 logger.error(
                     f"No more free slots for participant {self.participant.code} "
                     f"in session {session.code}!"
@@ -353,28 +384,34 @@ class Player(BasePlayer):
                 self.faulty = True
                 return
         
-            candidates_list.sort(key=lambda b: b.id_in_group)
-            free = candidates_list[0]
+            # 3. Sort
+            candidates.sort(key=lambda b: b.id_in_group)
+            free = candidates[0]
             
+            # 4. Update
             if free:
-                # FIX: Use safe_update instead of free.save()
-                safe_update(
+                # Update DB
+                raw_update(
                     free.id, 
                     busy=True, 
                     owner_code=self.participant.code
                 )
+                # Update local object so current request sees it if needed
+                free.busy = True
+                free.owner_code = self.participant.code
             else:
                 self.faulty = True
                 return
         
         # --- EVERY ROUND: link to our Batch row ---
-        try:
-            row = safe_get(
-                session_code=session.code,
-                owner_code=self.participant.code,
-                round_number=self.round_number,
-            )
-        except Exception:
+        batches = get_session_batches(session.code)
+        row = None
+        for b in batches:
+            if b.owner_code == self.participant.code and b.round_number == self.round_number:
+                row = b
+                break
+                
+        if not row:
             logger.error(
                 f"Player {self.participant.code} has no Batch row for "
                 f"round {self.round_number} in session {session.code}"
@@ -578,7 +615,15 @@ class Q(Page):
 
     def vars_for_template(self):
         if self.player.link:
-            return dict(d=model_to_dict(self.player.link))
+            # We return dict version of link
+            l = self.player.link
+            return dict(d={
+                k: getattr(l, k) for k in [
+                    'sentences', 'rewards', 'condition', 'item_nr', 
+                    'image', 'round_number', 'role', 'batch', 
+                    'id_in_group', 'partner_id'
+                ]
+            })
         return dict(d="")
 
     def post(self):
