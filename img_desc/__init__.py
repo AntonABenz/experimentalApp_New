@@ -5,8 +5,6 @@ import json
 import logging
 from pprint import pprint
 
-# REMOVED: from django.apps import apps 
-
 from django.db import models as djmodels
 from django.forms.models import model_to_dict
 from django.shortcuts import redirect
@@ -77,25 +75,15 @@ class Batch(ExtraModel):
 
 
 # =====================================================================
-# HELPER FOR FILTERING (Python Side)
+# MANAGER ACCESS HELPER
 # =====================================================================
 
-def get_all_batches(session_code):
+def get_batch_manager():
     """
-    Fetches all batches for the session using the safe oTree filter,
-    then we refine in Python to avoid 'ValueError' or 'AppRegistryNotReady'.
+    Access the underlying Django manager for the Batch model.
+    We access ._meta.model.objects to bypass oTree proxy restrictions.
     """
-    # oTree allows filtering by session_code usually, or we grab all
-    # safely by just using .filter() with no args (equivalent to .all())
-    # and checking manually.
-    
-    # However, strictly speaking, the safest way in oTree 5 without touching
-    # internals is to grab everything for this session.
-    # We will use .filter() which returns a QuerySet-like object.
-    
-    # Hack: We use the hidden Django manager via _default_manager 
-    # BUT we do it inside functions so AppRegistry is ready.
-    return Batch._default_manager.filter(session_code=session_code)
+    return Batch._meta.model.objects
 
 
 # =====================================================================
@@ -110,8 +98,10 @@ class Subsession(BaseSubsession):
 
     @property
     def get_active_batch(self):
-        # Use Python filtering on the queryset
-        return get_all_batches(self.session.code).filter(batch=self.active_batch)
+        return get_batch_manager().filter(
+            session_code=self.session.code,
+            batch=self.active_batch,
+        )
 
     def expand_slots(self):
         study_id = self.study_id
@@ -150,14 +140,13 @@ class Subsession(BaseSubsession):
             f"Quick check if batch {active_batch} is completed"
         )
 
-        # Filter: session matches, batch matches, processed is False
-        # We use .filter() chaining on the manager
-        q = get_all_batches(session.code).filter(
+        # Use helper
+        q = get_batch_manager().filter(
+            session_code=session.code,
             batch=active_batch,
-            processed=False
+            processed=False,
         )
         
-        # Note: len(q) triggers the DB query
         count = q.count()
         logger.info(
             f"CURRENT ACTIVE BATCH: {active_batch}; NON PROCESSED SLOTS: {count}"
@@ -216,7 +205,7 @@ class Player(BasePlayer):
         if not self.link_id:
             return None
         try:
-            return Batch._default_manager.get(id=self.link_id)
+            return get_batch_manager().get(id=self.link_id)
         except Exception: 
             return None
 
@@ -243,7 +232,7 @@ class Player(BasePlayer):
             return dict(sentences="[]")
 
         try:
-            obj = Batch._default_manager.get(
+            obj = get_batch_manager().get(
                 session_code=self.session.code,
                 batch=self.subsession.active_batch - 1,
                 role=PRODUCER,
@@ -275,8 +264,7 @@ class Player(BasePlayer):
     def mark_data_processed(self):
         self.participant.vars["full_study_completed"] = True
         
-        # Safe update loop
-        batches = Batch._default_manager.filter(
+        batches = get_batch_manager().filter(
             session_code=self.session.code,
             owner_code=self.participant.code
         )
@@ -312,16 +300,14 @@ class Player(BasePlayer):
 
         # --- ROUND 1: assign free slot ---
         if self.round_number == 1:
-            # We use _default_manager here which is safe inside methods
-            candidates = Batch._default_manager.filter(
+            # Access manager via helper
+            candidates = get_batch_manager().filter(
                 session_code=session.code,
                 batch=subsession.active_batch,
                 busy=False,
                 owner_code="",
             )
             
-            # Using count() is more efficient than checking list truthiness if DB is large,
-            # but for this logic either is fine.
             if not candidates.exists():
                 logger.error(
                     f"No more free slots for participant {self.participant.code} "
@@ -330,7 +316,6 @@ class Player(BasePlayer):
                 self.faulty = True
                 return
         
-            # Order by and grab first
             free = candidates.order_by('id_in_group').first()
             
             if free:
@@ -343,7 +328,7 @@ class Player(BasePlayer):
         
         # --- EVERY ROUND: link to our Batch row ---
         try:
-            row = Batch._default_manager.get(
+            row = get_batch_manager().get(
                 session_code=session.code,
                 owner_code=self.participant.code,
                 round_number=self.round_number,
