@@ -5,9 +5,8 @@ import json
 import logging
 from pprint import pprint
 
-# NEW: Import db for raw SQL execution
-from otree.database import db
-
+# FIX: Use Django connection for raw SQL instead of otree.db.engine
+from django.db import connection 
 from django.db import models as djmodels
 from django.forms.models import model_to_dict
 from django.shortcuts import redirect
@@ -78,71 +77,41 @@ class Batch(ExtraModel):
 
 
 # =====================================================================
-# HELPER: RAW SQL BYPASS
+# HELPER: RAW SQL BYPASS & SAFE FILTERING
 # =====================================================================
 
 def get_session_batches(session_code):
     """
-    Fetch all batches for a session using oTree's safer filter mechanism.
-    If this fails, we fall back to raw SQL.
-    Usually .filter() works if we don't pass 'bad' args.
-    Trying .filter() with no args returns everything, then we filter in python.
+    Fetch all batches for a session using the internal objects_filter.
+    This bypasses model instance checks and returns a QuerySet.
     """
-    # This grabs ALL batches in the database (cached), then we filter.
-    # It is safe because ExtraModel tables aren't huge usually.
-    all_batches = Batch.filter() 
-    return [b for b in all_batches if b.session_code == session_code]
+    return Batch.objects_filter(session_code=session_code)
 
 
 def raw_update(batch_id, **kwargs):
     """
-    Updates a Batch row using direct database access to bypass
-    oTree's ExtraModel restrictions.
+    Updates a Batch row using direct database cursor execution.
+    This works on Heroku (Postgres) and local (SQLite).
     """
-    # Batch is ExtraModel, usually table is 'appname_modelname'
     table_name = "img_desc_batch"
     
     set_clauses = []
     values = []
     
     for k, v in kwargs.items():
-        set_clauses.append(f"{k} = ?")
-        # Boolean handling for SQL
-        if isinstance(v, bool):
-            values.append(1 if v else 0)
-        else:
-            values.append(v)
+        # Standard SQL parameter placeholder is %s for Django cursor
+        set_clauses.append(f"{k} = %s")
+        values.append(v)
             
     values.append(batch_id) # For WHERE clause
     
-    sql = f"UPDATE {table_name} SET {', '.join(set_clauses)} WHERE id = ?"
+    sql = f"UPDATE {table_name} SET {', '.join(set_clauses)} WHERE id = %s"
     
-    # db.execute is available in oTree environment
-    # We use a try-except to handle potential connection issues, though unlikely
     try:
-        # oTree's db might require explicit commit or different param style depending on backend
-        # But usually '?' works for SQLite/Postgres via common interfaces in oTree
-        # If using Postgres on Heroku, param style is usually %s
-        
-        # Helper to detect param style (simple heuristic)
-        # Using built-in oTree model update is safer if we can find the object
-        # BUT since we can't save it, we must do this.
-        
-        # Let's try to update the python object in memory AND the DB
-        # To ensure the cache is coherent for the current request.
-        
-        # 1. Update DB
-        # We assume standard SQL. For Postgres (Heroku), use %s
-        sql_postgres = f"UPDATE {table_name} SET {', '.join([f'{k} = %s' for k in kwargs.keys()])} WHERE id = %s"
-        db.engine.execute(sql_postgres, list(values))
-        
+        with connection.cursor() as cursor:
+            cursor.execute(sql, values)
     except Exception as e:
         logger.error(f"SQL Update failed: {e}")
-        # Fallback for SQLite (local testing)
-        try:
-             db.engine.execute(sql, list(values))
-        except Exception as e2:
-             logger.error(f"SQL Fallback failed: {e2}")
 
 
 # =====================================================================
@@ -259,7 +228,7 @@ class Player(BasePlayer):
         if not self.link_id:
             return None
         # Retrieve from cache/DB
-        batches = Batch.filter() # Get all
+        batches = get_session_batches(self.session.code)
         for b in batches:
             if b.id == self.link_id:
                 return b
@@ -390,7 +359,7 @@ class Player(BasePlayer):
             
             # 4. Update
             if free:
-                # Update DB
+                # Update DB via SQL
                 raw_update(
                     free.id, 
                     busy=True, 
@@ -476,7 +445,12 @@ class Player(BasePlayer):
                 logger.error("Trouble getting Prolific data")
                 logger.error(str(e))
             finally:
-                Player.objects.filter(participant=self.participant).update(**for_update)
+                # FIX: Use self.in_all_rounds() to update standard models,
+                # do NOT use Player.objects.filter(...)
+                for p in self.in_all_rounds():
+                    for k, v in for_update.items():
+                        setattr(p, k, v)
+                
                 if prol_session_id:
                     self.participant.label = prol_session_id
 
