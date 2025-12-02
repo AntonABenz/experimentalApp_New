@@ -80,8 +80,7 @@ class Batch(ExtraModel):
 
 def safe_filter(**kwargs):
     """
-    Uses the internal Batch.objects_filter method to bypass the 
-    'ValueError: ... must be a model instance' check in oTree 5.
+    Uses the internal Batch.objects_filter method.
     """
     return Batch.objects_filter(**kwargs)
 
@@ -90,7 +89,6 @@ def safe_get(**kwargs):
     Equivalent to .get() but using the safe filter mechanism.
     """
     results = Batch.objects_filter(**kwargs)
-    # Convert queryset to list to check length safely
     res_list = list(results)
     if len(res_list) == 1:
         return res_list[0]
@@ -98,6 +96,13 @@ def safe_get(**kwargs):
         raise ValueError("Batch matching query does not exist.")
     else:
         raise ValueError("Batch returned more than one Batch.")
+
+def safe_update(batch_id, **kwargs):
+    """
+    Updates a Batch row by ID using objects_update because .save()
+    is not available on objects returned by objects_filter.
+    """
+    Batch.objects_update(id=batch_id, **kwargs)
 
 
 # =====================================================================
@@ -154,15 +159,12 @@ class Subsession(BaseSubsession):
             f"Quick check if batch {active_batch} is completed"
         )
 
-        # Use helper
         q = safe_filter(
             session_code=session.code,
             batch=active_batch,
             processed=False,
         )
         
-        # In oTree 5 objects_filter returns a QuerySet, so count() works, 
-        # or we can use len()
         count = len(q)
         logger.info(
             f"CURRENT ACTIVE BATCH: {active_batch}; NON PROCESSED SLOTS: {count}"
@@ -265,17 +267,35 @@ class Player(BasePlayer):
             )
             return dict(sentences="[]")
 
-        return model_to_dict(obj)
+        # In oTree 5 ExtraModel results are practically dicts/named tuples
+        # so model_to_dict might fail or be unnecessary.
+        # We try accessing __dict__ or just returning the object if it behaves like a dict
+        try:
+            return model_to_dict(obj)
+        except Exception:
+            # Fallback if model_to_dict fails on ExtraModel instance
+            return {
+                k: getattr(obj, k) for k in [
+                    'sentences', 'rewards', 'condition', 'item_nr', 
+                    'image', 'round_number', 'role', 'batch', 
+                    'id_in_group', 'partner_id'
+                ]
+            }
 
     def update_batch(self):
         link = self.link
         if not link:
             return
+        
+        updates = {}
         if self.inner_role == PRODUCER:
-            link.sentences = self.producer_decision
+            updates['sentences'] = self.producer_decision
         if self.inner_role == INTERPRETER:
-            link.rewards = self.interpreter_decision
-        link.save()
+            updates['rewards'] = self.interpreter_decision
+            
+        if updates:
+            # FIX: Use safe_update instead of link.save()
+            safe_update(link.id, **updates)
 
     def mark_data_processed(self):
         self.participant.vars["full_study_completed"] = True
@@ -285,8 +305,8 @@ class Player(BasePlayer):
             owner_code=self.participant.code
         )
         for b in batches:
-            b.processed = True
-            b.save()
+            # FIX: Use safe_update instead of b.save()
+            safe_update(b.id, processed=True)
 
         self.subsession.check_for_batch_completion()
 
@@ -316,7 +336,6 @@ class Player(BasePlayer):
 
         # --- ROUND 1: assign free slot ---
         if self.round_number == 1:
-            # Access manager via helper
             candidates = safe_filter(
                 session_code=session.code,
                 batch=subsession.active_batch,
@@ -324,9 +343,6 @@ class Player(BasePlayer):
                 owner_code="",
             )
             
-            # Since candidates is a queryset-like, we can use sorting
-            # But let's be safe and list-ify it first for Python sorting
-            # just in case objects_filter returns something that doesn't support order_by
             candidates_list = list(candidates)
 
             if not candidates_list:
@@ -337,14 +353,16 @@ class Player(BasePlayer):
                 self.faulty = True
                 return
         
-            # Python sort
             candidates_list.sort(key=lambda b: b.id_in_group)
             free = candidates_list[0]
             
             if free:
-                free.busy = True
-                free.owner_code = self.participant.code
-                free.save()
+                # FIX: Use safe_update instead of free.save()
+                safe_update(
+                    free.id, 
+                    busy=True, 
+                    owner_code=self.participant.code
+                )
             else:
                 self.faulty = True
                 return
