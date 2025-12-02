@@ -582,14 +582,16 @@ class FaultyCatcher(Page):
     If player couldn't get a slot (no free Batch row), redirect to fallback URL.
     """
 
-    def is_displayed(self):
-        return self.player.faulty
+    @staticmethod
+    def is_displayed(player):
+        return player.faulty
 
     def get(self):
+        # 'get' is a standard view method, so 'self' is the Page here.
+        # self.player works correctly in this context.
         if self.player.faulty:
             return redirect(Constants.FALLBACK_URL)
         return super().get()
-
 
 class Q(Page):
     """
@@ -598,11 +600,14 @@ class Q(Page):
 
     instructions = True
 
-    def is_displayed(self):
+    @staticmethod
+    def is_displayed(player):
         # ensure Player.start() runs before we show anything
-        if not self.player.faulty:
-            self.player.start()
-        return self.round_number <= self.session.vars["num_rounds"]
+        if not player.faulty:
+            player.start()
+        
+        # Access session via the player object
+        return player.round_number <= player.session.vars["num_rounds"]
 
     def vars_for_template(self):
         if self.player.link:
