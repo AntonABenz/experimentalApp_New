@@ -5,8 +5,10 @@ import json
 import logging
 from pprint import pprint
 
-# Use standard Django connection to bypass oTree ExtraModel restrictions
-from django.db import connection 
+# FIX: Import db and text for correct oTree 5 SQL execution
+from otree.database import db
+from sqlalchemy import text
+
 from django.db import models as djmodels
 from django.forms.models import model_to_dict
 from django.shortcuts import redirect
@@ -47,8 +49,7 @@ class Constants(BaseConstants):
 
 class Batch(ExtraModel):
     """
-    Table definition. We will access this via Raw SQL to avoid
-    oTree 5's strict ExtraModel filters.
+    Table definition. We access this via Raw SQL helpers below.
     """
     session_code = models.StringField()
     owner_code = models.StringField(blank=True)
@@ -67,28 +68,19 @@ class Batch(ExtraModel):
 
 
 # =====================================================================
-# RAW SQL HELPERS (The "Nuclear" Option)
+# RAW SQL HELPERS (oTree 5 / SQLAlchemy Compatible)
 # =====================================================================
-# These functions bypass oTree's ORM entirely to prevent AttributeErrors.
-
-def dictfetchall(cursor):
-    """Return all rows from a cursor as a dict"""
-    columns = [col[0] for col in cursor.description]
-    return [
-        dict(zip(columns, row))
-        for row in cursor.fetchall()
-    ]
 
 def get_all_batches_sql(session_code):
     """
-    Fetch all batches for this session as a list of dictionaries.
+    Fetch all batches for this session using oTree's db engine.
     """
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT * FROM img_desc_batch WHERE session_code = %s", 
-            [session_code]
-        )
-        return dictfetchall(cursor)
+    sql = text("SELECT * FROM img_desc_batch WHERE session_code = :session_code")
+    
+    with db.engine.connect() as conn:
+        result = conn.execute(sql, {'session_code': session_code})
+        # .mappings() returns dict-like rows (SQLAlchemy 1.4+)
+        return [dict(row) for row in result.mappings()]
 
 def sql_update_batch(batch_id, **kwargs):
     """
@@ -98,18 +90,23 @@ def sql_update_batch(batch_id, **kwargs):
         return
 
     set_clauses = []
-    params = []
+    params = {'id': batch_id}
     
     for k, v in kwargs.items():
-        set_clauses.append(f"{k} = %s")
-        params.append(v)
+        set_clauses.append(f"{k} = :{k}")
+        # Convert bools to integers for SQL compatibility if needed
+        if isinstance(v, bool):
+            params[k] = 1 if v else 0
+        else:
+            params[k] = v
     
-    params.append(batch_id)
+    sql_str = f"UPDATE img_desc_batch SET {', '.join(set_clauses)} WHERE id = :id"
+    sql = text(sql_str)
     
-    sql = f"UPDATE img_desc_batch SET {', '.join(set_clauses)} WHERE id = %s"
-    
-    with connection.cursor() as cursor:
-        cursor.execute(sql, params)
+    with db.engine.connect() as conn:
+        conn.execute(sql, params)
+        # Some DB drivers require explicit commit, though oTree usually autocommits
+        # We can force it if needed, but standard execute usually suffices.
 
 
 # =====================================================================
@@ -124,7 +121,6 @@ class Subsession(BaseSubsession):
 
     @property
     def get_active_batch(self):
-        # Filter python list
         all_data = get_all_batches_sql(self.session.code)
         return [b for b in all_data if b['batch'] == self.active_batch]
 
@@ -134,7 +130,7 @@ class Subsession(BaseSubsession):
         batch_size = self.session.vars.get("batch_size", 0)
 
         if not study_id:
-            logger.warning("No study id data is available! slot expansion failed.")
+            logger.warning("No study id data available! Slot expansion failed.")
             return
 
         logger.info(f"Expanding slots: study {study_id}, extra {batch_size}")
@@ -148,7 +144,6 @@ class Subsession(BaseSubsession):
         logger.info(f"Checking batch {active_batch} completion...")
 
         all_data = get_all_batches_sql(session.code)
-        # Check for any that are NOT processed in current batch
         remaining = [
             b for b in all_data 
             if b['batch'] == active_batch and not b['processed']
@@ -159,7 +154,6 @@ class Subsession(BaseSubsession):
         if remaining:
             return
 
-        # Advance
         session.vars["active_batch"] = active_batch + 1
         logger.info(f"Batch {active_batch} complete. Moving to {active_batch + 1}")
 
@@ -203,15 +197,9 @@ class Player(BasePlayer):
 
     @property
     def link(self):
-        """
-        Returns the dictionary of the batch row, or None.
-        """
         if not self.link_id:
             return None
         
-        # We fetch all (cached usually DB side) and find ours
-        # Optimized: could use SELECT * FROM ... WHERE id=%s but fetching all 
-        # is safer for consistency with other methods here.
         all_data = get_all_batches_sql(self.session.code)
         for b in all_data:
             if b['id'] == self.link_id:
@@ -305,7 +293,7 @@ class Player(BasePlayer):
         if self.round_number == 1:
             all_data = get_all_batches_sql(session.code)
             
-            # Find candidates: matching batch, not busy, no owner
+            # Find candidates
             candidates = [
                 b for b in all_data 
                 if b['batch'] == subsession.active_batch
@@ -318,11 +306,9 @@ class Player(BasePlayer):
                 self.faulty = True
                 return
         
-            # Sort by id_in_group
             candidates.sort(key=lambda b: b['id_in_group'])
             free = candidates[0]
             
-            # Claim it via SQL
             sql_update_batch(
                 free['id'], 
                 busy=True, 
@@ -330,9 +316,7 @@ class Player(BasePlayer):
             )
         
         # --- EVERY ROUND: Find my row ---
-        # Re-fetch data to ensure we see the update we just made
         all_data = get_all_batches_sql(session.code)
-        
         my_row = None
         for b in all_data:
             if b['owner_code'] == self.participant.code and b['round_number'] == self.round_number:
@@ -349,15 +333,17 @@ class Player(BasePlayer):
         self.inner_sentences = json.dumps(self.get_sentences_data())
         
 
-        # --- PROLIFIC: Round 1 Setup ---
+        # --- PROLIFIC ---
         if self.round_number == 1 and session.config.get("for_prolific"):
             vars_ = self.participant.vars
             prolific_id = vars_.get("prolific_id") or vars_.get("prolific_pid")
             prol_study_id = vars_.get("study_id")
             prol_session_id = vars_.get("prolific_session_id") 
 
-            ERR_INFO = dict(completion_code=Constants.API_ERR, full_return_url=Constants.API_ERR_URL)
-            completion_info = ERR_INFO
+            completion_info = dict(
+                completion_code=Constants.API_ERR, 
+                full_return_url=Constants.API_ERR_URL
+            )
 
             if prol_study_id:
                 if not subsession.study_id:
@@ -391,7 +377,6 @@ class Player(BasePlayer):
             except Exception as e:
                 logger.error(f"Prolific data error: {e}")
             finally:
-                # Update player using standard oTree ORM logic (self.in_all_rounds)
                 for p in self.in_all_rounds():
                     for k, v in for_update.items():
                         setattr(p, k, v)
@@ -424,7 +409,6 @@ def creating_session(subsession: Subsession):
 
     logger.info(f'TOTAL NUM ROUNDS: {session.vars["num_rounds"]}')
     
-    # Create batches via oTree's built-in create method (this usually works fine for INSERT)
     records = df.to_dict(orient="records")
     for r in records:
         Batch.create(
@@ -441,7 +425,6 @@ def creating_session(subsession: Subsession):
             sentences=r.get("sentences"),
         )
 
-    # Settings setup
     session.vars["practice_settings"] = excel_data.get("practice_settings")
     session.vars["practice_pages"] = excel_data.get("practice_pages")
     session.vars["user_settings"] = excel_data.get("settings")
@@ -460,7 +443,6 @@ def creating_session(subsession: Subsession):
     session.vars["caseflag"] = settings.get("caseflag") in ["True", "true", "1", "t", "T"]
     session.vars["EndOfIntroText"] = settings.get("EndOfIntroText", "")
 
-    # Capacity
     unique_ids_wz = [x for x in df.id.unique() if x != 0]
     unique_exps = df[df.Exp != 0].Exp.unique()
     batch_size = len(unique_ids_wz)
@@ -500,8 +482,6 @@ class Q(Page):
 
     @staticmethod
     def vars_for_template(player):
-        # FIX: Return None instead of "" to prevent TemplateRenderingError 
-        # when template accesses attributes (e.g. d.image)
         if player.link:
             return dict(d=player.link)
         return dict(d=None)
