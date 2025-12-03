@@ -6,7 +6,7 @@ import logging
 from pprint import pprint
 import os
 
-# Use independent SQLAlchemy engine to bypass oTree wrappers
+# SQLALCHEMY for direct DB access
 from sqlalchemy import create_engine, text
 
 from django.db import models as djmodels
@@ -68,54 +68,50 @@ class Batch(ExtraModel):
 
 
 # =====================================================================
-# SQL ENGINE HELPER (Independent Connection)
+# SQL ENGINE HELPER (Auto-detects Postgres)
 # =====================================================================
 
 _custom_engine = None
 
 def get_engine():
     """
-    Creates or returns a cached SQLAlchemy engine based on the environment.
-    Includes fixes for Heroku Postgres URL and SQLite locking.
+    Creates or returns a cached SQLAlchemy engine.
+    Detects HEROKU POSTGRES automatically.
     """
     global _custom_engine
     if _custom_engine:
         return _custom_engine
 
-    # Get DB URL from environment (standard on Heroku)
+    # 1. Get the Database URL from Heroku Environment
     db_url = os.environ.get('DATABASE_URL')
     
     if not db_url:
-        # Fallback for local testing / SQLite
+        # Fallback for local testing only
         db_url = "sqlite:///db.sqlite3"
-        # FIX: Add timeout (default is usually 5s, we set 30s) to wait for locks
-        _custom_engine = create_engine(db_url, connect_args={'timeout': 30})
     else:
-        # Fix for Heroku: SQLAlchemy requires 'postgresql://', Heroku provides 'postgres://'
+        # 2. Fix for Heroku: SQLAlchemy requires 'postgresql://', Heroku provides 'postgres://'
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
-        _custom_engine = create_engine(db_url)
 
+    _custom_engine = create_engine(db_url)
     return _custom_engine
 
 
 def get_all_batches_sql(session_code):
     """
-    Fetch all batches for this session using custom engine.
-    Compatible with older SQLAlchemy versions.
+    Fetch all batches for this session.
     """
     engine = get_engine()
     sql = text("SELECT * FROM img_desc_batch WHERE session_code = :session_code")
     
     with engine.connect() as conn:
-        result = conn.execute(sql, session_code=session_code)
-        # Robust row-to-dict conversion compatible with older SQLAlchemy
-        return [dict(zip(result.keys(), row)) for row in result]
+        result = conn.execute(sql, {'session_code': session_code})
+        # .mappings() returns dict-like rows (SQLAlchemy 1.4+)
+        return [dict(row) for row in result.mappings()]
 
 def sql_update_batch(batch_id, **kwargs):
     """
     Update specific fields of a batch row by ID.
-    Uses explicit transactions to handle concurrency/locking.
     """
     if not kwargs:
         return
@@ -135,11 +131,11 @@ def sql_update_batch(batch_id, **kwargs):
     sql_str = f"UPDATE img_desc_batch SET {', '.join(set_clauses)} WHERE id = :id"
     sql = text(sql_str)
     
-    # FIX: Use transaction block to ensure proper locking/unlocking
     with engine.connect() as conn:
-        # .begin() starts a transaction; it commits on exit or rolls back on error
-        with conn.begin():
-            conn.execute(sql, **params)
+        conn.execute(sql, params)
+        # Explicit commit for Postgres safety
+        if hasattr(conn, 'commit'):
+            conn.commit()
 
 
 # =====================================================================
