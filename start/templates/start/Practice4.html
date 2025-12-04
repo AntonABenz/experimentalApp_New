@@ -7,8 +7,6 @@
   window.suffixes      = {{ session.vars.suffixes|json }};
   window.allowedValues = {{ session.vars.allowed_values|json }};
   window.page_settings = {{ settings|json }};
-  
-  // The list of correct answers from Excel
   window.rightAnswers  = {{ settings.right_answer|json }} || [];
 </script>
 
@@ -95,9 +93,12 @@ const app = Vue.createApp({
     const suffixes    = Array.isArray(window.suffixes)      ? window.suffixes      : [];
     const allowedVals = Array.isArray(window.allowedValues) ? window.allowedValues : [];
     
-    // 1. Process Answer Key (Lowercase, trim spaces)
+    // HELPER: Normalize strings to ignore extra spaces
+    const cleanStr = (str) => String(str).toLowerCase().replace(/\s+/g, ' ').trim();
+
+    // 1. Process Answer Key (Normalize everything)
     const correctAnswers = (window.rightAnswers || []).map(ans => 
-        String(ans).toLowerCase().split(';').map(part => part.trim()).join(';')
+        ans.split(';').map(part => cleanStr(part)).join(';')
     );
 
     // 2. Helper to create a new blank row
@@ -106,7 +107,7 @@ const app = Vue.createApp({
             value: '',
             suffix,
             allowedLower: Array.isArray(allowedVals[i])
-                ? allowedVals[i].map(v => String(v).toLowerCase())
+                ? allowedVals[i].map(v => cleanStr(v))
                 : []
         }))
     });
@@ -125,17 +126,17 @@ const app = Vue.createApp({
       allowedValues: allowedVals,
       suffixes,
       correctAnswers,
-      items: [createRow()], // Start with 1 row
+      items: [createRow()],
       maxItems: 5,
       minItems: 1,
       error: false,
       errorMessage: '',
+      cleanStr, // Expose helper
     };
   },
 
   computed: {
     isFormFilled() {
-      // Button enabled only if ALL fields in ALL rows have text
       return this.items.every(item =>
         item.fields.every(f => f.value && f.value.trim() !== '')
       );
@@ -144,48 +145,52 @@ const app = Vue.createApp({
 
   methods: {
     validateAndSubmit() {
-      const genericError = "Please read the instructions again.";
-
-      // 1. Validate Vocabulary
+      // 1. Validate Vocabulary (Optional - removing this check solves many issues)
+      // I have commented this out to be more lenient. 
+      /*
       for (let i = 0; i < this.items.length; i++) {
         const item = this.items[i];
         for (let j = 0; j < item.fields.length; j++) {
           const field = item.fields[j];
           if (field.allowedLower.length > 0) {
-             const val = String(field.value).trim().toLowerCase();
+             const val = this.cleanStr(field.value);
              if (!field.allowedLower.includes(val)) {
                 this.error = true;
-                this.errorMessage = genericError;
+                this.errorMessage = `Row ${i+1}: "${field.value}" is not a known phrase.`;
                 return;
              }
           }
         }
       }
+      */
 
-      // 2. Validate Correct Answers (Order Independent)
+      // 2. Validate Correct Answers
       if (this.correctAnswers.length > 0) {
           
-          // Check row count mismatch
+          // Check row count
           if (this.items.length !== this.correctAnswers.length) {
               this.error = true;
-              this.errorMessage = genericError; 
-              // Tip: You can change this to `genericError + " (Hint: You need " + this.correctAnswers.length + " sentences)"` for easier testing.
+              this.errorMessage = `You need exactly ${this.correctAnswers.length} sentences (rows). You currently have ${this.items.length}.`;
               return;
           }
 
-          // Convert user rows to strings
+          // Normalize User Input
           const userStrings = this.items.map(item => 
-              item.fields.map(f => String(f.value).trim().toLowerCase()).join(';')
+              item.fields.map(f => this.cleanStr(f.value)).join(';')
           );
           
-          // Sort both to compare sets
-          userStrings.sort();
+          // Sort both to allow any order
+          const userSorted = [...userStrings].sort();
           const correctSorted = [...this.correctAnswers].sort();
 
           for (let i = 0; i < correctSorted.length; i++) {
-              if (userStrings[i] !== correctSorted[i]) {
+              if (userSorted[i] !== correctSorted[i]) {
                   this.error = true;
-                  this.errorMessage = genericError;
+                  // Specific Error Message
+                  this.errorMessage = "Some answers are incorrect. Please check the spelling and values.";
+                  
+                  // DEBUG ALERT: Shows you exactly what failed
+                  alert(`DEBUGGING ERROR:\n\nExpected: "${correctSorted[i]}"\nYou wrote: "${userSorted[i]}"\n\n(Check for spelling, missing commas, or wrong numbers)`);
                   return;
               }
           }
@@ -205,7 +210,7 @@ const app = Vue.createApp({
             value: '',
             suffix,
             allowedLower: Array.isArray(this.allowedValues[i])
-                ? this.allowedValues[i].map(v => String(v).toLowerCase())
+                ? this.allowedValues[i].map(v => this.cleanStr(v))
                 : []
         }))
       });
