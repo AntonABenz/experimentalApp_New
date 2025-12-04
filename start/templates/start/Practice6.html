@@ -3,12 +3,228 @@
 
 {% block content %}
 
-<h1>{{ settings.title }}</h1>
+<script>
+  window.suffixes      = {{ session.vars.suffixes|json }};
+  window.allowedValues = {{ session.vars.allowed_values|json }};
+  window.page_settings = {{ settings|json }};
+  
+  // Right answers for validation (optional, can be empty array if strict checking not needed)
+  window.rightAnswers  = {{ settings.right_answer|json }} || [];
+</script>
 
-<div>
-    {{ settings.main_text|safe }}
+<style>
+  [v-cloak] { display: none; }
+  .input-group { max-width: fit-content; }
+  .input-kids  { min-width: 200px; }
+  .vocabulary-box {
+      border: 1px solid #ccc;
+      background-color: #f8f9fa;
+      padding: 15px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+  }
+  .placeholder-img {
+      width: 600px;
+      height: 400px;
+      background-color: #eee;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #aaa;
+      margin: 0 auto;
+  }
+</style>
+
+<div id="app" v-cloak>
+
+  <h1>[[ title ]]</h1>
+  <div v-html="main_text"></div>
+
+  <div class="text-center my-3">
+    <img v-if="image_path" :src="image_path" :alt="title" style="max-width: 600px; width: 100%; height:auto;">
+    <div v-else class="placeholder-img">
+        (No Image Available)
+    </div>
+  </div>
+
+  <div class="vocabulary-box text-center">
+      <h5>Allowed Vocabulary</h5>
+      <div class="row">
+          <div class="col" v-for="(vals, idx) in allowedValues" :key="idx" v-if="vals && vals.length">
+              <strong>For Field [[ idx + 1 ]]:</strong><br>
+              <span v-for="(val, vIdx) in vals" :key="vIdx">
+                  [[ val ]]<span v-if="vIdx < vals.length - 1">, </span>
+              </span>
+          </div>
+      </div>
+  </div>
+
+  <div class="text-center">
+    <ul class="list-group list-group-flush my-3">
+      <li class="list-group-item d-flex"
+          v-for="(item, itemIndex) in items"
+          :key="itemIndex"
+          style="flex-flow: nowrap;">
+        <div class="input-group mb-3 d-flex align-items-baseline"
+             style="flex-flow: nowrap;">
+
+          <div v-for="(field, fieldIndex) in item.fields"
+               :key="fieldIndex"
+               class="align-items-baseline input-group mb-3 d-flex flex-nowrap">
+
+            <input
+              type="text"
+              v-model.trim="field.value"
+              class="form-control input-kids"
+              :placeholder="`...`"
+              autocomplete="off"
+              @input="hideError"
+            >
+            <span class="input-group-text mx-2 text-nowrap">
+              [[ field.suffix ]]
+            </span>
+          </div>
+
+          <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary" style="flex-basis: 50px;" :disabled="items.length === maxItems">+</button>
+          <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger" style="flex-basis: 50px;" :disabled="items.length === minItems">-</button>
+        </div>
+      </li>
+    </ul>
+
+    <p v-if="error" class="alert alert-danger">
+      [[ errorMessage || 'Please check your answers.' ]]
+    </p>
+  </div>
+
+  <div class="text-center mt-4">
+    <button :disabled="!isFormFilled" class="btn btn-primary btn-lg" type="button" @click="validateAndSubmit">
+      Next
+    </button>
+  </div>
+
 </div>
 
-<button class="btn btn-primary">Next</button>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script>
+const app = Vue.createApp({
+  data() {
+    const s           = window.page_settings   || {};
+    const suffixes    = Array.isArray(window.suffixes)      ? window.suffixes      : [];
+    const allowedVals = Array.isArray(window.allowedValues) ? window.allowedValues : [];
+    
+    // Process right answers (optional validation)
+    const correctAnswers = (window.rightAnswers || []).map(ans => 
+        String(ans).toLowerCase().split(';').map(part => part.trim()).join(';')
+    );
+
+    // Initial fields
+    const seedFields = suffixes.map((suffix, i) => ({
+      value: '',
+      suffix,
+      allowedLower: Array.isArray(allowedVals[i])
+        ? allowedVals[i].map(v => String(v).toLowerCase())
+        : []
+    }));
+
+    // Image logic
+    let image_path = s.full_image_path || s.image_url || '';
+    if (!image_path && s.image) {
+      const name = (typeof s.image === 'string' && s.image.includes('.'))
+        ? s.image
+        : `${s.image}.png`;
+      // If using S3, full_image_path should already be set. If local:
+      if (!image_path) image_path = `/static/start/practice/${name}`;
+    }
+
+    return {
+      title: s.title || 'Practice Task',
+      main_text: s.main_text || '',
+      image_path,
+      allowedValues: allowedVals,
+      suffixes,
+      correctAnswers,
+      items: [{ fields: seedFields }],
+      maxItems: 5,
+      minItems: 1,
+      error: false,
+      errorMessage: '',
+    };
+  },
+
+  computed: {
+    isFormFilled() {
+      return this.items.every(item =>
+        item.fields.every(f => f.value && f.value.trim() !== '')
+      );
+    },
+  },
+
+  methods: {
+    // Check vocabulary
+    isValidGrammar() {
+      return this.items.every(item =>
+        item.fields.every(field => {
+          const allowed = field.allowedLower;
+          if (!allowed || !allowed.length) return true;
+          return allowed.includes(String(field.value).trim().toLowerCase());
+        })
+      );
+    },
+
+    // Check against right_answer from Excel
+    isCorrectAnswer() {
+      if (this.correctAnswers.length === 0) return true; // No answer key defined = strict check skipped
+      
+      const userString = this.items[0].fields
+          .map(f => String(f.value).trim().toLowerCase())
+          .join(';');
+      return this.correctAnswers.includes(userString);
+    },
+
+    validateAndSubmit() {
+      if (!this.isValidGrammar()) {
+        this.error = true;
+        this.errorMessage = 'Please use the words listed in the vocabulary box.';
+        return;
+      }
+
+      if (!this.isCorrectAnswer()) {
+        this.error = true;
+        this.errorMessage = 'That description is not correct for this image. Please try again.';
+        return;
+      }
+
+      this.error = false;
+      const outerForm = document.querySelector('form');
+      if (outerForm) outerForm.submit();
+    },
+
+    addItem() {
+      if (this.items.length >= this.maxItems) return;
+      const fields = this.suffixes.map((suffix, i) => ({
+        value: '',
+        suffix,
+        allowedLower: Array.isArray(this.allowedValues[i])
+          ? this.allowedValues[i].map(v => String(v).toLowerCase())
+          : []
+      }));
+      this.items.push({ fields });
+    },
+
+    removeItem(index) {
+      if (this.items.length > this.minItems) {
+        this.items.splice(index, 1);
+      }
+    },
+
+    hideError() {
+      this.error = false;
+    }
+  }
+});
+
+app.config.compilerOptions.delimiters = ['[[', ']]'];
+app.mount('#app');
+</script>
 
 {% endblock %}
