@@ -4,13 +4,11 @@
 {% block content %}
 
 <script>
-  // server → JS
   window.suffixes      = {{ session.vars.suffixes|json }};
-  // We keep allowedValues for validation logic, even if not shown in dropdown
   window.allowedValues = {{ session.vars.allowed_values|json }};
   window.page_settings = {{ settings|json }};
   
-  // Right answers from Excel (e.g. ["3; the A", "2; the A and the B"])
+  // The list of correct answers from Excel
   window.rightAnswers  = {{ settings.right_answer|json }} || [];
 </script>
 
@@ -18,8 +16,23 @@
   [v-cloak] { display: none; }
   .input-group { max-width: fit-content; }
   .input-kids  { min-width: 200px; }
-  /* Optional: styling for the suffix text to look more like a sentence */
-  .input-group-text { background-color: transparent; border: none; font-weight: bold; }
+  .vocabulary-box {
+      border: 1px solid #ccc;
+      background-color: #f8f9fa;
+      padding: 15px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+  }
+  .placeholder-img {
+      width: 600px;
+      height: 400px;
+      background-color: #eee;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #aaa;
+      margin: 0 auto;
+  }
 </style>
 
 <div id="app" v-cloak>
@@ -27,10 +40,21 @@
   <h1>[[ title ]]</h1>
   <div v-html="main_text"></div>
 
-  <div class="text-center my-3" v-if="image_path">
-    <img :src="image_path"
-         :alt="title"
-         style="max-width: 600px; width: 100%; height:auto;">
+  <div class="text-center my-3">
+    <img v-if="image_path" :src="image_path" :alt="title" style="max-width: 600px; width: 100%; height:auto;">
+    <div v-else class="placeholder-img">(No Image Available)</div>
+  </div>
+
+  <div class="vocabulary-box text-center">
+      <h5>Allowed Vocabulary</h5>
+      <div class="row">
+          <div class="col" v-for="(vals, idx) in allowedValues" :key="idx" v-if="vals && vals.length">
+              <strong>For Field [[ idx + 1 ]]:</strong><br>
+              <span v-for="(val, vIdx) in vals" :key="vIdx">
+                  [[ val ]]<span v-if="vIdx < vals.length - 1">, </span>
+              </span>
+          </div>
+      </div>
   </div>
 
   <div class="text-center">
@@ -39,9 +63,10 @@
           v-for="(item, itemIndex) in items"
           :key="itemIndex"
           style="flex-flow: nowrap;">
-        <div class="input-group mb-3 d-flex align-items-baseline"
-             style="flex-flow: nowrap;">
+        
+        <span class="align-self-center mr-2 font-weight-bold">[[ itemIndex + 1 ]].</span>
 
+        <div class="input-group mb-3 d-flex align-items-baseline" style="flex-flow: nowrap;">
           <div v-for="(field, fieldIndex) in item.fields"
                :key="fieldIndex"
                class="align-items-baseline input-group mb-3 d-flex flex-nowrap">
@@ -59,31 +84,19 @@
             </span>
           </div>
 
-          <button @click.prevent="addItem"
-                  type="button"
-                  class="btn btn-outline-secondary"
-                  style="flex-basis: 50px;"
-                  :disabled="items.length === maxItems">+</button>
-
-          <button @click.prevent="removeItem(itemIndex)"
-                  type="button"
-                  class="btn btn-outline-danger"
-                  style="flex-basis: 50px;"
-                  :disabled="items.length === minItems">-</button>
+          <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary" style="flex-basis: 50px;" :disabled="items.length === maxItems">+</button>
+          <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger" style="flex-basis: 50px;" :disabled="items.length === minItems">-</button>
         </div>
       </li>
     </ul>
 
     <p v-if="error" class="alert alert-danger">
-      [[ errorMessage || 'Please check your answers.' ]]
+      [[ errorMessage ]]
     </p>
   </div>
 
   <div class="text-center mt-4">
-    <button :disabled="!isFormFilled"
-            class="btn btn-primary btn-lg"
-            type="button"
-            @click="validateAndSubmit">
+    <button :disabled="!isFormFilled" class="btn btn-primary btn-lg" type="button" @click="validateAndSubmit">
       Next
     </button>
   </div>
@@ -98,51 +111,48 @@ const app = Vue.createApp({
     const suffixes    = Array.isArray(window.suffixes)      ? window.suffixes      : [];
     const allowedVals = Array.isArray(window.allowedValues) ? window.allowedValues : [];
     
-    // Normalize right answers for case-insensitive comparison
+    // 1. Process Answer Key
     const correctAnswers = (window.rightAnswers || []).map(ans => 
         String(ans).toLowerCase().split(';').map(part => part.trim()).join(';')
     );
 
-    // Initial row setup
-    const seedFields = suffixes.map((suffix, i) => ({
-      value: '',
-      suffix,
-      // We keep allowedLower for validation if you want to enforce specific vocabulary
-      allowedLower: Array.isArray(allowedVals[i])
-        ? allowedVals[i].map(v => String(v).toLowerCase())
-        : []
-    }));
+    // 2. Helper to create a new blank row
+    const createRow = () => ({
+        fields: suffixes.map((suffix, i) => ({
+            value: '',
+            suffix,
+            allowedLower: Array.isArray(allowedVals[i])
+                ? allowedVals[i].map(v => String(v).toLowerCase())
+                : []
+        }))
+    });
 
     // Image logic
     let image_path = s.full_image_path || s.image_url || '';
     if (!image_path && s.image) {
-      const name = (typeof s.image === 'string' && s.image.includes('.'))
-        ? s.image
-        : `${s.image}.png`;
-      image_path = `/static/start/practice/${name}`;
+      const name = (typeof s.image === 'string' && s.image.includes('.')) ? s.image : `${s.image}.png`;
+      if (!image_path) image_path = `/static/start/practice/${name}`;
     }
 
     return {
-      title: s.title || 'Practice',
+      title: s.title || 'Practice Task',
       main_text: s.main_text || '',
       image_path,
-
       allowedValues: allowedVals,
       suffixes,
       correctAnswers,
-      items: [{ fields: seedFields }],
-
+      // Start with exactly ONE row, regardless of how many are needed
+      items: [createRow()], 
       maxItems: 5,
       minItems: 1,
-
       error: false,
       errorMessage: '',
     };
   },
 
   computed: {
-    // Just checks if fields are not empty to enable button
     isFormFilled() {
+      // Button enabled only if ALL fields in ALL rows have text
       return this.items.every(item =>
         item.fields.every(f => f.value && f.value.trim() !== '')
       );
@@ -150,65 +160,70 @@ const app = Vue.createApp({
   },
 
   methods: {
-    // Check if input matches allowed vocabulary (Optional: remove this check if you want free text)
-    isValidGrammar() {
-      return this.items.every(item =>
-        item.fields.every(field => {
-          const allowed = field.allowedLower;
-          if (!allowed || !allowed.length) return true; // No restriction if list empty
-          return allowed.includes(String(field.value).trim().toLowerCase());
-        })
-      );
-    },
-
-    // Check if input matches the CORRECT answer from Excel
-    isCorrectAnswer() {
-      // Join user inputs with semicolon to match Excel format (e.g. "3; the a")
-      if (this.items.length === 0) return false;
-
-      // We only validate the first row against the right answer for practice
-      const userString = this.items[0].fields
-          .map(f => String(f.value).trim().toLowerCase())
-          .join(';');
-
-      return this.correctAnswers.includes(userString);
-    },
-
     validateAndSubmit() {
-      // 1. Check Grammar (Vocabulary)
-      // If you want to allow ANY text as long as it matches the right answer, 
-      // you can remove this block. Currently, it enforces the Excel "allowed_values".
-      if (!this.isValidGrammar()) {
-        this.error = true;
-        this.errorMessage = 'Please use the standard terminology defined for this task.';
-        return;
+      const genericError = "Please read the instructions again.";
+
+      // 1. Validate Vocabulary (Grammar)
+      for (let i = 0; i < this.items.length; i++) {
+        const item = this.items[i];
+        for (let j = 0; j < item.fields.length; j++) {
+          const field = item.fields[j];
+          if (field.allowedLower.length > 0) {
+             const val = String(field.value).trim().toLowerCase();
+             if (!field.allowedLower.includes(val)) {
+                this.error = true;
+                this.errorMessage = genericError; // Generic error as requested
+                return;
+             }
+          }
+        }
       }
 
-      // 2. Check Logic (Right Answer)
-      if (!this.isCorrectAnswer()) {
-        this.error = true;
-        this.errorMessage = 'That description is not correct for this image. Please try again.';
-        return;
+      // 2. Validate Correct Answers
+      if (this.correctAnswers.length > 0) {
+          
+          // Check if user added enough rows
+          if (this.items.length !== this.correctAnswers.length) {
+              this.error = true;
+              this.errorMessage = genericError;
+              return;
+          }
+
+          // Check content of each row
+          for (let i = 0; i < this.correctAnswers.length; i++) {
+              const userString = this.items[i].fields
+                  .map(f => String(f.value).trim().toLowerCase())
+                  .join(';');
+              
+              if (userString !== this.correctAnswers[i]) {
+                  this.error = true;
+                  this.errorMessage = genericError;
+                  return;
+              }
+          }
       }
 
+      // Success
       this.error = false;
-
-      // Submit
       const outerForm = document.querySelector('form');
       if (outerForm) outerForm.submit();
     },
 
     addItem() {
       if (this.items.length >= this.maxItems) return;
-
-      const fields = this.suffixes.map((suffix, i) => ({
-        value: '',
-        suffix,
-        allowedLower: Array.isArray(this.allowedValues[i])
-          ? this.allowedValues[i].map(v => String(v).toLowerCase())
-          : []
-      }));
-      this.items.push({ fields });
+      
+      // Helper to create blank row
+      const createRow = () => ({
+        fields: this.suffixes.map((suffix, i) => ({
+            value: '',
+            suffix,
+            allowedLower: Array.isArray(this.allowedValues[i])
+                ? this.allowedValues[i].map(v => String(v).toLowerCase())
+                : []
+        }))
+      });
+      
+      this.items.push(createRow());
     },
 
     removeItem(index) {
@@ -219,8 +234,8 @@ const app = Vue.createApp({
 
     hideError() {
       this.error = false;
-    },
-  },
+    }
+  }
 });
 
 app.config.compilerOptions.delimiters = ['[[', ']]'];
