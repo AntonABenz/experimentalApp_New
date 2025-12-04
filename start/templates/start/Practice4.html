@@ -17,14 +17,6 @@
   .input-group { max-width: fit-content; }
   .input-kids  { min-width: 200px; }
   
-  .vocabulary-box {
-      border: 1px solid #ccc;
-      background-color: #f8f9fa;
-      padding: 15px;
-      border-radius: 5px;
-      margin-bottom: 20px;
-  }
-  
   .placeholder-img {
       width: 600px;
       height: 400px;
@@ -51,18 +43,6 @@
   <div class="text-center my-3">
     <img v-if="image_path" :src="image_path" :alt="title" style="max-width: 600px; width: 100%; height:auto;">
     <div v-else class="placeholder-img">(No Image Available)</div>
-  </div>
-
-  <div class="vocabulary-box text-center">
-      <h5>Allowed Vocabulary</h5>
-      <div class="row">
-          <div class="col" v-for="(vals, idx) in allowedValues" :key="idx" v-if="vals && vals.length">
-              <strong>For Field [[ idx + 1 ]]:</strong><br>
-              <span v-for="(val, vIdx) in vals" :key="vIdx">
-                  [[ val ]]<span v-if="vIdx < vals.length - 1">, </span>
-              </span>
-          </div>
-      </div>
   </div>
 
   <div class="text-center">
@@ -115,7 +95,7 @@ const app = Vue.createApp({
     const suffixes    = Array.isArray(window.suffixes)      ? window.suffixes      : [];
     const allowedVals = Array.isArray(window.allowedValues) ? window.allowedValues : [];
     
-    // 1. Process Answer Key
+    // 1. Process Answer Key (Lowercase, trim spaces)
     const correctAnswers = (window.rightAnswers || []).map(ans => 
         String(ans).toLowerCase().split(';').map(part => part.trim()).join(';')
     );
@@ -145,7 +125,7 @@ const app = Vue.createApp({
       allowedValues: allowedVals,
       suffixes,
       correctAnswers,
-      items: [createRow()],
+      items: [createRow()], // Start with 1 row
       maxItems: 5,
       minItems: 1,
       error: false,
@@ -155,6 +135,7 @@ const app = Vue.createApp({
 
   computed: {
     isFormFilled() {
+      // Button enabled only if ALL fields in ALL rows have text
       return this.items.every(item =>
         item.fields.every(f => f.value && f.value.trim() !== '')
       );
@@ -184,23 +165,23 @@ const app = Vue.createApp({
       // 2. Validate Correct Answers (Order Independent)
       if (this.correctAnswers.length > 0) {
           
-          // Check row count
+          // Check row count mismatch
           if (this.items.length !== this.correctAnswers.length) {
               this.error = true;
-              this.errorMessage = genericError;
+              this.errorMessage = genericError; 
+              // Tip: You can change this to `genericError + " (Hint: You need " + this.correctAnswers.length + " sentences)"` for easier testing.
               return;
           }
 
-          // Extract user answers as strings
+          // Convert user rows to strings
           const userStrings = this.items.map(item => 
               item.fields.map(f => String(f.value).trim().toLowerCase()).join(';')
           );
           
-          // Sort both lists to compare sets regardless of order
+          // Sort both to compare sets
           userStrings.sort();
           const correctSorted = [...this.correctAnswers].sort();
 
-          // Compare sorted arrays
           for (let i = 0; i < correctSorted.length; i++) {
               if (userStrings[i] !== correctSorted[i]) {
                   this.error = true;
