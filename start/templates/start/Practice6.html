@@ -7,15 +7,23 @@
   window.suffixes      = {{ session.vars.suffixes|json }};
   window.allowedValues = {{ session.vars.allowed_values|json }};
   window.page_settings = {{ settings|json }};
-  
-  // FIX: Added |default:None to prevent "UndefinedVariable" crash
-  window.rightAnswers  = {{ settings.right_answer|default:None|json }} || [];
+  // No right answers needed for this practice
+  window.rightAnswers  = [];
 </script>
 
 <style>
   [v-cloak] { display: none; }
   .input-group { max-width: fit-content; }
   .input-kids  { min-width: 200px; }
+  
+  /* Vocabulary Box Styling */
+  .vocabulary-box {
+      border: 1px solid #ccc;
+      background-color: #f8f9fa;
+      padding: 15px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+  }
   
   .placeholder-img {
       width: 600px;
@@ -43,6 +51,18 @@
   <div class="text-center my-3">
     <img v-if="image_path" :src="image_path" :alt="title" style="max-width: 600px; width: 100%; height:auto;">
     <div v-else class="placeholder-img">(No Image Available)</div>
+  </div>
+
+  <div class="vocabulary-box text-center">
+      <h5>Allowed Vocabulary</h5>
+      <div class="row">
+          <div class="col" v-for="(vals, idx) in allowedValues" :key="idx" v-if="vals && vals.length">
+              <strong>For Field [[ idx + 1 ]]:</strong><br>
+              <span v-for="(val, vIdx) in vals" :key="vIdx">
+                  [[ val ]]<span v-if="vIdx < vals.length - 1">, </span>
+              </span>
+          </div>
+      </div>
   </div>
 
   <div class="text-center">
@@ -95,15 +115,10 @@ const app = Vue.createApp({
     const suffixes    = Array.isArray(window.suffixes)      ? window.suffixes      : [];
     const allowedVals = Array.isArray(window.allowedValues) ? window.allowedValues : [];
     
-    // Normalize strings helper
+    // Helper to clean strings
     const cleanStr = (str) => String(str).toLowerCase().replace(/\s+/g, ' ').trim();
 
-    // 1. Process Answer Key
-    const correctAnswers = (window.rightAnswers || []).map(ans => 
-        ans.split(';').map(part => cleanStr(part)).join(';')
-    );
-
-    // 2. Helper to create a new blank row
+    // Helper to create a new blank row
     const createRow = () => ({
         fields: suffixes.map((suffix, i) => ({
             value: '',
@@ -127,9 +142,8 @@ const app = Vue.createApp({
       image_path,
       allowedValues: allowedVals,
       suffixes,
-      correctAnswers,
       items: [createRow()], // Start with 1 row
-      maxItems: 5,
+      maxItems: 10,         // Allow up to 10 rows (flexible)
       minItems: 1,
       error: false,
       errorMessage: '',
@@ -139,6 +153,7 @@ const app = Vue.createApp({
 
   computed: {
     isFormFilled() {
+      // Button enabled only if ALL fields in ALL rows have text
       return this.items.every(item =>
         item.fields.every(f => f.value && f.value.trim() !== '')
       );
@@ -147,34 +162,22 @@ const app = Vue.createApp({
 
   methods: {
     validateAndSubmit() {
-      // 1. Validate Correct Answers
-      if (this.correctAnswers.length > 0) {
-          
-          // Check row count
-          if (this.items.length !== this.correctAnswers.length) {
-              this.error = true;
-              this.errorMessage = `You need exactly ${this.correctAnswers.length} sentences. You currently have ${this.items.length}.`;
-              return;
+      // 1. Validate Vocabulary Only
+      // (We removed the "Correct Answer" check entirely)
+      
+      for (let i = 0; i < this.items.length; i++) {
+        const item = this.items[i];
+        for (let j = 0; j < item.fields.length; j++) {
+          const field = item.fields[j];
+          if (field.allowedLower.length > 0) {
+             const val = this.cleanStr(field.value);
+             if (!field.allowedLower.includes(val)) {
+                this.error = true;
+                this.errorMessage = `Row ${i+1}, Field ${j+1}: "${field.value}" is not allowed. Please use the words from the box above.`;
+                return;
+             }
           }
-
-          // Normalize User Input
-          const userStrings = this.items.map(item => 
-              item.fields.map(f => this.cleanStr(f.value)).join(';')
-          );
-          
-          // Sort both to allow any order
-          const userSorted = [...userStrings].sort();
-          const correctSorted = [...this.correctAnswers].sort();
-
-          for (let i = 0; i < correctSorted.length; i++) {
-              if (userSorted[i] !== correctSorted[i]) {
-                  this.error = true;
-                  this.errorMessage = "Some answers are incorrect. Please check spelling and numbers.";
-                  // Uncomment below to debug exactly what failed
-                  // alert(`DEBUG:\nExpected: "${correctSorted[i]}"\nYou wrote: "${userSorted[i]}"`);
-                  return;
-              }
-          }
+        }
       }
 
       // Success
