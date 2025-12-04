@@ -6,14 +6,20 @@
 <script>
   // server → JS
   window.suffixes      = {{ session.vars.suffixes|json }};
+  // We keep allowedValues for validation logic, even if not shown in dropdown
   window.allowedValues = {{ session.vars.allowed_values|json }};
   window.page_settings = {{ settings|json }};
+  
+  // Right answers from Excel (e.g. ["3; the A", "2; the A and the B"])
+  window.rightAnswers  = {{ settings.right_answer|json }} || [];
 </script>
 
 <style>
   [v-cloak] { display: none; }
   .input-group { max-width: fit-content; }
   .input-kids  { min-width: 200px; }
+  /* Optional: styling for the suffix text to look more like a sentence */
+  .input-group-text { background-color: transparent; border: none; font-weight: bold; }
 </style>
 
 <div id="app" v-cloak>
@@ -27,7 +33,6 @@
          style="max-width: 600px; width: 100%; height:auto;">
   </div>
 
-  <!-- INPUT INTERFACE (no big table) -->
   <div class="text-center">
     <ul class="list-group list-group-flush my-3">
       <li class="list-group-item d-flex"
@@ -41,61 +46,47 @@
                :key="fieldIndex"
                class="align-items-baseline input-group mb-3 d-flex flex-nowrap">
 
-            <!-- INPUT WITH DROPDOWN FROM allowed_values_1 / _2 -->
             <input
               type="text"
               v-model.trim="field.value"
               class="form-control input-kids"
-              :placeholder="`Field ${fieldIndex+1}`"
-              :list="fieldIndex === 0 ? 'options-first' : 'options-second'"
+              :placeholder="`...`"
+              autocomplete="off"
               @input="hideError"
             >
-            <span class="input-group-text mx-3 text-nowrap">
+            <span class="input-group-text mx-2 text-nowrap">
               [[ field.suffix ]]
             </span>
           </div>
 
-          <!-- add/remove rows -->
           <button @click.prevent="addItem"
                   type="button"
-                  class="btn btn-success"
-                  style="flex-basis: 75px;"
+                  class="btn btn-outline-secondary"
+                  style="flex-basis: 50px;"
                   :disabled="items.length === maxItems">+</button>
 
           <button @click.prevent="removeItem(itemIndex)"
                   type="button"
-                  class="btn btn-danger"
-                  style="flex-basis: 75px;"
+                  class="btn btn-outline-danger"
+                  style="flex-basis: 50px;"
                   :disabled="items.length === minItems">-</button>
         </div>
       </li>
     </ul>
 
     <p v-if="error" class="alert alert-danger">
-      [[ errorMessage || 'Please, check your answers.' ]]
+      [[ errorMessage || 'Please check your answers.' ]]
     </p>
   </div>
 
-  <!-- AUTOCOMPLETE SOURCES ONLY (no visible options table) -->
-  <datalist id="options-first">
-    <option v-for="(opt, i) in allowedValues[0]"
-            :key="'f1-' + i"
-            :value="opt"></option>
-  </datalist>
-
-  <datalist id="options-second">
-    <option v-for="(opt, i) in allowedValues[1]"
-            :key="'f2-' + i"
-            :value="opt"></option>
-  </datalist>
-
-  <!-- Next button: enabled only when fields are filled with allowed phrases -->
-  <button :disabled="!isFormComplete"
-          class="btn btn-primary"
-          type="button"
-          @click="validate">
-    Next
-  </button>
+  <div class="text-center mt-4">
+    <button :disabled="!isFormFilled"
+            class="btn btn-primary btn-lg"
+            type="button"
+            @click="validateAndSubmit">
+      Next
+    </button>
+  </div>
 
 </div>
 
@@ -106,17 +97,23 @@ const app = Vue.createApp({
     const s           = window.page_settings   || {};
     const suffixes    = Array.isArray(window.suffixes)      ? window.suffixes      : [];
     const allowedVals = Array.isArray(window.allowedValues) ? window.allowedValues : [];
+    
+    // Normalize right answers for case-insensitive comparison
+    const correctAnswers = (window.rightAnswers || []).map(ans => 
+        String(ans).toLowerCase().split(';').map(part => part.trim()).join(';')
+    );
 
-    // one row with 2 fields: e.g. "3 solve/d" + "the A exercises"
+    // Initial row setup
     const seedFields = suffixes.map((suffix, i) => ({
       value: '',
       suffix,
+      // We keep allowedLower for validation if you want to enforce specific vocabulary
       allowedLower: Array.isArray(allowedVals[i])
         ? allowedVals[i].map(v => String(v).toLowerCase())
         : []
     }));
 
-    // image (optional)
+    // Image logic
     let image_path = s.full_image_path || s.image_url || '';
     if (!image_path && s.image) {
       const name = (typeof s.image === 'string' && s.image.includes('.'))
@@ -126,12 +123,13 @@ const app = Vue.createApp({
     }
 
     return {
-      title: s.title || 'Practice 4',
+      title: s.title || 'Practice',
       main_text: s.main_text || '',
       image_path,
 
       allowedValues: allowedVals,
       suffixes,
+      correctAnswers,
       items: [{ fields: seedFields }],
 
       maxItems: 5,
@@ -143,43 +141,59 @@ const app = Vue.createApp({
   },
 
   computed: {
-    isFormFull() {
+    // Just checks if fields are not empty to enable button
+    isFormFilled() {
       return this.items.every(item =>
-        item.fields.every(f =>
-          f.value !== null && f.value !== undefined && f.value !== ''
-        )
+        item.fields.every(f => f.value && f.value.trim() !== '')
       );
-    },
-
-    // for this page: require both fields filled AND using allowed phrases
-    isFormComplete() {
-      return this.isFormFull && this.isValid();
     },
   },
 
   methods: {
-    // each field must match one of its allowed options (if any)
-    isValid() {
+    // Check if input matches allowed vocabulary (Optional: remove this check if you want free text)
+    isValidGrammar() {
       return this.items.every(item =>
         item.fields.every(field => {
-          const allowed = Array.isArray(field.allowedLower) ? field.allowedLower : [];
-          if (!allowed.length) return true;
-          const v = String(field.value).trim().toLowerCase();
-          return allowed.includes(v);
+          const allowed = field.allowedLower;
+          if (!allowed || !allowed.length) return true; // No restriction if list empty
+          return allowed.includes(String(field.value).trim().toLowerCase());
         })
       );
     },
 
-    validate() {
-      if (!this.isFormComplete) {
+    // Check if input matches the CORRECT answer from Excel
+    isCorrectAnswer() {
+      // Join user inputs with semicolon to match Excel format (e.g. "3; the a")
+      if (this.items.length === 0) return false;
+
+      // We only validate the first row against the right answer for practice
+      const userString = this.items[0].fields
+          .map(f => String(f.value).trim().toLowerCase())
+          .join(';');
+
+      return this.correctAnswers.includes(userString);
+    },
+
+    validateAndSubmit() {
+      // 1. Check Grammar (Vocabulary)
+      // If you want to allow ANY text as long as it matches the right answer, 
+      // you can remove this block. Currently, it enforces the Excel "allowed_values".
+      if (!this.isValidGrammar()) {
         this.error = true;
-        this.errorMessage = 'Please use the allowed phrases.';
+        this.errorMessage = 'Please use the standard terminology defined for this task.';
+        return;
+      }
+
+      // 2. Check Logic (Right Answer)
+      if (!this.isCorrectAnswer()) {
+        this.error = true;
+        this.errorMessage = 'That description is not correct for this image. Please try again.';
         return;
       }
 
       this.error = false;
 
-      // submit outer oTree form
+      // Submit
       const outerForm = document.querySelector('form');
       if (outerForm) outerForm.submit();
     },
