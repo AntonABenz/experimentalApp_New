@@ -8,21 +8,15 @@
   window.allowedValues = {{ session.vars.allowed_values|json }};
   window.page_settings = {{ settings|json }};
   
-  // Right answers for validation (optional, can be empty array if strict checking not needed)
-  window.rightAnswers  = {{ settings.right_answer|json }} || [];
+  // FIX: Added |default:None to prevent "UndefinedVariable" crash
+  window.rightAnswers  = {{ settings.right_answer|default:None|json }} || [];
 </script>
 
 <style>
   [v-cloak] { display: none; }
   .input-group { max-width: fit-content; }
   .input-kids  { min-width: 200px; }
-  .vocabulary-box {
-      border: 1px solid #ccc;
-      background-color: #f8f9fa;
-      padding: 15px;
-      border-radius: 5px;
-      margin-bottom: 20px;
-  }
+  
   .placeholder-img {
       width: 600px;
       height: 400px;
@@ -33,6 +27,12 @@
       color: #aaa;
       margin: 0 auto;
   }
+
+  .clean-row {
+      border: none;
+      padding: 5px 0;
+      margin-bottom: 10px;
+  }
 </style>
 
 <div id="app" v-cloak>
@@ -42,32 +42,15 @@
 
   <div class="text-center my-3">
     <img v-if="image_path" :src="image_path" :alt="title" style="max-width: 600px; width: 100%; height:auto;">
-    <div v-else class="placeholder-img">
-        (No Image Available)
-    </div>
-  </div>
-
-  <div class="vocabulary-box text-center">
-      <h5>Allowed Vocabulary</h5>
-      <div class="row">
-          <div class="col" v-for="(vals, idx) in allowedValues" :key="idx" v-if="vals && vals.length">
-              <strong>For Field [[ idx + 1 ]]:</strong><br>
-              <span v-for="(val, vIdx) in vals" :key="vIdx">
-                  [[ val ]]<span v-if="vIdx < vals.length - 1">, </span>
-              </span>
-          </div>
-      </div>
+    <div v-else class="placeholder-img">(No Image Available)</div>
   </div>
 
   <div class="text-center">
-    <ul class="list-group list-group-flush my-3">
-      <li class="list-group-item d-flex"
-          v-for="(item, itemIndex) in items"
-          :key="itemIndex"
-          style="flex-flow: nowrap;">
-        <div class="input-group mb-3 d-flex align-items-baseline"
-             style="flex-flow: nowrap;">
-
+    
+    <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
+        
+        <div class="input-group mb-3 d-flex align-items-baseline" style="flex-flow: nowrap;">
+          
           <div v-for="(field, fieldIndex) in item.fields"
                :key="fieldIndex"
                class="align-items-baseline input-group mb-3 d-flex flex-nowrap">
@@ -80,19 +63,19 @@
               autocomplete="off"
               @input="hideError"
             >
-            <span class="input-group-text mx-2 text-nowrap">
+            <span class="input-group-text mx-2 text-nowrap" style="background:none; border:none; font-weight:bold;">
               [[ field.suffix ]]
             </span>
           </div>
 
-          <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary" style="flex-basis: 50px;" :disabled="items.length === maxItems">+</button>
-          <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger" style="flex-basis: 50px;" :disabled="items.length === minItems">-</button>
+          <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary ml-2" style="flex-basis: 40px;" :disabled="items.length === maxItems">+</button>
+          <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger ml-1" style="flex-basis: 40px;" :disabled="items.length === minItems">-</button>
         </div>
-      </li>
-    </ul>
 
-    <p v-if="error" class="alert alert-danger">
-      [[ errorMessage || 'Please check your answers.' ]]
+    </div>
+
+    <p v-if="error" class="alert alert-danger mt-3">
+      [[ errorMessage ]]
     </p>
   </div>
 
@@ -112,27 +95,29 @@ const app = Vue.createApp({
     const suffixes    = Array.isArray(window.suffixes)      ? window.suffixes      : [];
     const allowedVals = Array.isArray(window.allowedValues) ? window.allowedValues : [];
     
-    // Process right answers (optional validation)
+    // Normalize strings helper
+    const cleanStr = (str) => String(str).toLowerCase().replace(/\s+/g, ' ').trim();
+
+    // 1. Process Answer Key
     const correctAnswers = (window.rightAnswers || []).map(ans => 
-        String(ans).toLowerCase().split(';').map(part => part.trim()).join(';')
+        ans.split(';').map(part => cleanStr(part)).join(';')
     );
 
-    // Initial fields
-    const seedFields = suffixes.map((suffix, i) => ({
-      value: '',
-      suffix,
-      allowedLower: Array.isArray(allowedVals[i])
-        ? allowedVals[i].map(v => String(v).toLowerCase())
-        : []
-    }));
+    // 2. Helper to create a new blank row
+    const createRow = () => ({
+        fields: suffixes.map((suffix, i) => ({
+            value: '',
+            suffix,
+            allowedLower: Array.isArray(allowedVals[i])
+                ? allowedVals[i].map(v => cleanStr(v))
+                : []
+        }))
+    });
 
     // Image logic
     let image_path = s.full_image_path || s.image_url || '';
     if (!image_path && s.image) {
-      const name = (typeof s.image === 'string' && s.image.includes('.'))
-        ? s.image
-        : `${s.image}.png`;
-      // If using S3, full_image_path should already be set. If local:
+      const name = (typeof s.image === 'string' && s.image.includes('.')) ? s.image : `${s.image}.png`;
       if (!image_path) image_path = `/static/start/practice/${name}`;
     }
 
@@ -143,11 +128,12 @@ const app = Vue.createApp({
       allowedValues: allowedVals,
       suffixes,
       correctAnswers,
-      items: [{ fields: seedFields }],
+      items: [createRow()], // Start with 1 row
       maxItems: 5,
       minItems: 1,
       error: false,
       errorMessage: '',
+      cleanStr,
     };
   },
 
@@ -160,40 +146,38 @@ const app = Vue.createApp({
   },
 
   methods: {
-    // Check vocabulary
-    isValidGrammar() {
-      return this.items.every(item =>
-        item.fields.every(field => {
-          const allowed = field.allowedLower;
-          if (!allowed || !allowed.length) return true;
-          return allowed.includes(String(field.value).trim().toLowerCase());
-        })
-      );
-    },
-
-    // Check against right_answer from Excel
-    isCorrectAnswer() {
-      if (this.correctAnswers.length === 0) return true; // No answer key defined = strict check skipped
-      
-      const userString = this.items[0].fields
-          .map(f => String(f.value).trim().toLowerCase())
-          .join(';');
-      return this.correctAnswers.includes(userString);
-    },
-
     validateAndSubmit() {
-      if (!this.isValidGrammar()) {
-        this.error = true;
-        this.errorMessage = 'Please use the words listed in the vocabulary box.';
-        return;
+      // 1. Validate Correct Answers
+      if (this.correctAnswers.length > 0) {
+          
+          // Check row count
+          if (this.items.length !== this.correctAnswers.length) {
+              this.error = true;
+              this.errorMessage = `You need exactly ${this.correctAnswers.length} sentences. You currently have ${this.items.length}.`;
+              return;
+          }
+
+          // Normalize User Input
+          const userStrings = this.items.map(item => 
+              item.fields.map(f => this.cleanStr(f.value)).join(';')
+          );
+          
+          // Sort both to allow any order
+          const userSorted = [...userStrings].sort();
+          const correctSorted = [...this.correctAnswers].sort();
+
+          for (let i = 0; i < correctSorted.length; i++) {
+              if (userSorted[i] !== correctSorted[i]) {
+                  this.error = true;
+                  this.errorMessage = "Some answers are incorrect. Please check spelling and numbers.";
+                  // Uncomment below to debug exactly what failed
+                  // alert(`DEBUG:\nExpected: "${correctSorted[i]}"\nYou wrote: "${userSorted[i]}"`);
+                  return;
+              }
+          }
       }
 
-      if (!this.isCorrectAnswer()) {
-        this.error = true;
-        this.errorMessage = 'That description is not correct for this image. Please try again.';
-        return;
-      }
-
+      // Success
       this.error = false;
       const outerForm = document.querySelector('form');
       if (outerForm) outerForm.submit();
@@ -201,14 +185,18 @@ const app = Vue.createApp({
 
     addItem() {
       if (this.items.length >= this.maxItems) return;
-      const fields = this.suffixes.map((suffix, i) => ({
-        value: '',
-        suffix,
-        allowedLower: Array.isArray(this.allowedValues[i])
-          ? this.allowedValues[i].map(v => String(v).toLowerCase())
-          : []
-      }));
-      this.items.push({ fields });
+      
+      const createRow = () => ({
+        fields: this.suffixes.map((suffix, i) => ({
+            value: '',
+            suffix,
+            allowedLower: Array.isArray(this.allowedValues[i])
+                ? this.allowedValues[i].map(v => this.cleanStr(v))
+                : []
+        }))
+      });
+      
+      this.items.push(createRow());
     },
 
     removeItem(index) {
