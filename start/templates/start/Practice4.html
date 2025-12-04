@@ -16,6 +16,7 @@
   [v-cloak] { display: none; }
   .input-group { max-width: fit-content; }
   .input-kids  { min-width: 200px; }
+  
   .vocabulary-box {
       border: 1px solid #ccc;
       background-color: #f8f9fa;
@@ -23,6 +24,7 @@
       border-radius: 5px;
       margin-bottom: 20px;
   }
+  
   .placeholder-img {
       width: 600px;
       height: 400px;
@@ -32,6 +34,12 @@
       justify-content: center;
       color: #aaa;
       margin: 0 auto;
+  }
+
+  .clean-row {
+      border: none;
+      padding: 5px 0;
+      margin-bottom: 10px;
   }
 </style>
 
@@ -58,15 +66,11 @@
   </div>
 
   <div class="text-center">
-    <ul class="list-group list-group-flush my-3">
-      <li class="list-group-item d-flex"
-          v-for="(item, itemIndex) in items"
-          :key="itemIndex"
-          style="flex-flow: nowrap;">
+    
+    <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
         
-        <span class="align-self-center mr-2 font-weight-bold">[[ itemIndex + 1 ]].</span>
-
         <div class="input-group mb-3 d-flex align-items-baseline" style="flex-flow: nowrap;">
+          
           <div v-for="(field, fieldIndex) in item.fields"
                :key="fieldIndex"
                class="align-items-baseline input-group mb-3 d-flex flex-nowrap">
@@ -79,18 +83,18 @@
               autocomplete="off"
               @input="hideError"
             >
-            <span class="input-group-text mx-2 text-nowrap">
+            <span class="input-group-text mx-2 text-nowrap" style="background:none; border:none; font-weight:bold;">
               [[ field.suffix ]]
             </span>
           </div>
 
-          <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary" style="flex-basis: 50px;" :disabled="items.length === maxItems">+</button>
-          <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger" style="flex-basis: 50px;" :disabled="items.length === minItems">-</button>
+          <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary ml-2" style="flex-basis: 40px;" :disabled="items.length === maxItems">+</button>
+          <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger ml-1" style="flex-basis: 40px;" :disabled="items.length === minItems">-</button>
         </div>
-      </li>
-    </ul>
 
-    <p v-if="error" class="alert alert-danger">
+    </div>
+
+    <p v-if="error" class="alert alert-danger mt-3">
       [[ errorMessage ]]
     </p>
   </div>
@@ -141,8 +145,7 @@ const app = Vue.createApp({
       allowedValues: allowedVals,
       suffixes,
       correctAnswers,
-      // Start with exactly ONE row, regardless of how many are needed
-      items: [createRow()], 
+      items: [createRow()],
       maxItems: 5,
       minItems: 1,
       error: false,
@@ -152,7 +155,6 @@ const app = Vue.createApp({
 
   computed: {
     isFormFilled() {
-      // Button enabled only if ALL fields in ALL rows have text
       return this.items.every(item =>
         item.fields.every(f => f.value && f.value.trim() !== '')
       );
@@ -163,7 +165,7 @@ const app = Vue.createApp({
     validateAndSubmit() {
       const genericError = "Please read the instructions again.";
 
-      // 1. Validate Vocabulary (Grammar)
+      // 1. Validate Vocabulary
       for (let i = 0; i < this.items.length; i++) {
         const item = this.items[i];
         for (let j = 0; j < item.fields.length; j++) {
@@ -172,30 +174,35 @@ const app = Vue.createApp({
              const val = String(field.value).trim().toLowerCase();
              if (!field.allowedLower.includes(val)) {
                 this.error = true;
-                this.errorMessage = genericError; // Generic error as requested
+                this.errorMessage = genericError;
                 return;
              }
           }
         }
       }
 
-      // 2. Validate Correct Answers
+      // 2. Validate Correct Answers (Order Independent)
       if (this.correctAnswers.length > 0) {
           
-          // Check if user added enough rows
+          // Check row count
           if (this.items.length !== this.correctAnswers.length) {
               this.error = true;
               this.errorMessage = genericError;
               return;
           }
 
-          // Check content of each row
-          for (let i = 0; i < this.correctAnswers.length; i++) {
-              const userString = this.items[i].fields
-                  .map(f => String(f.value).trim().toLowerCase())
-                  .join(';');
-              
-              if (userString !== this.correctAnswers[i]) {
+          // Extract user answers as strings
+          const userStrings = this.items.map(item => 
+              item.fields.map(f => String(f.value).trim().toLowerCase()).join(';')
+          );
+          
+          // Sort both lists to compare sets regardless of order
+          userStrings.sort();
+          const correctSorted = [...this.correctAnswers].sort();
+
+          // Compare sorted arrays
+          for (let i = 0; i < correctSorted.length; i++) {
+              if (userStrings[i] !== correctSorted[i]) {
                   this.error = true;
                   this.errorMessage = genericError;
                   return;
@@ -212,7 +219,6 @@ const app = Vue.createApp({
     addItem() {
       if (this.items.length >= this.maxItems) return;
       
-      // Helper to create blank row
       const createRow = () => ({
         fields: this.suffixes.map((suffix, i) => ({
             value: '',
