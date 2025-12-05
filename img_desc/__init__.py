@@ -6,7 +6,7 @@ import logging
 from pprint import pprint
 import os
 
-# SQLALCHEMY for direct DB access
+# Use independent SQLAlchemy engine to bypass oTree wrappers
 from sqlalchemy import create_engine, text
 
 from django.db import models as djmodels
@@ -68,28 +68,28 @@ class Batch(ExtraModel):
 
 
 # =====================================================================
-# SQL ENGINE HELPER (Auto-detects Postgres)
+# SQL ENGINE HELPER (Independent Connection)
 # =====================================================================
 
 _custom_engine = None
 
 def get_engine():
     """
-    Creates or returns a cached SQLAlchemy engine.
-    Detects HEROKU POSTGRES automatically.
+    Creates or returns a cached SQLAlchemy engine based on the environment.
+    This bypasses oTree's internal DBWrapper which hides the .engine attribute.
     """
     global _custom_engine
     if _custom_engine:
         return _custom_engine
 
-    # 1. Get the Database URL from Heroku Environment
+    # Get DB URL from environment (standard on Heroku)
     db_url = os.environ.get('DATABASE_URL')
     
     if not db_url:
-        # Fallback for local testing only
+        # Fallback for local testing (assumes standard oTree sqlite path)
         db_url = "sqlite:///db.sqlite3"
     else:
-        # 2. Fix for Heroku: SQLAlchemy requires 'postgresql://', Heroku provides 'postgres://'
+        # Fix for Heroku: SQLAlchemy requires 'postgresql://', Heroku provides 'postgres://'
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
 
@@ -99,15 +99,18 @@ def get_engine():
 
 def get_all_batches_sql(session_code):
     """
-    Fetch all batches for this session.
+    Fetch all batches for this session using custom engine.
+    Compatible with older SQLAlchemy versions (ResultProxy).
     """
     engine = get_engine()
     sql = text("SELECT * FROM img_desc_batch WHERE session_code = :session_code")
     
     with engine.connect() as conn:
-        result = conn.execute(sql, {'session_code': session_code})
-        # .mappings() returns dict-like rows (SQLAlchemy 1.4+)
-        return [dict(row) for row in result.mappings()]
+        result = conn.execute(sql, session_code=session_code)
+        
+        # FIX: Legacy-compatible way to convert rows to dicts
+        # .keys() returns column names, result is iterable
+        return [dict(zip(result.keys(), row)) for row in result]
 
 def sql_update_batch(batch_id, **kwargs):
     """
@@ -132,8 +135,8 @@ def sql_update_batch(batch_id, **kwargs):
     sql = text(sql_str)
     
     with engine.connect() as conn:
-        conn.execute(sql, params)
-        # Explicit commit for Postgres safety
+        conn.execute(sql, **params)
+        # Commit usually implied in autocommit mode, but explicitly safe here
         if hasattr(conn, 'commit'):
             conn.commit()
 
@@ -456,17 +459,42 @@ def creating_session(subsession: Subsession):
 
     session.vars["practice_settings"] = excel_data.get("practice_settings")
     session.vars["practice_pages"] = excel_data.get("practice_pages")
-    session.vars["user_settings"] = excel_data.get("settings")
     
     settings = excel_data.get("settings") or {}
+    session.vars["user_settings"] = settings
+    
     for k in ["s3path", "extension", "prefix", "interpreter_choices", 
               "interpreter_input_type", "interpreter_input_choices", "interpreter_title"]:
         session.vars[k] = settings.get(k)
 
     session.vars["suffixes"] = settings.get("suffixes") or []
     
-    av = settings.get("allowed_values") or []
-    session.vars["allowed_values"] = [[x for x in sub if x != ""] for sub in av]
+    # FIX: Parse allowed_values_1, _2... correctly
+    allowed_values = []
+    i = 1
+    while True:
+        key = f"allowed_values_{i}"
+        val = settings.get(key)
+        # If we can't find keys like 'allowed_values_1' in the dict,
+        # it might be because the keys are capitalized or different.
+        # But based on your 'start' app, this loop style works if 'settings' is correct.
+        if not val:
+            # Stop if key not found
+            if key not in settings and i > 5: # check a few times
+                break
+        
+        if val:
+            allowed_values.append([x.strip() for x in str(val).split(";") if x.strip()])
+        else:
+            allowed_values.append([])
+        
+        i += 1
+        
+        # Safety break to prevent infinite loop if keys are missing
+        if i > 20: break
+
+    session.vars["allowed_values"] = allowed_values
+    
     session.vars["allowed_regex"] = settings.get("allowed_regex") or []
     
     session.vars["caseflag"] = settings.get("caseflag") in ["True", "true", "1", "t", "T"]
