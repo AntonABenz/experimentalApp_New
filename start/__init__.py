@@ -5,46 +5,30 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# -------------------------------------------------------------------
-#  IMAGE URL BUILDER — FIXED FOR S3
-# -------------------------------------------------------------------
+class C(BaseConstants):
+    NAME_IN_URL = "start"
+    PLAYERS_PER_GROUP = None
+    NUM_ROUNDS = 1
 
-def build_s3_url(player, filename: str) -> str:
-    """
-    Build final S3 URL for images.
+class Subsession(BaseSubsession):
+    pass
 
-    Rules:
-    - read base from Excel settings sheet
-    - if sheet gives only bucket root, append /practice
-    - fallback always points to .../practice/<filename>
-    """
-    settings = player.session.vars.get('sheet_settings', {})
-    base = settings.get('s3path_base')
+class Group(BaseGroup):
+    pass
 
-    default_base = (
-        "https://disjunction-experiment-pictures-zas2025."
-        "s3.eu-central-1.amazonaws.com/practice"
-    )
-
-    # No base provided → fallback to default (previous behavior)
-    if not base:
-        base = default_base
-    else:
-        base = base.rstrip("/")
-
-        # If user gives bucket root, automatically append /practice
-        if base.endswith(".amazonaws.com"):
-            base = base + "/practice"
-
-    return f"{base}/{filename}"
-
+class Player(BasePlayer):
+    survey_data = models.LongStringField(blank=True)
 
 # -------------------------------------------------------------------
-#  KEY/VALUE SHEET PARSER
+#  HELPER FUNCTIONS
 # -------------------------------------------------------------------
 
 def _kv_sheet_to_dict(df) -> dict:
-    """Parses sheets with columns: name | value | comment (optional)."""
+    """
+    Parses settings sheets. 
+    FIX: Converts all keys to LOWERCASE to prevent "empty variable" bugs.
+    """
+    # Standardize column headers
     df = df.rename(columns={c: str(c).strip().lower() for c in df.columns})
 
     if not {"name", "value"}.issubset(df.columns):
@@ -52,69 +36,81 @@ def _kv_sheet_to_dict(df) -> dict:
 
     out = {}
     for _, r in df.iterrows():
-        key = str(r.get("name") or "").strip()
+        # FIX: Lowercase the key name from the cell (e.g. 'Allowed_Values_1' -> 'allowed_values_1')
+        key = str(r.get("name") or "").strip().lower()
         if key:
             v = r.get("value")
             out[key] = "" if pd.isna(v) else str(v).strip()
 
     return out
 
+def build_s3_url(player, filename: str) -> str:
+    """
+    Robust S3 URL builder.
+    """
+    if not filename: 
+        return ""
+        
+    settings = player.session.vars.get('sheet_settings', {})
+    base = settings.get('s3path_base', "")
+    ext = settings.get('extension', "png")
 
-# -------------------------------------------------------------------
-#  LOAD PRACTICE SHEETS + SETTINGS FROM EXCEL
-# -------------------------------------------------------------------
+    # 1. Ensure Extension
+    if not filename.lower().endswith(f".{ext}"):
+        filename = f"{filename}.{ext}"
+
+    # 2. Handle Base URL
+    # If base is missing, fallback to hardcoded default (safety net)
+    if not base:
+        base = "https://disjunction-experiment-pictures-zas2025.s3.eu-central-1.amazonaws.com/practice"
+    else:
+        base = base.rstrip("/")
+        # If user provided bucket root (ends in amazonaws.com), append /practice
+        if "amazonaws.com" in base and not base.endswith("/practice"):
+            base += "/practice"
+
+    return f"{base}/{filename}"
 
 def _load_practices(xlsx_filename: str):
-    """Loads settings sheet + all practice_# sheets."""
+    """Loads settings + practice sheets."""
+    # Find file
     root = Path(__file__).resolve().parents[1]
     candidates = [
         root / xlsx_filename,
         root / "data" / xlsx_filename,
         root / "start" / "data" / xlsx_filename,
     ]
-
     xlsx_path = next((p for p in candidates if p.exists()), None)
+    
     if not xlsx_path:
         logger.error(f"Excel not found: {xlsx_filename}")
         return {}, {}
 
-    # Load all sheets
     book = pd.read_excel(xlsx_path, sheet_name=None, dtype=str)
 
-    # ---- SETTINGS SHEET ----
+    # 1. Load Settings
     meta = {}
     if "settings" in book:
-        # Settings sheet does NOT have headers → read manually
-        settings_df = pd.read_excel(
-            xlsx_path,
-            sheet_name="settings",
-            header=None,
-            dtype=str,
-        )
-        # Force columns into name/value
+        settings_df = pd.read_excel(xlsx_path, sheet_name="settings", header=None, dtype=str)
         settings_df = settings_df.rename(columns={0: "name", 1: "value"})
         meta = _kv_sheet_to_dict(settings_df)
 
-    # ---- PRACTICE SHEET LOADING ----
+    # 2. Load Practices
     practice_settings = {}
     for tab, df in book.items():
         name = tab.lower().strip()
         if not name.startswith("practice_"):
             continue
 
-        # practices DO have name/value/comment header row
         kv = _kv_sheet_to_dict(df)
-        if not kv:
-            continue
+        if not kv: continue
 
+        # Extract basic info
         img = kv.get("image", "")
-        ext = meta.get("extension", "png")
+        # Note: We rely on build_s3_url to add extension later, 
+        # but storing it raw here is fine.
 
-        # append extension if needed
-        if img and not img.lower().endswith(f".{ext}"):
-            img = f"{img}.{ext}"
-
-        # collect right answers in numeric order
+        # Collect right answers
         answers = [kv[k] for k in sorted(kv.keys()) if k.startswith("right_answer_")]
 
         practice_settings[name] = {
@@ -128,14 +124,8 @@ def _load_practices(xlsx_filename: str):
 
 
 # -------------------------------------------------------------------
-#  OTree MODELS
+#  SESSION CREATION
 # -------------------------------------------------------------------
-
-class C(BaseConstants):
-    NAME_IN_URL = "start"
-    PLAYERS_PER_GROUP = None
-    NUM_ROUNDS = 1
-
 
 def creating_session(subsession: BaseSubsession):
     session = subsession.session
@@ -143,103 +133,76 @@ def creating_session(subsession: BaseSubsession):
 
     xlsx = cfg.get("filename")
     if not xlsx:
-        raise RuntimeError(
-            "Session config must include 'filename' pointing to the Excel file."
-        )
+        raise RuntimeError("Session config must include 'filename'.")
 
-    # Load everything
     ps, meta = _load_practices(xlsx)
 
-    # Save for use in templates
     session.vars["practice_settings"] = ps
     session.vars["sheet_settings"] = meta
 
-    # ------------------------------------------------------------------
-    # INTERPRETER CHOICES (for medals Yes/No pages)
-    # ------------------------------------------------------------------
-    ic = meta.get("interpreter_choices")
-    if ic:
-        session.vars["interpreter_choices"] = [x.strip() for x in ic.split(";")]
-    else:
-        # fallback: number of answers in first practice sheet
-        first = list(ps.values())[0]
-        n = len(first.get("right_answer", []))
-        session.vars["interpreter_choices"] = [f"Choice {i}" for i in range(1, n + 1)]
-
-    # interpreter title
-    session.vars.setdefault(
-        "interpreter_title", meta.get("interpreter_title", "Interpretation")
-    )
-
-    # ------------------------------------------------------------------
-    # TEXT-FIELD INTERFACE CONFIG (suffixes + allowed values) for
-    # Practice 4–7
-    # ------------------------------------------------------------------
-    # suffix_1, suffix_2, ...
+    # Parse Arrays (suffixes, allowed_values)
+    # Suffixes
     suffixes = []
     i = 1
     while True:
         key = f"suffix_{i}"
-        if key not in meta:
-            break
         val = meta.get(key)
-        if val:
-            suffixes.append(val)
+        if val: suffixes.append(val)
+        else:
+            if i > 5: break # Stop if gap found
         i += 1
     session.vars["suffixes"] = suffixes
 
-    # allowed_values_1, allowed_values_2, ...
+    # Allowed Values
     allowed_values = []
     i = 1
     while True:
         key = f"allowed_values_{i}"
-        if key not in meta:
-            break
-        raw = meta.get(key, "")
+        raw = meta.get(key)
         if raw:
-            allowed_values.append(
-                [x.strip() for x in raw.split(";") if x.strip()]
-            )
+            allowed_values.append([x.strip() for x in raw.split(";") if x.strip()])
         else:
+            # If key missing, add empty list placeholder
             allowed_values.append([])
+            if i > 20: break # Safety break
         i += 1
     session.vars["allowed_values"] = allowed_values
 
-    # End-of-intro text (used by EndOfIntro page)
-    session.vars["EndOfIntroText"] = meta.get("EndOfIntroText", "")
-
-
-class Subsession(BaseSubsession):
-    pass
-
-
-class Group(BaseGroup):
-    pass
-
-
-class Player(BasePlayer):
-    survey_data = models.LongStringField(blank=True)
+    # Text & Other Settings
+    session.vars["EndOfIntroText"] = meta.get("endofintrotext", "")
+    
+    # Interpreter choices logic (fallback if missing)
+    ic = meta.get("interpreter_choices")
+    if ic:
+        session.vars["interpreter_choices"] = [x.strip() for x in ic.split(";")]
+    else:
+        session.vars["interpreter_choices"] = []
 
 
 # -------------------------------------------------------------------
-#  BASE PAGE + PRACTICE PAGE LOADER
+#  PAGES
 # -------------------------------------------------------------------
 
 class _BasePage(Page):
     pass
 
-
 class _PracticePage(_BasePage):
     practice_id = None
-    template_name = None  # subclasses must set this
+    template_name = None 
 
     @classmethod
     def _settings(cls, player: Player):
         key = f"practice_{cls.practice_id}"
-        s = player.session.vars["practice_settings"][key].copy()
+        # Safe get
+        s = player.session.vars["practice_settings"].get(key, {}).copy()
 
+        # Build secure URL
         filename = s.get("image", "")
         s["full_image_path"] = build_s3_url(player, filename)
+        
+        # Ensure right_answer exists for templates
+        if "right_answer" not in s:
+            s["right_answer"] = []
 
         return s
 
@@ -252,84 +215,60 @@ class _PracticePage(_BasePage):
         return dict(settings=cls._settings(player))
 
 
-# Practice 1–3: medals, Yes/No layout (Practice1.html)
-class Practice1(_PracticePage):
-    practice_id = 1
-    template_name = "start/Practice1.html"
-
-
-class Practice2(_PracticePage):
-    practice_id = 2
-    template_name = "start/Practice1.html"
-
-
-class Practice3(_PracticePage):
-    practice_id = 3
-    template_name = "start/Practice1.html"
-
-
-# Practice 4–7: describing results with text fields (Practice4.html)
-class Practice4(_PracticePage):
-    practice_id = 4
-    template_name = "start/Practice4.html"
-
-
-class Practice5(_PracticePage):
-    practice_id = 5
-    template_name = "start/Practice4.html"
-
-
-class Practice6(_PracticePage):
-    practice_id = 6
-    template_name = "start/Practice6.html"
-
-
-class Practice7(_PracticePage):
-    practice_id = 7
-    template_name = "start/Practice6.html"
-
-
-# -------------------------------------------------------------------
-#  NON-PRACTICE PAGES
-# -------------------------------------------------------------------
+# --- Page Definitions ---
 
 class Consent(_BasePage):
-    """
-    First page: also captures Prolific params into participant.vars
-    so img_desc can use them later.
-    """
-
     @staticmethod
     def before_next_page(player, timeout_happened=False):
-        # Only do this when running a Prolific study
-        if not player.session.config.get("for_prolific"):
-            return
-
-        p = player.participant
-        p.vars["prolific_id"] = p.label
-        p.vars.setdefault("study_id", None)
-        p.vars.setdefault("prolific_session_id", None)
-
+        if player.session.config.get("for_prolific"):
+            p = player.participant
+            p.vars["prolific_id"] = p.label
+            p.vars.setdefault("study_id", None)
+            p.vars.setdefault("prolific_session_id", None)
 
 class Demographics(_BasePage):
     form_model = "player"
     form_fields = ["survey_data"]
 
-
 class Instructions(_BasePage):
     pass
 
+# Practice 1-3 (Yes/No tasks)
+class Practice1(_PracticePage):
+    practice_id = 1
+    template_name = "start/Practice1.html"
+
+class Practice2(_PracticePage):
+    practice_id = 2
+    template_name = "start/Practice1.html"
+
+class Practice3(_PracticePage):
+    practice_id = 3
+    template_name = "start/Practice1.html"
+
+# Practice 4-5 (Text Input tasks)
+class Practice4(_PracticePage):
+    practice_id = 4
+    template_name = "start/Practice4.html"
+
+class Practice5(_PracticePage):
+    practice_id = 5
+    template_name = "start/Practice4.html"
+
+# Practice 6-7 (Text Input + No Right Answer Check)
+class Practice6(_PracticePage):
+    practice_id = 6
+    template_name = "start/Practice6.html"
+
+class Practice7(_PracticePage):
+    practice_id = 7
+    template_name = "start/Practice7.html"
 
 class EndOfIntro(_BasePage):
-    """
-    Final practice page: just shows some text from the Excel settings sheet.
-    """
-
     def vars_for_template(self):
         return dict(
             end_of_intro_text=self.session.vars.get("EndOfIntroText", "")
         )
-
 
 page_sequence = [
     Consent,
