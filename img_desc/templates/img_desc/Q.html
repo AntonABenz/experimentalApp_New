@@ -1,41 +1,171 @@
 {% extends "global/Page.html" %}
 {% load otree static %}
 
-{% block global_styles %}
-
-{% if player.role == Constants.PRODUCER %}
-<link rel="preload" as="image" href="{{player.get_image_url}}">
-{% endif %}
-
-
-
-{% endblock %}
 {% block title %}
-Round {{view.round_number}}/{{session.vars.num_rounds}}
+Round {{ player.round_number }} / {{ session.vars.num_rounds }}
 {% endblock %}
 
 {% block content %}
+<style>
+    [v-cloak] { display: none; }
+    
+    /* PRODUCER STYLES */
+    .input-group { max-width: fit-content; margin: 0 auto; }
+    .input-kids  { min-width: 200px; }
+    
+    .vocabulary-box { 
+        border: 1px solid #ccc; 
+        background-color: #f8f9fa; 
+        padding: 20px; 
+        border-radius: 5px; 
+        margin-bottom: 25px; 
+    }
+    
+    .vocab-column { font-size: 1.1rem; line-height: 1.6; text-align: left; }
+    
+    @media (min-width: 768px) {
+        .vocab-column:first-child { border-right: 2px solid #e9ecef; }
+    }
+    
+    .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
 
-{% if player.role == Constants.PRODUCER %}
-<div class="card">
-    <div class="card-body text-center">
+    /* INTERPRETER STYLES */
+    .sentence-card {
+        background: #e3f2fd;
+        border-left: 5px solid #2196f3;
+        padding: 20px;
+        margin: 20px 0;
+        font-size: 1.25rem;
+        text-align: center;
+    }
+</style>
 
-        <img width="500px" src="{{player.get_image_url}}" alt="">
+<script>
+    window.props = {
+        role: "{{ player.role }}",
+        allowedValues: {{ allowed_values|json }},
+        suffixes: {{ suffixes|json }},
+        full_sentences: {{ player.get_full_sentences|json }},
+        interpreter_choices: {{ session.vars.interpreter_choices|json }},
+        interpreter_title: "{{ session.vars.interpreter_title }}"
+    };
+</script>
+
+<div id="app" v-cloak>
+
+    <div v-if="props.role === 'P'">
+        
+        <div class="text-center my-4">
+            <img src="{{ player.get_image_url }}" style="max-width: 100%; height: auto; max-height: 500px; border:1px solid #ddd; padding:5px;">
+        </div>
+
+        <div class="vocabulary-box text-center">
+            <h5 class="mb-4">Allowed Vocabulary</h5>
+            <div class="row justify-content-center">
+                <div class="col-md-5 vocab-column px-4">
+                    <div v-if="props.allowedValues[0]">
+                        <span v-for="(val, idx) in props.allowedValues[0]" :key="idx">
+                            [[ val ]]<span v-if="idx < props.allowedValues[0].length - 1">; </span>
+                        </span>
+                    </div>
+                </div>
+                <div class="col-md-5 vocab-column px-4">
+                    <div v-if="props.allowedValues[1]">
+                        <span v-for="(val, idx) in props.allowedValues[1]" :key="idx">
+                            [[ val ]]<span v-if="idx < props.allowedValues[1].length - 1">; </span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="text-center mt-4">
+            <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
+                <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
+                    <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
+                        <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off">
+                        <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
+                    </div>
+                    <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary ml-2" :disabled="items.length >= 5">+</button>
+                    <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger ml-1" :disabled="items.length <= 1">-</button>
+                </div>
+            </div>
+        </div>
+
+        <input type="hidden" name="producer_decision" :value="jsonPayload">
+
     </div>
-    {% include "img_desc/includes/p_form.html" %}
+
+    <div v-else-if="props.role === 'I'">
+        
+        <h3 class="text-center">[[ props.interpreter_title || 'Your Partner Wrote:' ]]</h3>
+        
+        <div class="sentence-card">
+            <div v-if="props.full_sentences.length === 0">
+                <em>(Your partner did not produce any sentences)</em>
+            </div>
+            <div v-for="s in props.full_sentences">
+                [[ s ]]
+            </div>
+        </div>
+
+        <div class="text-center mt-5">
+            <h5>Please select the best description:</h5>
+            <div class="d-flex flex-column align-items-center mt-3">
+                <div v-for="choice in props.interpreter_choices" class="form-check my-2">
+                    <label class="form-check-label" style="font-size: 1.1rem;">
+                        <input class="form-check-input" type="radio" name="interpreter_choice" :value="choice" required>
+                        [[ choice ]]
+                    </label>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="text-center mt-5">
+        <button class="btn btn-primary btn-lg">Next</button>
+    </div>
 
 </div>
-{% endif %}
-{% if player.role == Constants.INTERPRETER %}
-<div class="alert alert-info lead text-center">
-    {% for s in player.get_full_sentences %}
-    {{s}} <br>
-    {% endfor %}
-</div>
-{% include "img_desc/includes/i_form.html" %}
 
-{% endif %}
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script>
+    const app = Vue.createApp({
+        data() {
+            const p = window.props || {};
+            let suffixes = p.suffixes;
+            if (!suffixes || suffixes.length === 0) suffixes = ["", ""];
 
-
+            return {
+                props: p,
+                items: [{ 
+                    fields: suffixes.map(s => ({ value: '', suffix: s })) 
+                }]
+            };
+        },
+        computed: {
+            jsonPayload() {
+                return JSON.stringify(this.items.map(item => item.fields.map(f => f.value)));
+            }
+        },
+        methods: {
+            addItem() {
+                if (this.items.length < 5) {
+                    this.items.push({ 
+                        fields: this.props.suffixes.map(s => ({ value: '', suffix: s })) 
+                    });
+                }
+            },
+            removeItem(index) {
+                if (this.items.length > 1) {
+                    this.items.splice(index, 1);
+                }
+            }
+        }
+    });
+    app.config.compilerOptions.delimiters = ['[[', ']]'];
+    app.mount('#app');
+</script>
 
 {% endblock %}
