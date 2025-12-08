@@ -24,55 +24,60 @@ class Player(BasePlayer):
 #  HELPER FUNCTIONS
 # -------------------------------------------------------------------
 
+def normalize_key(key):
+    """
+    Ultra-robust key normalizer.
+    Removes ALL spaces, underscores, and converts to lowercase.
+    Example: "Allowed_Values_1" -> "allowedvalues1"
+    """
+    if not key: return ""
+    return str(key).lower().replace("_", "").replace(" ", "").strip()
+
 def _kv_sheet_to_dict(df) -> dict:
-    """
-    Parses settings sheets. 
-    Converts all keys to LOWERCASE to prevent "empty variable" bugs.
-    """
-    # Standardize column headers
+    # Standardize column headers to lower case
     df = df.rename(columns={c: str(c).strip().lower() for c in df.columns})
 
+    # Basic check for 'name' and 'value' columns
     if not {"name", "value"}.issubset(df.columns):
         return {}
 
     out = {}
     for _, r in df.iterrows():
-        # Clean the key name (e.g. 'Allowed_Values_1' -> 'allowed_values_1')
-        key = str(r.get("name") or "").strip().lower()
-        if key:
-            v = r.get("value")
-            out[key] = "" if pd.isna(v) else str(v).strip()
+        raw_key = r.get("name")
+        if pd.isna(raw_key) or raw_key == "":
+            continue
+            
+        # Apply ultra-robust normalization
+        key = normalize_key(raw_key)
+        
+        v = r.get("value")
+        out[key] = "" if pd.isna(v) else str(v).strip()
 
     return out
 
 def build_s3_url(player, filename: str) -> str:
-    """
-    Robust S3 URL builder.
-    """
-    if not filename or pd.isna(filename) or filename == "nan": 
+    """Robust S3 URL builder."""
+    if not filename or pd.isna(filename) or str(filename).lower() == "nan": 
         return ""
         
     settings = player.session.vars.get('sheet_settings', {})
-    base = settings.get('s3path_base', "")
+    # Look for normalized key 's3pathbase' (from s3path_base)
+    base = settings.get('s3pathbase', "")
     ext = settings.get('extension', "png")
 
-    # 1. Ensure Extension
     if not filename.lower().endswith(f".{ext}"):
         filename = f"{filename}.{ext}"
 
-    # 2. Handle Base URL
     if not base:
         base = "https://disjunction-experiment-pictures-zas2025.s3.eu-central-1.amazonaws.com/practice"
     else:
         base = base.rstrip("/")
-        # If user provided bucket root (ends in amazonaws.com), append /practice
         if "amazonaws.com" in base and not base.endswith("/practice"):
             base += "/practice"
 
     return f"{base}/{filename}"
 
 def _load_practices(xlsx_filename: str):
-    """Loads settings + practice sheets."""
     root = Path(__file__).resolve().parents[1]
     candidates = [
         root / xlsx_filename,
@@ -90,7 +95,9 @@ def _load_practices(xlsx_filename: str):
     # 1. Load Settings
     meta = {}
     if "settings" in book:
+        # Load without header first to inspect
         settings_df = pd.read_excel(xlsx_path, sheet_name="settings", header=None, dtype=str)
+        # Assume col 0 is name, col 1 is value
         settings_df = settings_df.rename(columns={0: "name", 1: "value"})
         meta = _kv_sheet_to_dict(settings_df)
 
@@ -98,30 +105,27 @@ def _load_practices(xlsx_filename: str):
     practice_settings = {}
     for tab, df in book.items():
         # Normalize sheet name: "Practice 1" -> "practice1"
-        clean_name = tab.lower().strip().replace(" ", "").replace("_", "")
+        clean_name = normalize_key(tab)
         
-        # Look for sheets starting with 'practice' followed by a number
         if not clean_name.startswith("practice"):
             continue
 
-        # Extract the number (e.g. 1 from practice1) to use as ID
-        # This makes it robust against "Practice_1" vs "Practice 1"
         try:
             p_id = int(re.search(r'\d+', clean_name).group())
-            key_name = f"practice_{p_id}" # Standardize internal key
+            key_name = f"practice_{p_id}"
         except:
             continue
 
         kv = _kv_sheet_to_dict(df)
         if not kv: continue
 
-        img = kv.get("image", "")
-        # Collect right answers
-        answers = [kv[k] for k in sorted(kv.keys()) if k.startswith("right_answer_")]
+        img = kv.get("image", "") # will be normalized key 'image'
+        # Collect right answers (normalized keys like rightanswer1)
+        answers = [kv[k] for k in sorted(kv.keys()) if k.startswith("rightanswer")]
 
         practice_settings[key_name] = {
             "title": kv.get("title", tab),
-            "main_text": kv.get("main_text", ""),
+            "main_text": kv.get("maintext", ""), # normalized key
             "image": img,
             "right_answer": answers,
         }
@@ -146,11 +150,15 @@ def creating_session(subsession: BaseSubsession):
     session.vars["practice_settings"] = ps
     session.vars["sheet_settings"] = meta
 
-    # Parse Arrays (suffixes, allowed_values)
+    # --- DEBUGGING PRINTS ---
+    print("--- LOADING SESSION DATA ---")
+    print(f"Meta keys found: {list(meta.keys())}")
+
+    # Parse Suffixes (normalized key: suffix1)
     suffixes = []
     i = 1
     while True:
-        key = f"suffix_{i}"
+        key = f"suffix{i}" # matches normalize_key("suffix_1")
         val = meta.get(key)
         if val: suffixes.append(val)
         else:
@@ -158,23 +166,30 @@ def creating_session(subsession: BaseSubsession):
         i += 1
     session.vars["suffixes"] = suffixes
 
-    # Allowed Values
+    # Parse Allowed Values (normalized key: allowedvalues1)
     allowed_values = []
     i = 1
     while True:
-        key = f"allowed_values_{i}"
+        key = f"allowedvalues{i}" # matches normalize_key("Allowed_Values_1")
         raw = meta.get(key)
-        if raw:
+        
+        # DEBUG PRINT
+        if raw: 
+            print(f"Found {key}: {raw}")
             allowed_values.append([x.strip() for x in raw.split(";") if x.strip()])
         else:
+            print(f"Missing {key}")
             allowed_values.append([])
             if i > 20: break 
         i += 1
+    
     session.vars["allowed_values"] = allowed_values
+    print(f"Final Allowed Values: {allowed_values}")
+    print("--------------------------")
 
     session.vars["EndOfIntroText"] = meta.get("endofintrotext", "")
     
-    ic = meta.get("interpreter_choices")
+    ic = meta.get("interpreterchoices")
     if ic:
         session.vars["interpreter_choices"] = [x.strip() for x in ic.split(";")]
     else:
@@ -195,7 +210,6 @@ class _PracticePage(_BasePage):
     @classmethod
     def _settings(cls, player: Player):
         key = f"practice_{cls.practice_id}"
-        # Safe get
         s = player.session.vars["practice_settings"].get(key, {}).copy()
 
         # Build secure URL
@@ -204,7 +218,6 @@ class _PracticePage(_BasePage):
         
         if "right_answer" not in s:
             s["right_answer"] = []
-
         return s
 
     @classmethod
@@ -213,7 +226,7 @@ class _PracticePage(_BasePage):
 
     @classmethod
     def js_vars(cls, player: Player):
-        # FIX: Explicitly pass vocab/suffixes to JS here
+        # THIS IS THE CRITICAL FIX: Passing vars to the template
         return dict(
             settings=cls._settings(player),
             allowed_values=player.session.vars.get("allowed_values", []),
