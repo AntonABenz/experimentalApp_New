@@ -14,23 +14,22 @@
     <h2 class="text-center my-3">[[ settings.title ]]</h2>
     <p>[[ settings.main_text ]]</p>
 
-    <div class="text-center my-4">
-        <img v-if="settings.full_image_path" :src="settings.full_image_path" style="max-width: 100%; height: auto; max-height: 400px;">
-        <div v-else class="p-5 bg-light text-muted" style="display:inline-block; min-width:300px;">
-            (No Image Available)
-        </div>
+    <div class="text-center my-4" v-if="settings.full_image_path">
+        <img :src="settings.full_image_path" style="max-width: 100%; height: auto; max-height: 400px;">
     </div>
 
     <div class="vocabulary-box text-center">
         <h5>Allowed Vocabulary</h5>
+        
+        <div v-if="allowedValues.length === 0" class="text-danger">
+            (Debug: List is empty. Check server logs)
+        </div>
+
         <div class="row justify-content-center">
             <div class="col-auto mx-3" v-for="(vals, idx) in allowedValues" :key="idx" v-if="vals && vals.length">
                 <span v-for="(val, vIdx) in vals" :key="vIdx">
                     [[ val ]]<span v-if="vIdx < vals.length - 1">, </span>
                 </span>
-            </div>
-            <div v-if="!allowedValues || allowedValues.length === 0">
-                <em>No vocabulary loaded. Please check Excel settings.</em>
             </div>
         </div>
     </div>
@@ -59,9 +58,16 @@
         data() {
             // FIX: Read from js_vars bridge
             const settings = js_vars.settings || {};
-            const allowedValues = js_vars.allowed_values || [];
-            const suffixes = js_vars.suffixes || [];
             
+            // Debugging: If python sends empty, fallback to ensure UI doesn't break
+            let allowedValues = js_vars.allowed_values || [];
+            
+            // Suffixes fallback
+            let suffixes = js_vars.suffixes;
+            if (!suffixes || suffixes.length === 0) {
+                suffixes = ["", ""]; // Default fallback so inputs appear
+            }
+
             return {
                 settings,
                 allowedValues,
@@ -85,7 +91,6 @@
                 }
             },
             next() {
-                // No validation for Practice 6 (per requirements)
                 document.querySelector('form').submit();
             }
         }
