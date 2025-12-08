@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 import pandas as pd
 import re
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -29,21 +30,13 @@ def normalize_key(key):
     Smart Normalizer:
     1. Lowercase everything.
     2. Turn any spaces or underscores into a single underscore.
-    
-    Examples:
-    "Allowed Values 1" -> "allowed_values_1"
-    "Allowed_Values_1" -> "allowed_values_1"
-    "allowed values 1" -> "allowed_values_1"
     """
     if not key: return ""
     k = str(key).lower().strip()
-    # Regex: Replace any sequence of spaces/underscores with one underscore
     return re.sub(r'[\s_]+', '_', k)
 
 def _kv_sheet_to_dict(df) -> dict:
-    # Rename columns using simple strip/lower
     df = df.rename(columns={c: str(c).strip().lower() for c in df.columns})
-
     if not {"name", "value"}.issubset(df.columns):
         return {}
 
@@ -52,19 +45,16 @@ def _kv_sheet_to_dict(df) -> dict:
         raw_key = r.get("name")
         if pd.isna(raw_key) or raw_key == "": continue
         
-        # Apply Smart Normalization
         key = normalize_key(raw_key)
         v = r.get("value")
         out[key] = "" if pd.isna(v) else str(v).strip()
     return out
 
 def build_s3_url(player, filename: str) -> str:
-    """Robust S3 URL builder."""
     if not filename or pd.isna(filename) or str(filename).lower() == "nan": 
         return ""
         
     settings = player.session.vars.get('sheet_settings', {})
-    # Look for normalized key 's3path_base'
     base = settings.get('s3path_base', "")
     ext = settings.get('extension', "png")
 
@@ -99,7 +89,6 @@ def _load_practices(xlsx_filename: str):
     meta = {}
     if "settings" in book:
         settings_df = pd.read_excel(xlsx_path, sheet_name="settings", header=None, dtype=str)
-        # Assume col 0 is name, col 1 is value
         settings_df = settings_df.rename(columns={0: "name", 1: "value"})
         meta = _kv_sheet_to_dict(settings_df)
 
@@ -118,12 +107,11 @@ def _load_practices(xlsx_filename: str):
         if not kv: continue
 
         img = kv.get("image", "") 
-        # answers will look for 'right_answer_1' style keys
         answers = [kv[k] for k in sorted(kv.keys()) if k.startswith("right_answer")]
 
         practice_settings[key_name] = {
             "title": kv.get("title", tab),
-            "main_text": kv.get("main_text", ""), # Matches 'main_text' in Excel
+            "main_text": kv.get("main_text", ""),
             "image": img,
             "right_answer": answers,
         }
@@ -147,38 +135,30 @@ def creating_session(subsession: BaseSubsession):
     session.vars["practice_settings"] = ps
     session.vars["sheet_settings"] = meta
 
-    # --- DEBUG: Print found keys to logs ---
     print(f"DEBUG: Keys found in settings: {list(meta.keys())}")
 
-    # ---------------------------------------------------------
-    # SUFFIXES LOADING (Looks for suffix_1, suffix_2...)
-    # ---------------------------------------------------------
+    # Suffixes
     suffixes = []
     i = 1
     while True:
-        key = f"suffix_{i}"  # Now matches your expectation
+        key = f"suffix_{i}"
         val = meta.get(key)
-        if val: 
-            suffixes.append(val)
+        if val: suffixes.append(val)
         else:
             if i > 5: break 
         i += 1
     
-    # Fallback
     if not suffixes:
         print("WARNING: Suffixes missing. Using defaults.")
         suffixes = ["solve/d", "exercises"]
         
     session.vars["suffixes"] = suffixes
 
-
-    # ---------------------------------------------------------
-    # ALLOWED VALUES LOADING (Looks for allowed_values_1...)
-    # ---------------------------------------------------------
+    # Allowed Values
     allowed_values = []
     i = 1
     while True:
-        key = f"allowed_values_{i}" # Now matches allowed_values_1
+        key = f"allowed_values_{i}"
         raw = meta.get(key)
         
         if raw:
@@ -201,7 +181,6 @@ def creating_session(subsession: BaseSubsession):
 
     session.vars["allowed_values"] = allowed_values
     
-    # Other settings (now using underscores in keys)
     session.vars["EndOfIntroText"] = meta.get("endofintrotext", "")
     
     ic = meta.get("interpreter_choices")
@@ -226,20 +205,13 @@ class _PracticePage(_BasePage):
     def _settings(cls, player: Player):
         key = f"practice_{cls.practice_id}"
         s = player.session.vars["practice_settings"].get(key, {}).copy()
-        
-        # Build secure URL
-        filename = s.get("image", "")
-        s["full_image_path"] = build_s3_url(player, filename)
-        
+        s["full_image_path"] = build_s3_url(player, s.get("image", ""))
         if "right_answer" not in s: s["right_answer"] = []
         return s
 
     @classmethod
     def vars_for_template(cls, player: Player):
-        return dict(settings=cls._settings(player))
-
-    @classmethod
-    def js_vars(cls, player: Player):
+        # DIRECT PASSING TO TEMPLATE
         return dict(
             settings=cls._settings(player),
             allowed_values=player.session.vars.get("allowed_values", []),
