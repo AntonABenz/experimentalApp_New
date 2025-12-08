@@ -189,9 +189,8 @@ class Player(BasePlayer):
     def role(self):
         return self.inner_role
 
-    # RENAMED PROPERTY TO AVOID OTREE FIELD CONFLICT
-    @property
-    def linked_batch(self):
+    # CHANGED TO METHOD TO AVOID OTREE INTERCEPTION
+    def get_linked_batch(self):
         if not self.link_id: return None
         all_data = get_all_batches_sql(self.session.code)
         for b in all_data:
@@ -199,7 +198,7 @@ class Player(BasePlayer):
         return None
 
     def get_sentences_data(self):
-        l = self.linked_batch
+        l = self.get_linked_batch()
         if not l: return []
         try:
             if l['partner_id'] == 0:
@@ -211,7 +210,7 @@ class Player(BasePlayer):
 
     def get_previous_batch(self):
         if self.inner_role != INTERPRETER: return dict(sentences="[]")
-        l = self.linked_batch
+        l = self.get_linked_batch()
         if not l or l['partner_id'] == 0: return dict(sentences="[]")
 
         target_batch_idx = self.subsession.active_batch - 1
@@ -258,7 +257,7 @@ class Player(BasePlayer):
         return res
 
     def get_image_url(self):
-        l = self.linked_batch
+        l = self.get_linked_batch()
         if not l: return ""
         image_name = l['image']
         if not image_name: return ""
@@ -436,10 +435,10 @@ class Q(Page):
 
     @staticmethod
     def vars_for_template(player):
-        # FIX: Access the new property name linked_batch
-        if player.linked_batch:
-            l = player.linked_batch
-            return dict(d=l)
+        # FIX: Call method instead of property
+        batch = player.get_linked_batch()
+        if batch:
+            return dict(d=batch)
         return dict(d=None)
 
     def post(self):
