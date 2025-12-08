@@ -6,14 +6,14 @@ import logging
 from pprint import pprint
 import os
 
-# Use independent SQLAlchemy engine
+# SQLALCHEMY for Heroku Postgres
 from sqlalchemy import create_engine, text
 
 from django.db import models as djmodels
 from django.forms.models import model_to_dict
 from django.shortcuts import redirect
 
-from .utils import get_url_for_image, get_completion_info, increase_space
+from .utils import get_completion_info, increase_space
 from reading_xls.get_data import get_data
 
 logger = logging.getLogger("benzapp.img_desc")
@@ -92,16 +92,11 @@ def get_all_batches_sql(session_code):
     sql = text("SELECT * FROM img_desc_batch WHERE session_code = :session_code")
     
     with engine.connect() as conn:
-        result = conn.execute(sql, session_code=session_code)
+        result = conn.execute(sql, {'session_code': session_code})
         return [dict(zip(result.keys(), row)) for row in result]
 
 def sql_update_batch(batch_id, **kwargs):
-    """
-    Update specific fields of a batch row by ID.
-    FIX: Removed manual boolean conversion. SQLAlchemy handles True/False correctly for Postgres.
-    """
-    if not kwargs:
-        return
+    if not kwargs: return
 
     engine = get_engine()
     set_clauses = []
@@ -116,7 +111,7 @@ def sql_update_batch(batch_id, **kwargs):
     sql = text(sql_str)
     
     with engine.connect() as conn:
-        conn.execute(sql, **params)
+        conn.execute(sql, params)
         if hasattr(conn, 'commit'):
             conn.commit()
 
@@ -141,9 +136,7 @@ class Subsession(BaseSubsession):
         max_users = self.session.vars.get("max_users", 0)
         batch_size = self.session.vars.get("batch_size", 0)
 
-        if not study_id:
-            logger.warning("No study id data available! Slot expansion failed.")
-            return
+        if not study_id: return
 
         logger.info(f"Expanding slots: study {study_id}, extra {batch_size}")
         max_users = min(max_users, self.session.num_participants)
@@ -152,26 +145,15 @@ class Subsession(BaseSubsession):
     def check_for_batch_completion(self):
         session = self.session
         active_batch = self.active_batch
-
-        logger.info(f"Checking batch {active_batch} completion...")
-
         all_data = get_all_batches_sql(session.code)
-        remaining = [
-            b for b in all_data 
-            if b['batch'] == active_batch and not b['processed']
-        ]
+        remaining = [b for b in all_data if b['batch'] == active_batch and not b['processed']]
         
-        logger.info(f"Active batch: {active_batch}; Remaining: {len(remaining)}")
-        
-        if remaining:
-            return
+        if remaining: return
 
         session.vars["active_batch"] = active_batch + 1
         logger.info(f"Batch {active_batch} complete. Moving to {active_batch + 1}")
 
-        Subsession.objects.filter(session=session).update(
-            active_batch=active_batch + 1
-        )
+        Subsession.objects.filter(session=session).update(active_batch=active_batch + 1)
 
         if session.config.get("expand_slots", False):
             self.expand_slots()
@@ -207,37 +189,30 @@ class Player(BasePlayer):
     def role(self):
         return self.inner_role
 
+    # RENAMED PROPERTY TO AVOID OTREE FIELD CONFLICT
     @property
-    def link(self):
-        if not self.link_id:
-            return None
-        
+    def linked_batch(self):
+        if not self.link_id: return None
         all_data = get_all_batches_sql(self.session.code)
         for b in all_data:
-            if b['id'] == self.link_id:
-                return b
+            if b['id'] == self.link_id: return b
         return None
 
     def get_sentences_data(self):
-        l = self.link
-        if not l:
-            return []
+        l = self.linked_batch
+        if not l: return []
         try:
             if l['partner_id'] == 0:
                 return json.loads(l['sentences'])
             else:
                 return json.loads(self.get_previous_batch().get("sentences"))
-        except Exception as e:
-            logger.error(f"Error parsing sentences: {e}")
+        except Exception:
             return []
 
     def get_previous_batch(self):
-        if self.inner_role != INTERPRETER:
-            return dict(sentences="[]")
-
-        l = self.link
-        if not l or l['partner_id'] == 0:
-            return dict(sentences="[]")
+        if self.inner_role != INTERPRETER: return dict(sentences="[]")
+        l = self.linked_batch
+        if not l or l['partner_id'] == 0: return dict(sentences="[]")
 
         target_batch_idx = self.subsession.active_batch - 1
         all_data = get_all_batches_sql(self.session.code)
@@ -249,33 +224,25 @@ class Player(BasePlayer):
                 obj['id_in_group'] == l['partner_id'] and
                 obj['condition'] == l['condition']):
                 return obj
-                
-        logger.error("Previous batch row not found")
         return dict(sentences="[]")
 
     def update_batch(self):
-        if not self.link_id:
-            return
-        
+        if not self.link_id: return
         updates = {}
         if self.inner_role == PRODUCER:
             updates['sentences'] = self.producer_decision
         if self.inner_role == INTERPRETER:
             updates['rewards'] = self.interpreter_decision
-            
         if updates:
             sql_update_batch(self.link_id, **updates)
 
     def mark_data_processed(self):
         self.participant.vars["full_study_completed"] = True
-        
         all_data = get_all_batches_sql(self.session.code)
         my_code = self.participant.code
-        
         for b in all_data:
             if b['owner_code'] == my_code:
                 sql_update_batch(b['id'], processed=True)
-
         self.subsession.check_for_batch_completion()
 
     def get_full_sentences(self):
@@ -283,17 +250,15 @@ class Player(BasePlayer):
         suffixes = self.session.vars.get("suffixes") or []
         sentences = self.get_sentences_data() or []
         sentences = [sub for sub in sentences if "" not in sub]
-
         res = []
         for sentence in sentences:
             expansion = [str(item) for pair in zip(sentence, suffixes) for item in pair]
-            if prefix:
-                expansion.insert(0, prefix)
+            if prefix: expansion.insert(0, prefix)
             res.append(" ".join(expansion))
         return res
 
     def get_image_url(self):
-        l = self.link
+        l = self.linked_batch
         if not l: return ""
         image_name = l['image']
         if not image_name: return ""
@@ -312,33 +277,23 @@ class Player(BasePlayer):
         session = self.session
         subsession = self.subsession
 
-        # --- ROUND 1: assign free slot ---
         if self.round_number == 1:
             all_data = get_all_batches_sql(session.code)
-            
             candidates = [
                 b for b in all_data 
                 if b['batch'] == subsession.active_batch
                 and not b['busy']
                 and b['owner_code'] == ""
             ]
-            
             if not candidates:
-                logger.error(f"No free slots for {self.participant.code}!")
                 self.faulty = True
                 return
         
             candidates.sort(key=lambda b: b['id_in_group'])
             free = candidates[0]
             
-            # Pass True (boolean), do NOT convert to 1
-            sql_update_batch(
-                free['id'], 
-                busy=True, 
-                owner_code=self.participant.code
-            )
+            sql_update_batch(free['id'], busy=True, owner_code=self.participant.code)
         
-        # --- EVERY ROUND: Find my row ---
         all_data = get_all_batches_sql(session.code)
         my_row = None
         for b in all_data:
@@ -354,8 +309,6 @@ class Player(BasePlayer):
         self.inner_role = my_row['role']
         self.inner_sentences = json.dumps(self.get_sentences_data())
         
-
-        # --- PROLIFIC ---
         if self.round_number == 1 and session.config.get("for_prolific"):
             vars_ = self.participant.vars
             prolific_id = vars_.get("prolific_id") or vars_.get("prolific_pid")
@@ -376,35 +329,16 @@ class Player(BasePlayer):
                             completion_code=c["completion_code"],
                             full_return_url=c["full_return_url"],
                         )
-
                 if prol_study_id == subsession.study_id:
-                    completion_info = dict(
-                        completion_code=subsession.completion_code,
-                        full_return_url=subsession.full_return_url,
-                    )
+                    completion_info = dict(completion_code=subsession.completion_code, full_return_url=subsession.full_return_url)
                 else:
                     c = get_completion_info(prol_study_id)
                     if c: completion_info = c
 
-            for_update = dict(
-                prolific_id=prolific_id,
-                prol_study_id=prol_study_id,
-                prol_session_id=prol_session_id,
-                **completion_info,
-            )
-
-            try:
-                if not all([prol_study_id, prolific_id, prol_session_id]):
-                    raise Exception("Missing Prolific params")
-            except Exception as e:
-                logger.error(f"Prolific data error: {e}")
-            finally:
-                for p in self.in_all_rounds():
-                    for k, v in for_update.items():
-                        setattr(p, k, v)
-                
-                if prol_session_id:
-                    self.participant.label = prol_session_id
+            for_update = dict(prolific_id=prolific_id, prol_study_id=prol_study_id, prol_session_id=prol_session_id, **completion_info)
+            for p in self.in_all_rounds():
+                for k, v in for_update.items(): setattr(p, k, v)
+            if prol_session_id: self.participant.label = prol_session_id
 
 
 # =====================================================================
@@ -413,19 +347,16 @@ class Player(BasePlayer):
 
 def creating_session(subsession: Subsession):
     session = subsession.session
-    if subsession.round_number != 1:
-        return
+    if subsession.round_number != 1: return
 
     subsession.active_batch = 1
     session.vars["active_batch"] = 1
 
     filename = session.config.get("filename")
-    if not filename:
-        raise RuntimeError("Missing 'filename' in session config")
+    if not filename: raise RuntimeError("Missing filename")
 
     excel_data = get_data(filename)
     df = excel_data.get("data")
-
     session.vars["user_data"] = df
     session.vars["num_rounds"] = int(df.group_enumeration.max())
 
@@ -434,32 +365,26 @@ def creating_session(subsession: Subsession):
     records = df.to_dict(orient="records")
     for r in records:
         Batch.create(
-            session_code=session.code,
-            owner_code="",
-            batch=r.get("Exp"),
-            item_nr=r.get("Item.Nr"),
-            condition=r.get("Condition"),
-            image=r.get("Item"),
-            round_number=r.get("group_enumeration"),
-            role=r.get("role"),
-            id_in_group=r.get("id"),
-            partner_id=r.get("partner_id"),
-            sentences=r.get("sentences"),
+            session_code=session.code, owner_code="", batch=r.get("Exp"),
+            item_nr=r.get("Item.Nr"), condition=r.get("Condition"), image=r.get("Item"),
+            round_number=r.get("group_enumeration"), role=r.get("role"),
+            id_in_group=r.get("id"), partner_id=r.get("partner_id"), sentences=r.get("sentences"),
         )
 
     session.vars["practice_settings"] = excel_data.get("practice_settings")
     session.vars["practice_pages"] = excel_data.get("practice_pages")
     
     settings = excel_data.get("settings") or {}
+    # NORMALIZE KEYS to handle "Allowed_Values" vs "allowed_values"
     clean_settings = {str(k).strip().lower(): v for k, v in settings.items()}
     session.vars["user_settings"] = clean_settings
     
-    for k in ["s3path_base", "extension", "prefix", "interpreter_choices", 
-              "interpreter_input_type", "interpreter_input_choices", "interpreter_title"]:
+    for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_input_type", "interpreter_input_choices", "interpreter_title"]:
         session.vars[k] = clean_settings.get(k.lower())
 
     session.vars["suffixes"] = clean_settings.get("suffixes") or []
     
+    # Parse allowed_values correctly
     allowed_values = []
     i = 1
     while True:
@@ -467,8 +392,7 @@ def creating_session(subsession: Subsession):
         val = clean_settings.get(key)
         
         if not val:
-            if key not in clean_settings and i > 5:
-                break
+            if key not in clean_settings and i > 5: break
         
         if val:
             allowed_values.append([x.strip() for x in str(val).split(";") if x.strip()])
@@ -487,20 +411,9 @@ def creating_session(subsession: Subsession):
     unique_exps = df[df.Exp != 0].Exp.unique()
     batch_size = len(unique_ids_wz)
     max_users = batch_size * len(unique_exps)
-
-    if session.config.get("expand_slots"):
-        assert max_users <= session.num_participants
-
+    if session.config.get("expand_slots"): assert max_users <= session.num_participants
     session.vars["max_users"] = max_users
     session.vars["batch_size"] = batch_size
-    logger.info(f"{max_users=}; {batch_size=}")
-
-    print(
-    "DEBUG max_users/session:", 
-    max_users, 
-    session.num_participants, 
-    "batch_size:", batch_size, 
-    "unique_exps:", len(unique_exps))
 
 
 # =====================================================================
@@ -509,46 +422,37 @@ def creating_session(subsession: Subsession):
 
 class FaultyCatcher(Page):
     @staticmethod
-    def is_displayed(player):
-        return player.faulty
-
+    def is_displayed(player): return player.faulty
     def get(self):
-        if self.player.faulty:
-            return redirect(Constants.FALLBACK_URL)
+        if self.player.faulty: return redirect(Constants.FALLBACK_URL)
         return super().get()
-
 
 class Q(Page):
     instructions = True
-
     @staticmethod
     def is_displayed(player):
-        if not player.faulty:
-            player.start()
+        if not player.faulty: player.start()
         return player.round_number <= player.session.vars["num_rounds"]
 
     @staticmethod
     def vars_for_template(player):
-        if player.link:
-            return dict(d=player.link)
+        # FIX: Access the new property name linked_batch
+        if player.linked_batch:
+            l = player.linked_batch
+            return dict(d=l)
         return dict(d=None)
 
     def post(self):
-        logger.info(f"POST {self.participant.code} round {self.round_number}")
-        
         for t in ["start_decision_time", "end_decision_time"]:
             v = self.request.POST.get(t)
             if v: setattr(self.player, t, v)
-
         dec_sec = self.request.POST.get("decision_seconds")
         if dec_sec:
-            try:
-                self.player.decision_seconds = float(dec_sec)
+            try: self.player.decision_seconds = float(dec_sec)
             except: pass
 
         field = "producer_decision" if self.player.inner_role == PRODUCER else "interpreter_decision"
         raw = self.request.POST.get(field)
-        
         if raw:
             decisions = json.loads(raw)
             if self.player.inner_role == PRODUCER:
@@ -558,41 +462,27 @@ class Q(Page):
             else:
                 flatten = [i.get("choice") for i in decisions]
                 self.player.interpreter_decision = json.dumps(flatten)
-
         return super().post()
 
     @staticmethod
     def before_next_page(player, timeout_happened):
         player.update_batch()
-        
         if player.round_number == player.session.vars["num_rounds"]:
             player.mark_data_processed()
-            try:
-                player.vars_dump = json.dumps(player.participant.vars)
-            except Exception as e:
-                logger.error(e)
-
+            try: player.vars_dump = json.dumps(player.participant.vars)
+            except: pass
 
 class Feedback(Page):
     form_model = "player"
     form_fields = ["feedback"]
-
-    def is_displayed(self):
-        return self.round_number == self.session.vars["num_rounds"]
-
+    def is_displayed(self): return self.round_number == self.session.vars["num_rounds"]
 
 class FinalForProlific(Page):
     @staticmethod
     def is_displayed(player):
-        return (
-            player.session.config.get("for_prolific")
-            and player.round_number == player.session.vars["num_rounds"]
-        )
-
+        return player.session.config.get("for_prolific") and player.round_number == player.session.vars["num_rounds"]
     def get(self):
-        if self.player.full_return_url:
-            return redirect(self.player.full_return_url)
+        if self.player.full_return_url: return redirect(self.player.full_return_url)
         return redirect("https://cnn.com")
-
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
