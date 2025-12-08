@@ -2,6 +2,7 @@ from otree.api import *
 import logging
 from pathlib import Path
 import pandas as pd
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ class Player(BasePlayer):
 def _kv_sheet_to_dict(df) -> dict:
     """
     Parses settings sheets. 
-    FIX: Converts all keys to LOWERCASE to prevent "empty variable" bugs.
+    Converts all keys to LOWERCASE to prevent "empty variable" bugs.
     """
     # Standardize column headers
     df = df.rename(columns={c: str(c).strip().lower() for c in df.columns})
@@ -36,7 +37,7 @@ def _kv_sheet_to_dict(df) -> dict:
 
     out = {}
     for _, r in df.iterrows():
-        # FIX: Lowercase the key name from the cell (e.g. 'Allowed_Values_1' -> 'allowed_values_1')
+        # Clean the key name (e.g. 'Allowed_Values_1' -> 'allowed_values_1')
         key = str(r.get("name") or "").strip().lower()
         if key:
             v = r.get("value")
@@ -48,7 +49,7 @@ def build_s3_url(player, filename: str) -> str:
     """
     Robust S3 URL builder.
     """
-    if not filename: 
+    if not filename or pd.isna(filename) or filename == "nan": 
         return ""
         
     settings = player.session.vars.get('sheet_settings', {})
@@ -60,7 +61,6 @@ def build_s3_url(player, filename: str) -> str:
         filename = f"{filename}.{ext}"
 
     # 2. Handle Base URL
-    # If base is missing, fallback to hardcoded default (safety net)
     if not base:
         base = "https://disjunction-experiment-pictures-zas2025.s3.eu-central-1.amazonaws.com/practice"
     else:
@@ -73,7 +73,6 @@ def build_s3_url(player, filename: str) -> str:
 
 def _load_practices(xlsx_filename: str):
     """Loads settings + practice sheets."""
-    # Find file
     root = Path(__file__).resolve().parents[1]
     candidates = [
         root / xlsx_filename,
@@ -98,23 +97,30 @@ def _load_practices(xlsx_filename: str):
     # 2. Load Practices
     practice_settings = {}
     for tab, df in book.items():
-        name = tab.lower().strip()
-        if not name.startswith("practice_"):
+        # Normalize sheet name: "Practice 1" -> "practice1"
+        clean_name = tab.lower().strip().replace(" ", "").replace("_", "")
+        
+        # Look for sheets starting with 'practice' followed by a number
+        if not clean_name.startswith("practice"):
+            continue
+
+        # Extract the number (e.g. 1 from practice1) to use as ID
+        # This makes it robust against "Practice_1" vs "Practice 1"
+        try:
+            p_id = int(re.search(r'\d+', clean_name).group())
+            key_name = f"practice_{p_id}" # Standardize internal key
+        except:
             continue
 
         kv = _kv_sheet_to_dict(df)
         if not kv: continue
 
-        # Extract basic info
         img = kv.get("image", "")
-        # Note: We rely on build_s3_url to add extension later, 
-        # but storing it raw here is fine.
-
         # Collect right answers
         answers = [kv[k] for k in sorted(kv.keys()) if k.startswith("right_answer_")]
 
-        practice_settings[name] = {
-            "title": kv.get("title", name.title()),
+        practice_settings[key_name] = {
+            "title": kv.get("title", tab),
             "main_text": kv.get("main_text", ""),
             "image": img,
             "right_answer": answers,
@@ -141,7 +147,6 @@ def creating_session(subsession: BaseSubsession):
     session.vars["sheet_settings"] = meta
 
     # Parse Arrays (suffixes, allowed_values)
-    # Suffixes
     suffixes = []
     i = 1
     while True:
@@ -149,7 +154,7 @@ def creating_session(subsession: BaseSubsession):
         val = meta.get(key)
         if val: suffixes.append(val)
         else:
-            if i > 5: break # Stop if gap found
+            if i > 5: break 
         i += 1
     session.vars["suffixes"] = suffixes
 
@@ -162,16 +167,13 @@ def creating_session(subsession: BaseSubsession):
         if raw:
             allowed_values.append([x.strip() for x in raw.split(";") if x.strip()])
         else:
-            # If key missing, add empty list placeholder
             allowed_values.append([])
-            if i > 20: break # Safety break
+            if i > 20: break 
         i += 1
     session.vars["allowed_values"] = allowed_values
 
-    # Text & Other Settings
     session.vars["EndOfIntroText"] = meta.get("endofintrotext", "")
     
-    # Interpreter choices logic (fallback if missing)
     ic = meta.get("interpreter_choices")
     if ic:
         session.vars["interpreter_choices"] = [x.strip() for x in ic.split(";")]
@@ -200,7 +202,6 @@ class _PracticePage(_BasePage):
         filename = s.get("image", "")
         s["full_image_path"] = build_s3_url(player, filename)
         
-        # Ensure right_answer exists for templates
         if "right_answer" not in s:
             s["right_answer"] = []
 
@@ -212,7 +213,12 @@ class _PracticePage(_BasePage):
 
     @classmethod
     def js_vars(cls, player: Player):
-        return dict(settings=cls._settings(player))
+        # FIX: Explicitly pass vocab/suffixes to JS here
+        return dict(
+            settings=cls._settings(player),
+            allowed_values=player.session.vars.get("allowed_values", []),
+            suffixes=player.session.vars.get("suffixes", [])
+        )
 
 
 # --- Page Definitions ---
@@ -233,7 +239,6 @@ class Demographics(_BasePage):
 class Instructions(_BasePage):
     pass
 
-# Practice 1-3 (Yes/No tasks)
 class Practice1(_PracticePage):
     practice_id = 1
     template_name = "start/Practice1.html"
@@ -246,7 +251,6 @@ class Practice3(_PracticePage):
     practice_id = 3
     template_name = "start/Practice1.html"
 
-# Practice 4-5 (Text Input tasks)
 class Practice4(_PracticePage):
     practice_id = 4
     template_name = "start/Practice4.html"
@@ -255,7 +259,6 @@ class Practice5(_PracticePage):
     practice_id = 5
     template_name = "start/Practice4.html"
 
-# Practice 6-7 (Text Input + No Right Answer Check)
 class Practice6(_PracticePage):
     practice_id = 6
     template_name = "start/Practice6.html"
