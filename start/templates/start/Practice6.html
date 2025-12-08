@@ -6,12 +6,32 @@
     [v-cloak] { display: none; }
     .input-group { max-width: fit-content; }
     .input-kids  { min-width: 200px; }
-    .vocabulary-box { border: 1px solid #ccc; background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+    
+    /* Vocabulary Box Styling */
+    .vocabulary-box { 
+        border: 1px solid #ccc; 
+        background-color: #f8f9fa; 
+        padding: 20px; 
+        border-radius: 5px; 
+        margin-bottom: 25px; 
+    }
+    
+    .vocab-column {
+        font-size: 1.1rem;
+        line-height: 1.6;
+    }
+
+    /* Add a vertical divider line between columns on large screens */
+    @media (min-width: 768px) {
+        .vocab-column:first-child {
+            border-right: 2px solid #e9ecef;
+        }
+    }
+
     .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
 </style>
 
 <script>
-    // Passing data directly from Python vars_for_template to Window object
     window.props = {
         settings: {{ settings|json }},
         allowedValues: {{ allowed_values|json }},
@@ -27,25 +47,27 @@
         <img :src="props.settings.full_image_path" style="max-width: 100%; height: auto; max-height: 400px;">
     </div>
 
-    <div style="border: 2px solid red; padding: 10px; margin: 10px; background: #ffe6e6; font-size: 12px; text-align: left;">
-        <strong>DEBUG DATA:</strong><br>
-        Suffixes: [[ props.suffixes ]]<br>
-        Vocab List: [[ props.allowedValues ]]
-    </div>
-
     <div class="vocabulary-box text-center">
-        <h5>Allowed Vocabulary</h5>
+        <h5 class="mb-4">Allowed Vocabulary</h5>
+        
         <div class="row justify-content-center">
-            <div class="col-auto mx-3" v-for="(vals, idx) in props.allowedValues" :key="idx">
-                <div v-if="vals && vals.length > 0">
-                    <span v-for="(val, vIdx) in vals" :key="vIdx">
-                        [[ val ]]<span v-if="vIdx < vals.length - 1">, </span>
+            
+            <div class="col-md-5 vocab-column px-4">
+                <div v-if="props.allowedValues[0] && props.allowedValues[0].length > 0">
+                    <span v-for="(val, idx) in props.allowedValues[0]" :key="idx">
+                        [[ val ]]<span v-if="idx < props.allowedValues[0].length - 1">; </span>
                     </span>
                 </div>
-                <div v-else class="text-muted">
-                    (List [[idx+1]] is empty)
+            </div>
+
+            <div class="col-md-5 vocab-column px-4">
+                <div v-if="props.allowedValues[1] && props.allowedValues[1].length > 0">
+                    <span v-for="(val, idx) in props.allowedValues[1]" :key="idx">
+                        [[ val ]]<span v-if="idx < props.allowedValues[1].length - 1">; </span>
+                    </span>
                 </div>
             </div>
+
         </div>
     </div>
 
@@ -71,9 +93,11 @@
 <script>
     const app = Vue.createApp({
         data() {
-            // Read from the window object we populated earlier
             const p = window.props || {};
-            const suffixes = p.suffixes || ["", ""];
+            let suffixes = p.suffixes;
+            if (!suffixes || suffixes.length === 0) {
+                suffixes = ["", ""]; 
+            }
             
             return {
                 props: p,
