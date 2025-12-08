@@ -2,220 +2,95 @@
 {% load otree static %}
 
 {% block content %}
-
-<script>
-  window.suffixes      = {{ session.vars.suffixes|json }};
-  window.allowedValues = {{ session.vars.allowed_values|json }};
-  window.page_settings = {{ settings|json }};
-  // No right answers needed for this practice
-  window.rightAnswers  = [];
-</script>
-
 <style>
-  [v-cloak] { display: none; }
-  .input-group { max-width: fit-content; }
-  .input-kids  { min-width: 200px; }
-  
-  /* Vocabulary Box Styling */
-  .vocabulary-box {
-      border: 1px solid #ccc;
-      background-color: #f8f9fa;
-      padding: 15px;
-      border-radius: 5px;
-      margin-bottom: 20px;
-  }
-  
-  .placeholder-img {
-      width: 600px;
-      height: 400px;
-      background-color: #eee;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #aaa;
-      margin: 0 auto;
-  }
-
-  .clean-row {
-      border: none;
-      padding: 5px 0;
-      margin-bottom: 10px;
-  }
+    [v-cloak] { display: none; }
+    .input-group { max-width: fit-content; }
+    .input-kids  { min-width: 200px; }
+    .vocabulary-box { border: 1px solid #ccc; background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+    .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
 </style>
 
 <div id="app" v-cloak>
+    <h2 class="text-center my-3">[[ settings.title ]]</h2>
+    <p>[[ settings.main_text ]]</p>
 
-  <h1>[[ title ]]</h1>
-  <div v-html="main_text"></div>
-
-  <div class="text-center my-3">
-    <img v-if="image_path" :src="image_path" :alt="title" style="max-width: 600px; width: 100%; height:auto;">
-    <div v-else class="placeholder-img">(No Image Available)</div>
-  </div>
-
-  <div class="vocabulary-box text-center">
-      <h5>Allowed Vocabulary</h5>
-      <div class="row">
-          <div class="col" v-for="(vals, idx) in allowedValues" :key="idx" v-if="vals && vals.length">
-              <strong>For Field [[ idx + 1 ]]:</strong><br>
-              <span v-for="(val, vIdx) in vals" :key="vIdx">
-                  [[ val ]]<span v-if="vIdx < vals.length - 1">, </span>
-              </span>
-          </div>
-      </div>
-  </div>
-
-  <div class="text-center">
-    
-    <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
-        
-        <div class="input-group mb-3 d-flex align-items-baseline" style="flex-flow: nowrap;">
-          
-          <div v-for="(field, fieldIndex) in item.fields"
-               :key="fieldIndex"
-               class="align-items-baseline input-group mb-3 d-flex flex-nowrap">
-
-            <input
-              type="text"
-              v-model.trim="field.value"
-              class="form-control input-kids"
-              :placeholder="`...`"
-              autocomplete="off"
-              @input="hideError"
-            >
-            <span class="input-group-text mx-2 text-nowrap" style="background:none; border:none; font-weight:bold;">
-              [[ field.suffix ]]
-            </span>
-          </div>
-
-          <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary ml-2" style="flex-basis: 40px;" :disabled="items.length === maxItems">+</button>
-          <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger ml-1" style="flex-basis: 40px;" :disabled="items.length === minItems">-</button>
+    <div class="text-center my-4">
+        <img v-if="settings.full_image_path" :src="settings.full_image_path" style="max-width: 100%; height: auto; max-height: 400px;">
+        <div v-else class="p-5 bg-light text-muted" style="display:inline-block; min-width:300px;">
+            (No Image Available)
         </div>
-
     </div>
 
-    <p v-if="error" class="alert alert-danger mt-3">
-      [[ errorMessage ]]
-    </p>
-  </div>
+    <div class="vocabulary-box text-center">
+        <h5>Allowed Vocabulary</h5>
+        <div class="row justify-content-center">
+            <div class="col-auto mx-3" v-for="(vals, idx) in allowedValues" :key="idx" v-if="vals && vals.length">
+                <span v-for="(val, vIdx) in vals" :key="vIdx">
+                    [[ val ]]<span v-if="vIdx < vals.length - 1">, </span>
+                </span>
+            </div>
+            <div v-if="!allowedValues || allowedValues.length === 0">
+                <em>No vocabulary loaded. Please check Excel settings.</em>
+            </div>
+        </div>
+    </div>
 
-  <div class="text-center mt-4">
-    <button :disabled="!isFormFilled" class="btn btn-primary btn-lg" type="button" @click="validateAndSubmit">
-      Next
-    </button>
-  </div>
+    <div class="text-center mt-4">
+        <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
+            <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
+                <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
+                    <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off">
+                    <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
+                </div>
+                <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary ml-2" :disabled="items.length >= 5">+</button>
+                <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger ml-1" :disabled="items.length <= 1">-</button>
+            </div>
+        </div>
+    </div>
 
+    <div class="text-center mt-5">
+        <button class="btn btn-primary btn-lg" @click="next">Next</button>
+    </div>
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
-const app = Vue.createApp({
-  data() {
-    const s           = window.page_settings   || {};
-    const suffixes    = Array.isArray(window.suffixes)      ? window.suffixes      : [];
-    const allowedVals = Array.isArray(window.allowedValues) ? window.allowedValues : [];
-    
-    // Helper to clean strings
-    const cleanStr = (str) => String(str).toLowerCase().replace(/\s+/g, ' ').trim();
-
-    // Helper to create a new blank row
-    const createRow = () => ({
-        fields: suffixes.map((suffix, i) => ({
-            value: '',
-            suffix,
-            allowedLower: Array.isArray(allowedVals[i])
-                ? allowedVals[i].map(v => cleanStr(v))
-                : []
-        }))
-    });
-
-    // Image logic
-    let image_path = s.full_image_path || s.image_url || '';
-    if (!image_path && s.image) {
-      const name = (typeof s.image === 'string' && s.image.includes('.')) ? s.image : `${s.image}.png`;
-      if (!image_path) image_path = `/static/start/practice/${name}`;
-    }
-
-    return {
-      title: s.title || 'Practice Task',
-      main_text: s.main_text || '',
-      image_path,
-      allowedValues: allowedVals,
-      suffixes,
-      items: [createRow()], // Start with 1 row
-      maxItems: 10,         // Allow up to 10 rows (flexible)
-      minItems: 1,
-      error: false,
-      errorMessage: '',
-      cleanStr,
-    };
-  },
-
-  computed: {
-    isFormFilled() {
-      // Button enabled only if ALL fields in ALL rows have text
-      return this.items.every(item =>
-        item.fields.every(f => f.value && f.value.trim() !== '')
-      );
-    },
-  },
-
-  methods: {
-    validateAndSubmit() {
-      // 1. Validate Vocabulary Only
-      // (We removed the "Correct Answer" check entirely)
-      
-      for (let i = 0; i < this.items.length; i++) {
-        const item = this.items[i];
-        for (let j = 0; j < item.fields.length; j++) {
-          const field = item.fields[j];
-          if (field.allowedLower.length > 0) {
-             const val = this.cleanStr(field.value);
-             if (!field.allowedLower.includes(val)) {
-                this.error = true;
-                this.errorMessage = `Row ${i+1}, Field ${j+1}: "${field.value}" is not allowed. Please use the words from the box above.`;
-                return;
-             }
-          }
+    const app = Vue.createApp({
+        data() {
+            // FIX: Read from js_vars bridge
+            const settings = js_vars.settings || {};
+            const allowedValues = js_vars.allowed_values || [];
+            const suffixes = js_vars.suffixes || [];
+            
+            return {
+                settings,
+                allowedValues,
+                suffixes,
+                items: [{ 
+                    fields: suffixes.map(s => ({ value: '', suffix: s })) 
+                }]
+            };
+        },
+        methods: {
+            addItem() {
+                if (this.items.length < 5) {
+                    this.items.push({ 
+                        fields: this.suffixes.map(s => ({ value: '', suffix: s })) 
+                    });
+                }
+            },
+            removeItem(index) {
+                if (this.items.length > 1) {
+                    this.items.splice(index, 1);
+                }
+            },
+            next() {
+                // No validation for Practice 6 (per requirements)
+                document.querySelector('form').submit();
+            }
         }
-      }
-
-      // Success
-      this.error = false;
-      const outerForm = document.querySelector('form');
-      if (outerForm) outerForm.submit();
-    },
-
-    addItem() {
-      if (this.items.length >= this.maxItems) return;
-      
-      const createRow = () => ({
-        fields: this.suffixes.map((suffix, i) => ({
-            value: '',
-            suffix,
-            allowedLower: Array.isArray(this.allowedValues[i])
-                ? this.allowedValues[i].map(v => this.cleanStr(v))
-                : []
-        }))
-      });
-      
-      this.items.push(createRow());
-    },
-
-    removeItem(index) {
-      if (this.items.length > this.minItems) {
-        this.items.splice(index, 1);
-      }
-    },
-
-    hideError() {
-      this.error = false;
-    }
-  }
-});
-
-app.config.compilerOptions.delimiters = ['[[', ']]'];
-app.mount('#app');
+    });
+    app.config.compilerOptions.delimiters = ['[[', ']]'];
+    app.mount('#app');
 </script>
-
 {% endblock %}
