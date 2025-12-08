@@ -495,6 +495,13 @@ def creating_session(subsession: Subsession):
     session.vars["batch_size"] = batch_size
     logger.info(f"{max_users=}; {batch_size=}")
 
+    print(
+    "DEBUG max_users/session:", 
+    max_users, 
+    session.num_participants, 
+    "batch_size:", batch_size, 
+    "unique_exps:", len(unique_exps))
+
 
 # =====================================================================
 # PAGES
