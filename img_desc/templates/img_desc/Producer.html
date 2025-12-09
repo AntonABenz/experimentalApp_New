@@ -1,4 +1,4 @@
-{% extends "global/Page.html" %}
+{% extends "otree/Page.html" %}
 {% load otree static %}
 
 {% block title %}
@@ -8,6 +8,6 @@ Producer Task
 {% block content %}
 <p>This is the producer task. Fill in the fields (if any) and continue.</p>
 
-{{ formfields }}
-<button class="btn btn-primary">Next</button>
+{% formfields %}
+{% next_button %}
 {% endblock %}
