@@ -1,4 +1,4 @@
-{% extends "global/Page.html" %}
+{% extends "otree/Page.html" %}
 {% load otree static %}
 
 {% block title %}
@@ -8,6 +8,6 @@ Interpreter Task
 {% block content %}
 <p>This is the interpreter task. Answer the questions below.</p>
 
-{{ formfields }}
-<button class="btn btn-primary">Next</button>
+{% formfields %}
+{% next_button %}
 {% endblock %}
