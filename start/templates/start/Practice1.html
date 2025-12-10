@@ -24,8 +24,8 @@
                     <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off">
                     <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
                 </div>
-                <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary ml-2" :disabled="items.length >= 5" v-if="allowAdd">+</button>
-                <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger ml-1" :disabled="items.length <= 1" v-if="allowAdd">-</button>
+                <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary ml-2" :disabled="items.length >= 5">+</button>
+                <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger ml-1" :disabled="items.length <= 1">-</button>
             </div>
         </div>
     </div>
@@ -47,7 +47,6 @@
             return {
                 settings,
                 suffixes,
-                allowAdd: true, // Set to false if you want fixed rows for P1-P3
                 items: [{ 
                     fields: suffixes.map(s => ({ value: '', suffix: s })) 
                 }]
@@ -72,7 +71,6 @@
                 }
             },
             next() {
-                // You can add JS validation here if needed
                 document.querySelector('form').submit();
             }
         }
