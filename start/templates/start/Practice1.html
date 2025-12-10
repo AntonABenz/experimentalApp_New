@@ -13,16 +13,13 @@
 
     <h1>[[ title ]]</h1>
 
-    <!-- Main text with HTML support -->
     <div v-html="main_text"></div>
 
-    <!-- Image -->
     <div class="text-center my-3">
         <img :src="image_path" :alt="title"
              style="max-width: 600px; width: 100%; height: auto;">
     </div>
 
-    <!-- Table (NO inner form) -->
     <table class="table">
         <thead>
             <tr>
@@ -45,17 +42,17 @@
         Please check your answers.
     </p>
 
-    <!-- This button now submits the OUTER oTree form -->
-    <button type="button"
-            class="btn btn-primary"
-            :disabled="!allChosen"
-            @click="validate">
-        Next
-    </button>
+    <div class="text-center mt-4">
+        <button type="button"
+                class="btn btn-primary"
+                :disabled="!allChosen"
+                @click="validate">
+            Next
+        </button>
+    </div>
 
 </div>
 
-<!-- Vue -->
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 
 <script>
