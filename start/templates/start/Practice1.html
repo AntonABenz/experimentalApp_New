@@ -11,10 +11,10 @@
 
 <div id="app" v-cloak>
     <h2 class="text-center my-3">[[ settings.title ]]</h2>
-    <p>[[ settings.main_text ]]</p>
+    <p v-html="settings.main_text"></p>
 
-    <div class="text-center my-4">
-        <img v-if="settings.full_image_path" :src="settings.full_image_path" style="max-width: 100%; height: auto; max-height: 400px; border:1px solid #ddd; padding:5px;">
+    <div class="text-center my-4" v-if="settings.full_image_path">
+        <img :src="settings.full_image_path" style="max-width: 100%; height: auto; max-height: 400px; border:1px solid #ddd; padding:5px;">
     </div>
 
     <div class="text-center mt-4">
@@ -41,6 +41,7 @@
 <script>
     const app = Vue.createApp({
         data() {
+            // Read variables sent from Python
             const settings = js_vars.settings || {};
             const suffixes = js_vars.suffixes || ["", ""];
             
