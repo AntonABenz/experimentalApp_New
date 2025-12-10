@@ -9,9 +9,13 @@
     .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
 </style>
 
+<p style="color: red; font-size: 10px; text-align: center;">(Template v2 Loaded)</p>
+
 <div id="app" v-cloak>
+    
     <h2 class="text-center my-3">[[ settings.title ]]</h2>
-    <p v-html="settings.main_text"></p>
+    
+    <div v-html="settings.main_text"></div>
 
     <div class="text-center my-4" v-if="settings.full_image_path">
         <img :src="settings.full_image_path" style="max-width: 100%; height: auto; max-height: 400px; border:1px solid #ddd; padding:5px;">
