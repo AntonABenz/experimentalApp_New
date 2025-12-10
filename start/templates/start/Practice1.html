@@ -9,7 +9,17 @@
     .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
 </style>
 
-<p style="color: red; font-size: 10px; text-align: center;">(Template v2 Loaded)</p>
+<p style="color: green; font-size: 10px; text-align: center;">(Template v4 Loaded)</p>
+
+<script>
+    // Variables you requested:
+    window.page_settings       = {{ settings|json }};
+    window.interpreter_choices = {{ player.session.vars.interpreter_choices|json }};
+    window.interpreter_title   = {{ player.session.vars.interpreter_title|json }};
+    
+    // Additional vars needed for Practice 1 logic:
+    window.suffixes            = {{ suffixes|json }};
+</script>
 
 <div id="app" v-cloak>
     
@@ -45,9 +55,9 @@
 <script>
     const app = Vue.createApp({
         data() {
-            // Read variables sent from Python
-            const settings = js_vars.settings || {};
-            const suffixes = js_vars.suffixes || ["", ""];
+            // READ FROM WINDOW variables defined above
+            const settings = window.page_settings || {};
+            const suffixes = window.suffixes || ["", ""];
             
             return {
                 settings,
