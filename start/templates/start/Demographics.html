@@ -1,37 +1,93 @@
 {% extends "otree/Page.html" %}
-{% block title %}Demographics{% endblock %}
-{% block content %}
-  <input type="hidden" name="survey_data" id="survey_data">
+{% load otree static %}
 
-  <!-- your visible inputs ... -->
-  <div class="form-group">
-    <label>Age</label>
-    <input name="age" type="number" min="18" max="100" class="form-control" required>
-  </div>
-  <!-- etc. -->
-
-  {% next_button %}
+{% block title %}
+    General Information
 {% endblock %}
 
-{% block scripts %}
+{% block content %}
+<style>
+    [v-cloak] { display: none; }
+    .form-group { margin-bottom: 1.5rem; text-align: left; max-width: 600px; margin-left: auto; margin-right: auto; }
+    label { font-weight: bold; margin-bottom: 0.5rem; display: block; }
+</style>
+
+<div id="app" v-cloak class="text-center">
+    
+    <p class="lead mb-4">Please answer the following questions about yourself.</p>
+
+    <div class="form-group">
+        <label>Age:</label>
+        <input type="number" v-model="form.age" class="form-control" min="18" max="99" placeholder="e.g., 25">
+    </div>
+
+    <div class="form-group">
+        <label>Gender:</label>
+        <select v-model="form.gender" class="form-control">
+            <option disabled value="">Please select...</option>
+            <option value="Female">Female</option>
+            <option value="Male">Male</option>
+            <option value="Non-binary">Non-binary</option>
+            <option value="Prefer not to say">Prefer not to say</option>
+            <option value="Other">Other</option>
+        </select>
+    </div>
+
+    <div class="form-group">
+        <label>Native Language:</label>
+        <input type="text" v-model="form.language" class="form-control" placeholder="e.g., English">
+    </div>
+
+    <div class="form-group">
+        <label>Highest Level of Education:</label>
+        <select v-model="form.education" class="form-control">
+            <option disabled value="">Please select...</option>
+            <option value="High School">High School / GED</option>
+            <option value="Some College">Some College</option>
+            <option value="Bachelor's Degree">Bachelor's Degree</option>
+            <option value="Master's Degree">Master's Degree</option>
+            <option value="Doctoral Degree">Doctoral Degree</option>
+            <option value="Vocational Training">Vocational Training</option>
+            <option value="Prefer not to say">Prefer not to say</option>
+        </select>
+    </div>
+
+    <input type="hidden" name="survey_data" :value="jsonPayload">
+
+    <div class="mt-5">
+        <button class="btn btn-primary btn-lg" :disabled="!isValid">Next</button>
+    </div>
+
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
-  (function () {
-    const form = document.querySelector('form');
-    form.addEventListener('submit', function () {
-      const fields = ['age','gender','native_language','country','education'];
-      const data = {};
-      fields.forEach(name => {
-        const el = form.querySelector('[name="'+name+'"]');
-        if (!el) return;
-        if (el.type === 'radio') {
-          const checked = form.querySelector('input[name="'+name+'"]:checked');
-          data[name] = checked ? checked.value : '';
-        } else {
-          data[name] = el.value || '';
+    const app = Vue.createApp({
+        data() {
+            return {
+                form: {
+                    age: '',
+                    gender: '',
+                    language: '',
+                    education: ''
+                }
+            };
+        },
+        computed: {
+            // Packs all data into a JSON string for the 'survey_data' field
+            jsonPayload() {
+                return JSON.stringify(this.form);
+            },
+            // simple validation to ensure fields aren't empty
+            isValid() {
+                return this.form.age && 
+                       this.form.gender && 
+                       this.form.language && 
+                       this.form.education;
+            }
         }
-      });
-      document.getElementById('survey_data').value = JSON.stringify(data);
     });
-  })();
+    app.mount('#app');
 </script>
+
 {% endblock %}
