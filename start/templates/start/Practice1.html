@@ -2,118 +2,82 @@
 {% load otree static %}
 
 {% block content %}
+<style>
+    [v-cloak] { display: none; }
+    .input-group { max-width: fit-content; margin: 0 auto; }
+    .input-kids  { min-width: 200px; }
+    .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
+</style>
 
-<script>
-    window.page_settings       = {{ settings|json }};
-    window.interpreter_choices = {{ session.vars.interpreter_choices|json }};
-    window.interpreter_title   = {{ session.vars.interpreter_title|json }};
-</script>
+<div id="app" v-cloak>
+    <h2 class="text-center my-3">[[ settings.title ]]</h2>
+    <p>[[ settings.main_text ]]</p>
 
-<div id="app">
-
-    <h1>[[ title ]]</h1>
-
-    <!-- Main text with HTML support -->
-    <div v-html="main_text"></div>
-
-    <!-- Image -->
-    <div class="text-center my-3">
-        <img :src="image_path" :alt="title"
-             style="max-width: 600px; width: 100%; height: auto;">
+    <div class="text-center my-4">
+        <img v-if="settings.full_image_path" :src="settings.full_image_path" style="max-width: 100%; height: auto; max-height: 400px; border:1px solid #ddd; padding:5px;">
     </div>
 
-    <!-- Table (NO inner form) -->
-    <table class="table">
-        <thead>
-            <tr>
-                <th>[[ interpreter_title ]]</th>
-                <th>Yes</th>
-                <th>No</th>
-            </tr>
-        </thead>
+    <div class="text-center mt-4">
+        <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
+            <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
+                <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
+                    <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off">
+                    <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
+                </div>
+                <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary ml-2" :disabled="items.length >= 5" v-if="allowAdd">+</button>
+                <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger ml-1" :disabled="items.length <= 1" v-if="allowAdd">-</button>
+            </div>
+        </div>
+    </div>
 
-        <tbody>
-            <tr v-for="(row, idx) in rows" :key="idx">
-                <td>[[ row.name ]]</td>
-                <td><input type="radio" v-model="row.choice" :value="true"></td>
-                <td><input type="radio" v-model="row.choice" :value="false"></td>
-            </tr>
-        </tbody>
-    </table>
+    <input type="hidden" name="producer_decision" :value="jsonPayload">
 
-    <p v-if="error" class="alert alert-danger">
-        Please check your answers.
-    </p>
-
-    <!-- This button now submits the OUTER oTree form -->
-    <button type="button"
-            class="btn btn-primary"
-            :disabled="!allChosen"
-            @click="validate">
-        Next
-    </button>
-
+    <div class="text-center mt-5">
+        <button class="btn btn-primary btn-lg" @click="next">Next</button>
+    </div>
 </div>
 
-<!-- Vue -->
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-
 <script>
-const app = Vue.createApp({
-
-    data() {
-        const S  = window.page_settings || {};
-        const IC = window.interpreter_choices || [];
-
-        return {
-            title: S.title || "Practice",
-            main_text: S.main_text || "",
-            image_path: S.full_image_path || "",
-            interpreter_title: window.interpreter_title || "Interpretation",
-
-            rows: IC.map(label => ({
-                name: label,
-                choice: null,
-            })),
-
-            // from Excel: right_answer_1..4 like '1','1','0','1'
-            correct: (S.right_answer || []).map(x => Boolean(parseInt(x))),
-            error: false,
-        };
-    },
-
-    computed: {
-        allChosen() {
-            return this.rows.every(r => r.choice !== null);
-        }
-    },
-
-    methods: {
-        validate() {
-            // must choose Yes/No for all rows
-            if (!this.allChosen) {
-                this.error = true;
-                return;
+    const app = Vue.createApp({
+        data() {
+            const settings = js_vars.settings || {};
+            const suffixes = js_vars.suffixes || ["", ""];
+            
+            return {
+                settings,
+                suffixes,
+                allowAdd: true, // Set to false if you want fixed rows for P1-P3
+                items: [{ 
+                    fields: suffixes.map(s => ({ value: '', suffix: s })) 
+                }]
+            };
+        },
+        computed: {
+            jsonPayload() {
+                return JSON.stringify(this.items.map(item => item.fields.map(f => f.value)));
             }
-
-            // optional correctness check
-            if (this.correct.length && this.correct.length === this.rows.length) {
-                const ok = this.rows.every((r, i) => r.choice === this.correct[i]);
-                this.error = !ok;
-                if (!ok) return;
-            }
-
-            // submit the OUTER oTree form (with csrf + hidden fields)
-            const outerForm = document.querySelector('form');
-            if (outerForm) {
-                outerForm.submit();
+        },
+        methods: {
+            addItem() {
+                if (this.items.length < 5) {
+                    this.items.push({ 
+                        fields: this.suffixes.map(s => ({ value: '', suffix: s })) 
+                    });
+                }
+            },
+            removeItem(index) {
+                if (this.items.length > 1) {
+                    this.items.splice(index, 1);
+                }
+            },
+            next() {
+                // You can add JS validation here if needed
+                document.querySelector('form').submit();
             }
         }
-    }
-});
-
-app.config.compilerOptions.delimiters = ["[[", "]]"];
-app.mount("#app");
+    });
+    app.config.compilerOptions.delimiters = ['[[', ']]'];
+    app.mount('#app');
 </script>
-
 {% endblock %}
