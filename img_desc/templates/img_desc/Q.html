@@ -114,7 +114,7 @@ Round {{ player.round_number }} / {{ session.vars.num_rounds }}
             <div class="d-flex flex-column align-items-center mt-3">
                 <div v-for="choice in props.interpreter_choices" class="form-check my-2">
                     <label class="form-check-label" style="font-size: 1.1rem;">
-                        <input class="form-check-input" type="radio" name="interpreter_choice" :value="choice" required>
+                        <input class="form-check-input" type="radio" name="interpreter_decision" :value="choice" required>
                         [[ choice ]]
                     </label>
                 </div>
@@ -169,3 +169,4 @@ Round {{ player.round_number }} / {{ session.vars.num_rounds }}
 </script>
 
 {% endblock %}
+
