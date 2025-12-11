@@ -18,7 +18,7 @@ STUBURL = "https://app.prolific.co/submissions/complete?cc="
 class Constants(BaseConstants):
     name_in_url = "img_desc"
     players_per_group = None
-    num_rounds = 85
+    num_rounds = 80
     STUBURL = STUBURL
     PLACEMENT_ERR = "ERROR_BATCH_PLACEMENT"
     API_ERR = "API_ERROR"
@@ -243,6 +243,8 @@ def creating_session(subsession: Subsession):
     df = excel_data.get("data")
     session.vars["user_data"] = df
     session.vars["num_rounds"] = Constants.num_rounds
+    abc = int(df["group_enumeration"].max())
+    print(abc)
     
     records = df.to_dict(orient="records")
     for r in records:
