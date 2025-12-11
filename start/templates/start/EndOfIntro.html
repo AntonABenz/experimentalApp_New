@@ -1,10 +1,11 @@
 {% extends "otree/Page.html" %}
 {% load otree static %}
 
+{% block content %}
+
 <div class="container">
 
     {# Text loaded from the Excel "settings" sheet -> EndOfIntroText #}
-    {# You can format that cell with HTML, it will be rendered here. #}
     {% if session.vars.EndOfIntroText %}
         <div class="mb-4">
             {{ session.vars.EndOfIntroText|safe }}
@@ -21,7 +22,9 @@
         When you are ready, click <strong>Next</strong> to begin the main experiment.
     </p>
 
-    {{ next_button }}
+    <div class="text-center mt-5">
+        {% next_button %}
+    </div>
 
 </div>
 
