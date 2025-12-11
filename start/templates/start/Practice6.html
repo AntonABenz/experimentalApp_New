@@ -19,20 +19,33 @@
     .vocab-column {
         font-size: 1.1rem;
         line-height: 1.6;
-        text-align: left; /* Aligns text to the left for better readability in a list */
+        text-align: left;
     }
 
-    /* Style for each item on its own line */
+    /* Style for each vocabulary item on its own line */
     .vocab-item {
-        display: block;       /* Forces new line */
-        margin-bottom: 2px;   /* Small space between items */
+        display: block;
+        margin-bottom: 2px;
     }
 
-    /* Vertical divider line between columns on large screens */
+    /* Vertical divider between columns on larger screens */
     @media (min-width: 768px) {
         .vocab-column:first-child {
             border-right: 2px solid #e9ecef;
         }
+    }
+
+    /* The "Empty Box" Placeholder Style */
+    .image-placeholder-box {
+        width: 100%;
+        max-width: 600px; /* Same width as standard image */
+        height: 300px;    /* Fixed height for the empty box */
+        background-color: #f0f0f0; /* Light gray background */
+        border: 2px solid #ddd;    /* Visible border */
+        margin: 0 auto;   /* Center the box */
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 
     .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
@@ -47,18 +60,22 @@
 </script>
 
 <div id="app" v-cloak>
+    
     <h2 class="text-center my-3">[[ props.settings.title ]]</h2>
-    <p>[[ props.settings.main_text ]]</p>
+    <div v-html="props.settings.main_text"></div>
 
-    <div class="text-center my-4" v-if="props.settings.full_image_path">
-        <img :src="props.settings.full_image_path" style="max-width: 100%; height: auto; max-height: 400px;">
+    <div class="text-center my-4">
+        <img v-if="props.settings.full_image_path" 
+             :src="props.settings.full_image_path" 
+             style="max-width: 100%; height: auto; max-height: 400px; border: 1px solid #ddd;">
+        
+        <div v-else class="image-placeholder-box"></div>
     </div>
 
     <div class="vocabulary-box text-center">
         <h5 class="mb-4">Allowed Vocabulary</h5>
         
         <div class="row justify-content-center">
-            
             <div class="col-md-5 vocab-column px-4">
                 <div v-if="props.allowedValues[0] && props.allowedValues[0].length > 0">
                     <div v-for="(val, idx) in props.allowedValues[0]" :key="idx" class="vocab-item">
@@ -74,7 +91,6 @@
                     </div>
                 </div>
             </div>
-
         </div>
     </div>
 
@@ -90,6 +106,8 @@
             </div>
         </div>
     </div>
+
+    <input type="hidden" name="producer_decision" :value="jsonPayload">
 
     <div class="text-center mt-5">
         <button class="btn btn-primary btn-lg" @click="next">Next</button>
@@ -113,8 +131,14 @@
                 }]
             };
         },
+        computed: {
+            jsonPayload() {
+                return JSON.stringify(this.items.map(item => item.fields.map(f => f.value)));
+            }
+        },
         methods: {
             addItem() {
+                // Limit set to 5 for both Practice 6 and 7
                 if (this.items.length < 5) {
                     this.items.push({ 
                         fields: this.props.suffixes.map(s => ({ value: '', suffix: s })) 
