@@ -289,42 +289,46 @@ class FaultyCatcher(Page):
 
 class Q(Page):
     instructions = True
+    form_model = "player"
+
+    @staticmethod
+    def get_form_fields(player):
+        """
+        Define which fields are saved on each round.
+        We let oTree read POST data for us instead of touching self.request.POST.
+        """
+        fields = []
+
+        # If you want to keep the timing info:
+        fields += ["start_decision_time", "end_decision_time"]
+
+        if player.inner_role == PRODUCER:
+            # JSON string from the hidden input
+            fields.append("producer_decision")
+        elif player.inner_role == INTERPRETER:
+            # The selected option (we'll rename the input in the template)
+            fields.append("interpreter_decision")
+
+        return fields
+
     @staticmethod
     def is_displayed(player):
-        if not player.faulty: player.start()
+        if not player.faulty:
+            player.start()
         return player.round_number <= player.session.vars["num_rounds"]
 
     @staticmethod
     def vars_for_template(player):
-        # FIX: Explicitly passing vocab data here
         return dict(
             d=player.get_linked_batch(),
             allowed_values=player.session.vars.get("allowed_values", []),
-            suffixes=player.session.vars.get("suffixes", [])
+            suffixes=player.session.vars.get("suffixes", []),
         )
-
-    def post(self):
-        for t in ["start_decision_time", "end_decision_time"]:
-            v = self.request.POST.get(t)
-            if v: setattr(self.player, t, v)
-        
-        if self.player.inner_role == PRODUCER:
-            raw = self.request.POST.get("producer_decision")
-            if raw:
-                try:
-                    decisions = json.loads(raw)
-                    self.player.producer_decision = json.dumps(decisions)
-                    self.player.inner_sentences = json.dumps(decisions)
-                except: pass
-
-        if self.player.inner_role == INTERPRETER:
-            val = self.request.POST.get("interpreter_choice")
-            if val: self.player.interpreter_decision = json.dumps([val])
-
-        return super().post()
 
     @staticmethod
     def before_next_page(player, timeout_happened):
+        # producer_decision / interpreter_decision are already filled by oTree
+        # no need to parse request manually
         player.update_batch()
         if player.round_number == player.session.vars["num_rounds"]:
             player.mark_data_processed()
