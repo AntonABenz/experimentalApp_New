@@ -293,23 +293,13 @@ class Q(Page):
 
     @staticmethod
     def get_form_fields(player):
-        """
-        Define which fields are saved on each round.
-        We let oTree read POST data for us instead of touching self.request.POST.
-        """
-        fields = []
-
-        # If you want to keep the timing info:
-        fields += ["start_decision_time", "end_decision_time"]
-
         if player.inner_role == PRODUCER:
-            # JSON string from the hidden input
-            fields.append("producer_decision")
+            # JSON string from hidden input
+            return ["producer_decision"]
         elif player.inner_role == INTERPRETER:
-            # The selected option (we'll rename the input in the template)
-            fields.append("interpreter_decision")
-
-        return fields
+            # selected radio
+            return ["interpreter_decision"]
+        return []
 
     @staticmethod
     def is_displayed(player):
