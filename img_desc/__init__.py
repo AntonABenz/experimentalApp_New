@@ -355,6 +355,9 @@ def creating_session(subsession: Subsession):
             sentences=r.get("sentences"),
         )
 
+    max_round = int(df["group_enumeration"].max())
+    logger.info(f"img_desc: max group_enumeration in data = {max_round}")
+
     settings = excel_data.get("settings") or {}
 
     # Robust Dictionary Creation
@@ -419,8 +422,6 @@ class Q(Page):
         if player.faulty:
             return False
 
-        max_round = int(df["group_enumeration"].max())
-        logger.info(f"img_desc: max group_enumeration in data = {max_round}")
         # Use app-local constant, not shared session vars
         return player.round_number <= Constants.num_rounds
 
