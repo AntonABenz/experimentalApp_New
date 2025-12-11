@@ -292,20 +292,26 @@ class Q(Page):
     form_model = "player"
 
     @staticmethod
-    def get_form_fields(player):
-        if player.inner_role == PRODUCER:
-            # JSON string from hidden input
-            return ["producer_decision"]
-        elif player.inner_role == INTERPRETER:
-            # selected radio
-            return ["interpreter_decision"]
-        return []
+    def is_displayed(player):
+        if player.faulty:
+            return False
+
+        player.start()
+
+        if player.faulty:
+            return False
+
+        return player.round_number <= player.session.vars["num_rounds"]
 
     @staticmethod
-    def is_displayed(player):
-        if not player.faulty:
-            player.start()
-        return player.round_number <= player.session.vars["num_rounds"]
+    def get_form_fields(player):
+        role = player.field_maybe_none('inner_role')
+
+        if role == PRODUCER:
+            return ["producer_decision"]
+        elif role == INTERPRETER:
+            return ["interpreter_decision"]
+        return []
 
     @staticmethod
     def vars_for_template(player):
@@ -317,11 +323,10 @@ class Q(Page):
 
     @staticmethod
     def before_next_page(player, timeout_happened):
-        # producer_decision / interpreter_decision are already filled by oTree
-        # no need to parse request manually
         player.update_batch()
         if player.round_number == player.session.vars["num_rounds"]:
             player.mark_data_processed()
+
 
 class Feedback(Page):
     form_model = "player"
