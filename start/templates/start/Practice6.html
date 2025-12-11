@@ -19,9 +19,16 @@
     .vocab-column {
         font-size: 1.1rem;
         line-height: 1.6;
+        text-align: left; /* Aligns text to the left for better readability in a list */
     }
 
-    /* Add a vertical divider line between columns on large screens */
+    /* Style for each item on its own line */
+    .vocab-item {
+        display: block;       /* Forces new line */
+        margin-bottom: 2px;   /* Small space between items */
+    }
+
+    /* Vertical divider line between columns on large screens */
     @media (min-width: 768px) {
         .vocab-column:first-child {
             border-right: 2px solid #e9ecef;
@@ -54,17 +61,17 @@
             
             <div class="col-md-5 vocab-column px-4">
                 <div v-if="props.allowedValues[0] && props.allowedValues[0].length > 0">
-                    <span v-for="(val, idx) in props.allowedValues[0]" :key="idx">
-                        [[ val ]]<span v-if="idx < props.allowedValues[0].length - 1">; </span>
-                    </span>
+                    <div v-for="(val, idx) in props.allowedValues[0]" :key="idx" class="vocab-item">
+                        [[ val ]]
+                    </div>
                 </div>
             </div>
 
             <div class="col-md-5 vocab-column px-4">
                 <div v-if="props.allowedValues[1] && props.allowedValues[1].length > 0">
-                    <span v-for="(val, idx) in props.allowedValues[1]" :key="idx">
-                        [[ val ]]<span v-if="idx < props.allowedValues[1].length - 1">; </span>
-                    </span>
+                    <div v-for="(val, idx) in props.allowedValues[1]" :key="idx" class="vocab-item">
+                        [[ val ]]
+                    </div>
                 </div>
             </div>
 
