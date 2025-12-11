@@ -253,49 +253,65 @@ class Player(BasePlayer):
         session = self.session
         subsession = self.subsession
 
-        # First round: claim a free batch row
+        # Always load batch data once
+        all_data = get_all_batches_sql(session.code)
+
+        # --- First round: choose one (batch, id_in_group) "line" ---
         if self.round_number == 1:
-            all_data = get_all_batches_sql(session.code)
+            # all rows of the currently active batch that are not yet used
             candidates = [
-                b
-                for b in all_data
-                if b["batch"] == subsession.active_batch
-                and not b["busy"]
-                and b["owner_code"] == ""
+                b for b in all_data
+                if b['batch'] == subsession.active_batch
+                and not b['busy']
+                and b['owner_code'] == ""
             ]
+
             if not candidates:
                 self.faulty = True
                 return
-            candidates.sort(key=lambda b: b["id_in_group"])
-            free = candidates[0]
-            sql_update_batch(
-                free["id"], busy=True, owner_code=self.participant.code
-            )
 
-        # Every round: get my row for this round_number
-        all_data = get_all_batches_sql(session.code)
+            # Deterministic choice: lowest id_in_group
+            candidates.sort(key=lambda b: b['id_in_group'])
+            free = candidates[0]
+
+            chosen_batch = free['batch']
+            chosen_id = free['id_in_group']
+
+            # optional: remember for debugging / analysis
+            self.batch = chosen_batch
+
+            # IMPORTANT: mark *all* rows for this (batch, id_in_group)
+            for b in all_data:
+                if b['batch'] == chosen_batch and b['id_in_group'] == chosen_id:
+                    sql_update_batch(b['id'], busy=True, owner_code=self.participant.code)
+
+            # reload to see updated owner_code/busy (optional but clean)
+            all_data = get_all_batches_sql(session.code)
+
+        # --- All rounds: find the row for this participant & round ---
         my_row = None
         for b in all_data:
             if (
-                b["owner_code"] == self.participant.code
-                and b["round_number"] == self.round_number
+                b['owner_code'] == self.participant.code
+                and b['round_number'] == self.round_number
             ):
                 my_row = b
                 break
 
         if not my_row:
+            # This should not happen if the Excel and num_rounds line up
             self.faulty = True
             return
 
-        self.link_id = my_row["id"]
-        self.inner_role = my_row["role"]
+        self.link_id = my_row['id']
+        self.inner_role = my_row['role']
         self.inner_sentences = json.dumps(self.get_sentences_data())
 
+        # Prolific label handling (unchanged)
         if self.round_number == 1 and session.config.get("for_prolific"):
             p = self.participant
             vars_ = p.vars
             prolific_id = vars_.get("prolific_id") or vars_.get("prolific_pid")
-            # prolific_id is currently not stored in model, but you could if wanted
             if vars_.get("prolific_session_id"):
                 p.label = vars_.get("prolific_session_id")
 
