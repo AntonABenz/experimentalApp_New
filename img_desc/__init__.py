@@ -242,7 +242,7 @@ def creating_session(subsession: Subsession):
     excel_data = get_data(filename)
     df = excel_data.get("data")
     session.vars["user_data"] = df
-    session.vars["num_rounds"] = int(df.group_enumeration.max())
+    session.vars["num_rounds"] = Constants.num_rounds
     
     records = df.to_dict(orient="records")
     for r in records:
