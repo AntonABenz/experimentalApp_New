@@ -254,7 +254,7 @@ class Practice4(_PracticePage):
 
 class Practice5(_PracticePage):
     practice_id = 5
-    template_name = "start/Practice4.html"
+    template_name = "start/Practice5.html"
 
 class Practice6(_PracticePage):
     practice_id = 6
