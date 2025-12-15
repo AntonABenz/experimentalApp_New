@@ -4,18 +4,40 @@
 {% block content %}
 
 <style>
-    /* Hides the app until Vue is ready */
+    /* Hides Vue content until loaded */
     [v-cloak] { display: none; }
 
-    /* Simple animation for the recording indicator */
-    @keyframes pulse {
-        0% { opacity: 1; }
-        50% { opacity: 0.5; }
-        100% { opacity: 1; }
+    /* Styles for the Vocabulary Box Container */
+    .vocab-container {
+        border: 1px solid #dee2e6;
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        padding: 20px;
+        max-width: 700px;
+        margin: 2rem auto;
+        text-align: center;
     }
-    .recording-pulse {
-        animation: pulse 1.5s infinite;
-        color: red;
+
+    /* Style for individual word badges */
+    .vocab-word {
+        display: inline-block;
+        background-color: #ffffff;
+        border: 1px solid #ced4da;
+        color: #495057;
+        padding: 6px 12px;
+        margin: 4px;
+        border-radius: 4px;
+        font-size: 1rem;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+    
+    .vocab-section-title {
+        font-size: 0.9rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #6c757d;
+        margin-bottom: 10px;
+        margin-top: 10px;
         font-weight: bold;
     }
 </style>
@@ -26,35 +48,34 @@
 
 <div id="app" v-cloak>
     
-    <h1>[[ title ]]</h1>
+    <h1 class="mb-4">[[ title ]]</h1>
     <div class="lead mb-4" v-html="main_text"></div>
 
     <div class="text-center my-4">
-        
         <img :src="image_path"
              :alt="title"
              class="img-fluid"
-             style="max-width: 600px; border: 1px solid #ddd; padding: 5px; border-radius: 4px;">
+             style="box-shadow: 0 4px 8px rgba(0,0,0,0.1); border-radius: 4px; max-height: 500px; max-width: 100%;">
     </div>
 
-    <div class="card mx-auto my-4 bg-light" style="max-width: 500px;">
-        <div class="card-body text-center">
-            <h5 class="card-title">Vocal Response (Practice)</h5>
-            <p class="card-text text-muted">Click the button to practice recording your answer.</p>
-
-            <button type="button" 
-                    class="btn btn-lg" 
-                    :class="isRecording ? 'btn-danger' : 'btn-outline-dark'"
-                    @click="toggleRecording">
-                <span v-if="!isRecording">🎤 Start Recording</span>
-                <span v-else>⏹ Stop Recording</span>
-            </button>
-
-            <div v-if="isRecording" class="mt-3 recording-pulse">
-                Recording...
+    <div class="vocab-container" v-if="hasVocabulary">
+        <h5 class="mb-3 text-primary">Available Vocabulary</h5>
+        
+        <div v-if="vocab1.length > 0">
+            <div class="d-flex flex-wrap justify-content-center mb-3">
+                <span v-for="(word, idx) in vocab1" :key="'v1-'+idx" class="vocab-word">
+                    [[ word ]]
+                </span>
             </div>
-            <div v-else-if="hasRecorded" class="mt-3 text-success">
-                ✓ Answer Recorded
+        </div>
+
+        <hr v-if="vocab1.length > 0 && vocab2.length > 0" style="margin: 10px 0;">
+
+        <div v-if="vocab2.length > 0">
+            <div class="d-flex flex-wrap justify-content-center">
+                <span v-for="(word, idx) in vocab2" :key="'v2-'+idx" class="vocab-word">
+                    [[ word ]]
+                </span>
             </div>
         </div>
     </div>
@@ -74,61 +95,34 @@
 const app = Vue.createApp({
     data() {
         const s = window.page_settings || {};
-        
+
+        // Helper to parse "word1; word2; word3" strings into arrays
+        const parseList = (str) => {
+            if (!str) return [];
+            // If it's already an array, return it. If string, split by semicolon
+            if (Array.isArray(str)) return str; 
+            return String(str).split(';').map(w => w.trim()).filter(w => w.length > 0);
+        };
+
         return {
             title: s.title || 'Practice 5',
-            main_text: s.main_text || 'Please look at the image and record your answer below.',
-            // Fallback image if one isn't provided in python settings
-            image_path: s.full_image_path || 'https://picsum.photos/600/400?text=Practice+Image',
-            
-            // Recorder state
-            isRecording: false,
-            hasRecorded: false,
-            mediaRecorder: null,
-            audioChunks: []
+            main_text: s.main_text || 'Please review the image. In the actual task, you can only use the vocabulary below.',
+            image_path: s.full_image_path || '',
+
+            // Pull vocabulary from settings
+            vocab1: parseList(s.allowed_values_1),
+            vocab2: parseList(s.allowed_values_2)
         };
     },
 
+    computed: {
+        hasVocabulary() {
+            return this.vocab1.length > 0 || this.vocab2.length > 0;
+        }
+    },
+
     methods: {
-        async toggleRecording() {
-            if (this.isRecording) {
-                this.stopRecording();
-            } else {
-                await this.startRecording();
-            }
-        },
-
-        async startRecording() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                this.mediaRecorder = new MediaRecorder(stream);
-                this.audioChunks = [];
-
-                this.mediaRecorder.ondataavailable = (event) => {
-                    this.audioChunks.push(event.data);
-                };
-
-                this.mediaRecorder.start();
-                this.isRecording = true;
-                this.hasRecorded = false;
-            } catch (err) {
-                console.error("Error accessing microphone:", err);
-                alert("Could not access microphone. Please ensure permissions are granted.");
-            }
-        },
-
-        stopRecording() {
-            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-                this.mediaRecorder.stop();
-                this.mediaRecorder.stream.getTracks().forEach(track => track.stop()); // Stop the mic icon in browser
-                this.isRecording = false;
-                this.hasRecorded = true;
-            }
-        },
-
         submitForm() {
-            // Since this is just practice, we simply submit the form to move to the next page.
-            // We do not strictly need to save the practice audio unless your backend requires it.
             const outerForm = document.querySelector('form');
             if (outerForm) outerForm.submit();
         }
