@@ -4,9 +4,6 @@
 {% block content %}
 
 <style>
-    /* Hides Vue content until loaded */
-    [v-cloak] { display: none; }
-
     /* Container for the Vocabulary Card */
     .vocab-card {
         background-color: #fff;
@@ -26,12 +23,11 @@
         color: #333;
     }
 
-    /* Column styling to match the screenshot */
     .vocab-list {
         list-style-type: none;
         padding-left: 0;
         margin-bottom: 0;
-        text-align: left; /* Aligns text to the left within the column */
+        text-align: left;
     }
 
     .vocab-item {
@@ -41,100 +37,60 @@
         line-height: 1.5;
     }
 
-    /* Vertical divider line between columns (optional, can remove if unwanted) */
     .vocab-divider {
         border-right: 1px solid #eee;
     }
 </style>
 
-<script>
-    window.page_settings = {{ settings|json }};
-</script>
+<h1 class="mb-4 text-center">{{ title }}</h1>
 
-<div id="app" v-cloak>
-    
-    <h1 class="mb-4">[[ title ]]</h1>
-    <div class="lead mb-4" v-html="main_text"></div>
-
-    <div class="text-center my-4">
-        <img :src="image_path"
-             :alt="title"
-             class="img-fluid"
-             style="box-shadow: 0 4px 8px rgba(0,0,0,0.1); border-radius: 4px; max-height: 500px; max-width: 100%;">
-    </div>
-
-    <div class="vocab-card" v-if="hasVocabulary">
-        <div class="vocab-title">Allowed Vocabulary</div>
-        
-        <div class="row">
-            <div class="col-md-6 vocab-divider">
-                <ul class="vocab-list">
-                    <li v-for="(word, idx) in vocab1" :key="'v1-'+idx" class="vocab-item">
-                        [[ word ]]
-                    </li>
-                </ul>
-            </div>
-
-            <div class="col-md-6">
-                <ul class="vocab-list">
-                    <li v-for="(word, idx) in vocab2" :key="'v2-'+idx" class="vocab-item">
-                        [[ word ]]
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </div>
-
-    <div class="text-center mt-5">
-        <button type="button" 
-                class="btn btn-primary btn-lg" 
-                @click="submitForm">
-            Next
-        </button>
-    </div>
-
+<div class="lead mb-4">
+    {{ main_text|safe }}
 </div>
 
-<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-<script>
-const app = Vue.createApp({
-    data() {
-        const s = window.page_settings || {};
+<div class="text-center my-4">
+    <img src="{{ image_path }}"
+         alt="{{ title }}"
+         class="img-fluid"
+         style="box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                border-radius: 4px;
+                max-height: 500px;
+                max-width: 100%;">
+</div>
 
-        // Helper to safely parse semicolon-separated strings into arrays
-        const parseList = (str) => {
-            if (!str) return [];
-            if (Array.isArray(str)) return str; 
-            return String(str).split(';').map(w => w.trim()).filter(w => w.length > 0);
-        };
+{% if vocab1 or vocab2 %}
+<div class="vocab-card">
+    <div class="vocab-title">Allowed Vocabulary</div>
 
-        return {
-            title: s.title || 'Practice 5',
-            main_text: s.main_text || 'Please review the image below. You will be limited to the following vocabulary.',
-            image_path: s.full_image_path || '',
+    <div class="row">
+        <div class="col-md-6 vocab-divider">
+            <ul class="vocab-list">
+                {% for word in vocab1 %}
+                    {% if word %}
+                        <li class="vocab-item">{{ word }}</li>
+                    {% endif %}
+                {% endfor %}
+            </ul>
+        </div>
 
-            // Load vocabulary lists from Python settings
-            vocab1: parseList(s.allowed_values_1),
-            vocab2: parseList(s.allowed_values_2)
-        };
-    },
+        <div class="col-md-6">
+            <ul class="vocab-list">
+                {% for word in vocab2 %}
+                    {% if word %}
+                        <li class="vocab-item">{{ word }}</li>
+                    {% endif %}
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</div>
+{% endif %}
 
-    computed: {
-        hasVocabulary() {
-            return this.vocab1.length > 0 || this.vocab2.length > 0;
-        }
-    },
-
-    methods: {
-        submitForm() {
-            const outerForm = document.querySelector('form');
-            if (outerForm) outerForm.submit();
-        }
-    }
-});
-
-app.config.compilerOptions.delimiters = ['[[', ']]'];
-app.mount('#app');
-</script>
+<div class="text-center mt-5">
+    <button type="submit"
+            class="btn btn-primary btn-lg">
+        Next
+    </button>
+</div>
 
 {% endblock %}
