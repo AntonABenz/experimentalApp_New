@@ -1,134 +1,138 @@
 {% extends "otree/Page.html" %}
 {% load otree static %}
- 
+
 {% block content %}
 
+<style>
+    /* Hides the app until Vue is ready */
+    [v-cloak] { display: none; }
+
+    /* Simple animation for the recording indicator */
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
+    .recording-pulse {
+        animation: pulse 1.5s infinite;
+        color: red;
+        font-weight: bold;
+    }
+</style>
+
 <script>
-  window.page_settings = {{ settings|json }};
+    window.page_settings = {{ settings|json }};
 </script>
 
-<div id="app">
-  
-  <h1>[[ title ]]</h1>
-  <div v-html="main_text"></div>
-  
-  <div class="text-center my-3">
-    <img :src="image_path"
-         :alt="title"
-         style="max-width: 600px; width: 100%; height: auto;">
-  </div>
+<div id="app" v-cloak>
+    
+    <h1>[[ title ]]</h1>
+    <div class="lead mb-4" v-html="main_text"></div>
 
-  <!-- Table with TWO text fields per row -->
-  <table class="table">
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>First value</th>
-        <th>Second value</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr v-for="(row, idx) in rows" :key="idx">
-        <td>[[ idx + 1 ]]</td>
-        <td>
-          <input type="text"
-                 class="form-control"
-                 v-model.trim="row.v1"
-                 @input="error=false">
-        </td>
-        <td>
-          <input type="text"
-                 class="form-control"
-                 v-model.trim="row.v2"
-                 @input="error=false">
-        </td>
-      </tr>
-    </tbody>
-  </table>
+    <div class="text-center my-4">
+        
+        <img :src="image_path"
+             :alt="title"
+             class="img-fluid"
+             style="max-width: 600px; border: 1px solid #ddd; padding: 5px; border-radius: 4px;">
+    </div>
 
-  <p v-if="error" class="alert alert-danger my-3">
-    [[ errorMessage || 'Error: please, check your answers!' ]]
-  </p>
+    <div class="card mx-auto my-4 bg-light" style="max-width: 500px;">
+        <div class="card-body text-center">
+            <h5 class="card-title">Vocal Response (Practice)</h5>
+            <p class="card-text text-muted">Click the button to practice recording your answer.</p>
 
-  <!-- IMPORTANT: this button just calls validate() -->
-  <button :disabled="!isComplete"
-          type="button"
-          class="btn btn-primary"
-          @click="validate">
-    Next
-  </button>
-  
+            <button type="button" 
+                    class="btn btn-lg" 
+                    :class="isRecording ? 'btn-danger' : 'btn-outline-dark'"
+                    @click="toggleRecording">
+                <span v-if="!isRecording">🎤 Start Recording</span>
+                <span v-else>⏹ Stop Recording</span>
+            </button>
+
+            <div v-if="isRecording" class="mt-3 recording-pulse">
+                Recording...
+            </div>
+            <div v-else-if="hasRecorded" class="mt-3 text-success">
+                ✓ Answer Recorded
+            </div>
+        </div>
+    </div>
+
+    <div class="text-center mt-5">
+        <button type="button" 
+                class="btn btn-primary btn-lg" 
+                @click="submitForm">
+            Next
+        </button>
+    </div>
+
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
 const app = Vue.createApp({
-  data() {
-    const s = window.page_settings || {};
-    const rawAnswers = Array.isArray(s.right_answer) ? s.right_answer : [];
+    data() {
+        const s = window.page_settings || {};
+        
+        return {
+            title: s.title || 'Practice 5',
+            main_text: s.main_text || 'Please look at the image and record your answer below.',
+            // Fallback image if one isn't provided in python settings
+            image_path: s.full_image_path || 'https://picsum.photos/600/400?text=Practice+Image',
+            
+            // Recorder state
+            isRecording: false,
+            hasRecorded: false,
+            mediaRecorder: null,
+            audioChunks: []
+        };
+    },
 
-    // Excel has values like "2;2", "2;0", "2;4"
-    const correct_answers = rawAnswers.map(r =>
-      String(r)
-        .split(';')
-        .map(x => x.trim())
-    );
+    methods: {
+        async toggleRecording() {
+            if (this.isRecording) {
+                this.stopRecording();
+            } else {
+                await this.startRecording();
+            }
+        },
 
-    // one row per right_answer, 2 fields each
-    const rows = correct_answers.map(() => ({ v1: '', v2: '' }));
+        async startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                this.mediaRecorder = new MediaRecorder(stream);
+                this.audioChunks = [];
 
-    return {
-      title: s.title || 'Practice 5',
-      main_text: s.main_text || '',
-      image_path: s.full_image_path || 'https://picsum.photos/200/300?text=No+Image',
+                this.mediaRecorder.ondataavailable = (event) => {
+                    this.audioChunks.push(event.data);
+                };
 
-      correct_answers,
-      rows,
+                this.mediaRecorder.start();
+                this.isRecording = true;
+                this.hasRecorded = false;
+            } catch (err) {
+                console.error("Error accessing microphone:", err);
+                alert("Could not access microphone. Please ensure permissions are granted.");
+            }
+        },
 
-      error: false,
-      errorMessage: '',
-    };
-  },
+        stopRecording() {
+            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+                this.mediaRecorder.stop();
+                this.mediaRecorder.stream.getTracks().forEach(track => track.stop()); // Stop the mic icon in browser
+                this.isRecording = false;
+                this.hasRecorded = true;
+            }
+        },
 
-  computed: {
-    isComplete() {
-      return this.rows.every(r => r.v1 !== '' && r.v2 !== '');
+        submitForm() {
+            // Since this is just practice, we simply submit the form to move to the next page.
+            // We do not strictly need to save the practice audio unless your backend requires it.
+            const outerForm = document.querySelector('form');
+            if (outerForm) outerForm.submit();
+        }
     }
-  },
-
-  methods: {
-    validate() {
-      if (!this.isComplete) {
-        this.error = true;
-        this.errorMessage = 'Please fill in all fields.';
-        return;
-      }
-
-      // normalize: trim + collapse spaces
-      const norm = s => String(s).trim().replace(/\s+/g, ' ');
-
-      const user = this.rows.map(r => [norm(r.v1), norm(r.v2)]);
-      const key  = this.correct_answers.map(pair => pair.map(norm));
-
-      // strict row-wise equality
-      const ok = user.length === key.length &&
-        user.every((row, i) =>
-          row.length === key[i].length &&
-          row[0] === key[i][0] &&
-          row[1] === key[i][1]
-        );
-
-      this.error = !ok;
-      if (!ok) {
-        this.errorMessage = 'Some values are incorrect. Please try again.';
-        return;
-      }
-
-      // correct → submit the OUTER oTree form
-      const outerForm = document.querySelector('form');
-      if (outerForm) outerForm.submit();
-    }
-  }
 });
 
 app.config.compilerOptions.delimiters = ['[[', ']]'];
