@@ -3,48 +3,114 @@
 
 {% block content %}
 <style>
+    /* Hides the app until Vue is ready to prevent "flicker" */
     [v-cloak] { display: none; }
-    .form-group { margin-bottom: 1.5rem; text-align: left; max-width: 600px; margin-left: auto; margin-right: auto; }
-    label { font-weight: bold; margin-bottom: 0.5rem; display: block; }
+    
+    .form-group { 
+        margin-bottom: 1.5rem; 
+        text-align: left; 
+        max-width: 600px; 
+        margin-left: auto; 
+        margin-right: auto; 
+    }
+    label { 
+        font-weight: bold; 
+        margin-bottom: 0.5rem; 
+        display: block; 
+    }
+    .form-text {
+        font-size: 0.9em;
+        color: #666;
+    }
 </style>
 
 <div id="app" v-cloak class="text-center">
     
-    <p class="lead mb-4">Please answer the following questions about yourself.</p>
-
-    <div class="form-group">
-        <label>Age:</label>
-        <input type="number" v-model="form.age" class="form-control" min="18" max="99" placeholder="e.g., 25">
-    </div>
+    <p class="lead mb-4">We ask you to provide us with the following information, which will be treated confidentially and stored anonymously.</p>
 
     <div class="form-group">
         <label>Gender:</label>
         <select v-model="form.gender" class="form-control">
             <option disabled value="">Please select...</option>
-            <option value="Female">Female</option>
-            <option value="Male">Male</option>
-            <option value="Non-binary">Non-binary</option>
-            <option value="Prefer not to say">Prefer not to say</option>
+            <option value="female">Female</option>
+            <option value="male">Male</option>
+            <option value="diverse">Diverse</option>
+            <option value="prefer_not_to_say">I prefer not to say</option>
+        </select>
+    </div>
+
+    <div class="form-group">
+        <label>Age (years):</label>
+        <input type="number" v-model="form.age" class="form-control" min="18" max="99" placeholder="e.g., 25">
+    </div>
+
+    <div class="form-group">
+        <label>Handedness:</label>
+        <div class="form-check">
+            <input class="form-check-input" type="radio" id="right" value="right-handed" v-model="form.handedness">
+            <label class="form-check-label" for="right">Right-handed</label>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input" type="radio" id="left" value="left-handed" v-model="form.handedness">
+            <label class="form-check-label" for="left">Left-handed</label>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input" type="radio" id="ambi" value="ambidextrous" v-model="form.handedness">
+            <label class="form-check-label" for="ambi">Ambidextrous/Two-handed</label>
+        </div>
+    </div>
+
+    <div class="form-group">
+        <label>Grew up in country:</label>
+        <select v-model="form.grewUpInCountry" class="form-control">
+            <option disabled value="">Select a country...</option>
+            <option value="United States">United States</option>
+            <option value="United Kingdom">United Kingdom</option>
+            <option value="Germany">Germany</option>
+            <option value="Canada">Canada</option>
+            <option value="Australia">Australia</option>
+            <option value="India">India</option>
+            <option value="China">China</option>
             <option value="Other">Other</option>
         </select>
     </div>
 
     <div class="form-group">
-        <label>Native Language:</label>
-        <input type="text" v-model="form.language" class="form-control" placeholder="e.g., English">
+        <label>Currently living in country:</label>
+        <select v-model="form.currentlyLivingInCountry" class="form-control">
+            <option disabled value="">Select a country...</option>
+            <option value="United States">United States</option>
+            <option value="United Kingdom">United Kingdom</option>
+            <option value="Germany">Germany</option>
+            <option value="Canada">Canada</option>
+            <option value="Australia">Australia</option>
+            <option value="India">India</option>
+            <option value="China">China</option>
+            <option value="Other">Other</option>
+        </select>
     </div>
 
     <div class="form-group">
-        <label>Highest Level of Education:</label>
+        <label>Native language:</label>
+        <select v-model="form.nativeLanguage" class="form-control">
+            <option disabled value="">Please select...</option>
+            <option value="English">English</option>
+            <option value="other">Other</option>
+        </select>
+        <input v-if="form.nativeLanguage === 'other'" type="text" v-model="form.nativeLanguageOther" class="form-control mt-2" placeholder="Please specify...">
+    </div>
+
+    <div class="form-group">
+        <label>Completed highest level of education:</label>
         <select v-model="form.education" class="form-control">
             <option disabled value="">Please select...</option>
-            <option value="High School">High School / GED</option>
-            <option value="Some College">Some College</option>
-            <option value="Bachelor's Degree">Bachelor's Degree</option>
-            <option value="Master's Degree">Master's Degree</option>
-            <option value="Doctoral Degree">Doctoral Degree</option>
-            <option value="Vocational Training">Vocational Training</option>
-            <option value="Prefer not to say">Prefer not to say</option>
+            <option value="Less than high school">Less than a high school diploma</option>
+            <option value="High school">High school degree or equivalent (e.g. GED)</option>
+            <option value="Some college">Some college, no degree</option>
+            <option value="Associate degree">Associate degree (e.g. AA, AS)</option>
+            <option value="Bachelor's degree">Bachelor's degree (e.g. BA, BS)</option>
+            <option value="Master's degree">Master's degree (e.g. MA, MS, MEd)</option>
+            <option value="Doctorate">Doctorate or professional degree (e.g. MD, DDS, PhD)</option>
         </select>
     </div>
 
@@ -62,9 +128,13 @@
         data() {
             return {
                 form: {
-                    age: '',
                     gender: '',
-                    language: '',
+                    age: '',
+                    handedness: '',
+                    grewUpInCountry: '',
+                    currentlyLivingInCountry: '',
+                    nativeLanguage: '',
+                    nativeLanguageOther: '', // Helper for "other" text input
                     education: ''
                 }
             };
@@ -72,13 +142,24 @@
         computed: {
             // Packs all data into a JSON string for the 'survey_data' field
             jsonPayload() {
-                return JSON.stringify(this.form);
+                // We clone the form to avoid modifying the actual data
+                let payload = { ...this.form };
+                
+                // If they typed a custom language, save that as the main language answer
+                if (this.form.nativeLanguage === 'other' && this.form.nativeLanguageOther) {
+                    payload.nativeLanguage = this.form.nativeLanguageOther;
+                }
+                
+                return JSON.stringify(payload);
             },
-            // simple validation to ensure fields aren't empty
+            // Validation to ensure required fields are not empty
             isValid() {
-                return this.form.age && 
-                       this.form.gender && 
-                       this.form.language && 
+                return this.form.gender && 
+                       this.form.age && 
+                       this.form.handedness && 
+                       this.form.grewUpInCountry && 
+                       this.form.currentlyLivingInCountry && 
+                       this.form.nativeLanguage && 
                        this.form.education;
             }
         }
@@ -87,4 +168,3 @@
 </script>
 
 {% endblock %}
-
