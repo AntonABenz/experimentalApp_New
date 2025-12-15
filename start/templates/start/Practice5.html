@@ -7,38 +7,43 @@
     /* Hides Vue content until loaded */
     [v-cloak] { display: none; }
 
-    /* Styles for the Vocabulary Box Container */
-    .vocab-container {
-        border: 1px solid #dee2e6;
-        background-color: #f8f9fa;
+    /* Container for the Vocabulary Card */
+    .vocab-card {
+        background-color: #fff;
+        border: 1px solid #e3e3e3;
         border-radius: 8px;
-        padding: 20px;
-        max-width: 700px;
+        padding: 30px;
+        max-width: 800px;
         margin: 2rem auto;
-        text-align: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
 
-    /* Style for individual word badges */
-    .vocab-word {
-        display: inline-block;
-        background-color: #ffffff;
-        border: 1px solid #ced4da;
-        color: #495057;
-        padding: 6px 12px;
-        margin: 4px;
-        border-radius: 4px;
-        font-size: 1rem;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-    }
-    
-    .vocab-section-title {
-        font-size: 0.9rem;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        color: #6c757d;
-        margin-bottom: 10px;
-        margin-top: 10px;
+    .vocab-title {
+        text-align: center;
         font-weight: bold;
+        margin-bottom: 25px;
+        font-size: 1.25rem;
+        color: #333;
+    }
+
+    /* Column styling to match the screenshot */
+    .vocab-list {
+        list-style-type: none;
+        padding-left: 0;
+        margin-bottom: 0;
+        text-align: left; /* Aligns text to the left within the column */
+    }
+
+    .vocab-item {
+        padding: 4px 0;
+        font-size: 1.05rem;
+        color: #444;
+        line-height: 1.5;
+    }
+
+    /* Vertical divider line between columns (optional, can remove if unwanted) */
+    .vocab-divider {
+        border-right: 1px solid #eee;
     }
 </style>
 
@@ -58,24 +63,24 @@
              style="box-shadow: 0 4px 8px rgba(0,0,0,0.1); border-radius: 4px; max-height: 500px; max-width: 100%;">
     </div>
 
-    <div class="vocab-container" v-if="hasVocabulary">
-        <h5 class="mb-3 text-primary">Available Vocabulary</h5>
+    <div class="vocab-card" v-if="hasVocabulary">
+        <div class="vocab-title">Allowed Vocabulary</div>
         
-        <div v-if="vocab1.length > 0">
-            <div class="d-flex flex-wrap justify-content-center mb-3">
-                <span v-for="(word, idx) in vocab1" :key="'v1-'+idx" class="vocab-word">
-                    [[ word ]]
-                </span>
+        <div class="row">
+            <div class="col-md-6 vocab-divider">
+                <ul class="vocab-list">
+                    <li v-for="(word, idx) in vocab1" :key="'v1-'+idx" class="vocab-item">
+                        [[ word ]]
+                    </li>
+                </ul>
             </div>
-        </div>
 
-        <hr v-if="vocab1.length > 0 && vocab2.length > 0" style="margin: 10px 0;">
-
-        <div v-if="vocab2.length > 0">
-            <div class="d-flex flex-wrap justify-content-center">
-                <span v-for="(word, idx) in vocab2" :key="'v2-'+idx" class="vocab-word">
-                    [[ word ]]
-                </span>
+            <div class="col-md-6">
+                <ul class="vocab-list">
+                    <li v-for="(word, idx) in vocab2" :key="'v2-'+idx" class="vocab-item">
+                        [[ word ]]
+                    </li>
+                </ul>
             </div>
         </div>
     </div>
@@ -96,20 +101,19 @@ const app = Vue.createApp({
     data() {
         const s = window.page_settings || {};
 
-        // Helper to parse "word1; word2; word3" strings into arrays
+        // Helper to safely parse semicolon-separated strings into arrays
         const parseList = (str) => {
             if (!str) return [];
-            // If it's already an array, return it. If string, split by semicolon
             if (Array.isArray(str)) return str; 
             return String(str).split(';').map(w => w.trim()).filter(w => w.length > 0);
         };
 
         return {
             title: s.title || 'Practice 5',
-            main_text: s.main_text || 'Please review the image. In the actual task, you can only use the vocabulary below.',
+            main_text: s.main_text || 'Please review the image below. You will be limited to the following vocabulary.',
             image_path: s.full_image_path || '',
 
-            // Pull vocabulary from settings
+            // Load vocabulary lists from Python settings
             vocab1: parseList(s.allowed_values_1),
             vocab2: parseList(s.allowed_values_2)
         };
