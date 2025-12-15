@@ -252,9 +252,28 @@ class Practice4(_PracticePage):
     practice_id = 4
     template_name = "start/Practice4.html"
 
-class Practice5(_PracticePage):
-    practice_id = 5
+class Practice5(_BasePage):
     template_name = "start/Practice5.html"
+
+    @staticmethod
+    def vars_for_template(player: Player):
+        # reuse the same settings structure as other practice pages
+        key = "practice_5"
+        s = player.session.vars["practice_settings"].get(key, {}).copy()
+        s["full_image_path"] = build_s3_url(player, s.get("image", ""))
+
+        allowed = player.session.vars.get("allowed_values", [])
+        vocab1 = allowed[0] if len(allowed) > 0 else []
+        vocab2 = allowed[1] if len(allowed) > 1 else []
+
+        return dict(
+            title=s.get("title", "Practice 5"),
+            main_text=s.get("main_text", ""),
+            image_path=s.get("full_image_path", ""),
+            vocab1=vocab1,
+            vocab2=vocab2,
+        )
+
 
 class Practice6(_PracticePage):
     practice_id = 6
