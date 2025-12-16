@@ -7,7 +7,6 @@
   .input-group { max-width: fit-content; }
   .input-kids  { min-width: 200px; }
 
-  /* Vocabulary Box Styling */
   .vocabulary-box {
     border: 1px solid #ccc;
     background-color: #f8f9fa;
@@ -33,7 +32,6 @@
     }
   }
 
-  /* Empty image placeholder */
   .image-placeholder-box {
     width: 100%;
     max-width: 600px;
@@ -74,7 +72,7 @@
 
     <div class="row justify-content-center">
       <div class="col-md-5 vocab-column px-4">
-        <div v-if="props.allowedValues[0] && props.allowedValues[0].length > 0">
+        <div v-if="props.allowedValues[0] && props.allowedValues[0].length">
           <div v-for="(val, idx) in props.allowedValues[0]" :key="'v1-'+idx" class="vocab-item">
             [[ val ]]
           </div>
@@ -82,7 +80,7 @@
       </div>
 
       <div class="col-md-5 vocab-column px-4">
-        <div v-if="props.allowedValues[1] && props.allowedValues[1].length > 0">
+        <div v-if="props.allowedValues[1] && props.allowedValues[1].length">
           <div v-for="(val, idx) in props.allowedValues[1]" :key="'v2-'+idx" class="vocab-item">
             [[ val ]]
           </div>
@@ -122,10 +120,8 @@
     </div>
   </div>
 
-  <!-- Hidden oTree field -->
   <input type="hidden" name="producer_decision" :value="jsonPayload">
 
-  <!-- Error message -->
   <p v-if="errorMsg" class="alert alert-danger text-center mt-3">
     [[ errorMsg ]]
   </p>
@@ -142,7 +138,6 @@
     data() {
       const p = window.props || {};
 
-      // Use suffixes from props; if missing, keep layout stable
       let suffixes = p.suffixes;
       if (!Array.isArray(suffixes) || suffixes.length === 0) {
         suffixes = ["", ""];
@@ -150,19 +145,18 @@
 
       return {
         props: p,
-        suffixes,          // normalized suffixes
+        suffixes,
         items: [
           { fields: suffixes.map(s => ({ value: "", suffix: s })) }
         ],
         maxItems: 5,
-        requiredRows: 3,
+        requiredRows: 3,   // Practice 6 requires exactly 3 rows
         errorMsg: ""
       };
     },
 
     computed: {
       jsonPayload() {
-        // Structure: [["val1","val2",...], ["val1","val2",...], ...]
         return JSON.stringify(this.items.map(item => item.fields.map(f => f.value)));
       }
     },
@@ -185,7 +179,7 @@
       next() {
         this.errorMsg = "";
 
-        // Must have exactly 3 rows
+        // Must have exactly 3 rows (for Practice 6)
         if (this.items.length !== this.requiredRows) {
           this.errorMsg =
             `You must produce exactly ${this.requiredRows} sentences. ` +
@@ -193,7 +187,7 @@
           return;
         }
 
-        // No empty inputs
+        // All fields must be filled
         const hasEmpty = this.items.some(item =>
           item.fields.some(f => !String(f.value || "").trim())
         );
