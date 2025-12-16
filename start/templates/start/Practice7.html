@@ -21,15 +21,10 @@
     text-align: left;
   }
 
-  .vocab-item {
-    display: block;
-    margin-bottom: 2px;
-  }
+  .vocab-item { display: block; margin-bottom: 2px; }
 
   @media (min-width: 768px) {
-    .vocab-column:first-child {
-      border-right: 2px solid #e9ecef;
-    }
+    .vocab-column:first-child { border-right: 2px solid #e9ecef; }
   }
 
   .image-placeholder-box {
@@ -98,20 +93,21 @@
                  v-model="field.value"
                  class="form-control input-kids"
                  placeholder="..."
-                 autocomplete="off">
+                 autocomplete="off"
+                 @keydown.enter.prevent>
           <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
         </div>
 
-        <button @click.prevent="addItem"
-                type="button"
+        <button type="button"
                 class="btn btn-outline-secondary ml-2"
+                @click.prevent="addItem"
                 :disabled="items.length >= maxItems">
           +
         </button>
 
-        <button @click.prevent="removeItem(itemIndex)"
-                type="button"
+        <button type="button"
                 class="btn btn-outline-danger ml-1"
+                @click.prevent="removeItem(itemIndex)"
                 :disabled="items.length <= 1">
           -
         </button>
@@ -127,7 +123,9 @@
   </p>
 
   <div class="text-center mt-5">
-    <button class="btn btn-primary btn-lg" @click="next">Next</button>
+    <button type="button" class="btn btn-primary btn-lg" @click.prevent="next">
+      Next
+    </button>
   </div>
 
 </div>
@@ -137,20 +135,15 @@
   const app = Vue.createApp({
     data() {
       const p = window.props || {};
-
       let suffixes = p.suffixes;
-      if (!Array.isArray(suffixes) || suffixes.length === 0) {
-        suffixes = ["", ""];
-      }
+      if (!Array.isArray(suffixes) || suffixes.length === 0) suffixes = ["", ""];
 
       return {
         props: p,
         suffixes,
-        items: [
-          { fields: suffixes.map(s => ({ value: "", suffix: s })) }
-        ],
-        maxItems: 5,
-        requiredRows: 5,   // Practice 7 requires exactly 5 rows
+        items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
+        maxItems: 5,       // UI hard limit
+        requiredRows: 5,   // Practice7 requirement
         errorMsg: ""
       };
     },
@@ -164,30 +157,23 @@
     methods: {
       addItem() {
         if (this.items.length < this.maxItems) {
-          this.items.push({
-            fields: this.suffixes.map(s => ({ value: "", suffix: s }))
-          });
+          this.items.push({ fields: this.suffixes.map(s => ({ value: "", suffix: s })) });
         }
       },
 
       removeItem(index) {
-        if (this.items.length > 1) {
-          this.items.splice(index, 1);
-        }
+        if (this.items.length > 1) this.items.splice(index, 1);
       },
 
-      next() {
+      next(e) {
+        if (e) e.preventDefault();
         this.errorMsg = "";
 
-        // Must have exactly 5 rows (for Practice 7)
         if (this.items.length !== this.requiredRows) {
-          this.errorMsg =
-            `You must produce exactly ${this.requiredRows} sentences. ` +
-            `You currently have ${this.items.length}.`;
+          this.errorMsg = `You must produce exactly ${this.requiredRows} sentences. You currently have ${this.items.length}.`;
           return;
         }
 
-        // All fields must be filled
         const hasEmpty = this.items.some(item =>
           item.fields.some(f => !String(f.value || "").trim())
         );
