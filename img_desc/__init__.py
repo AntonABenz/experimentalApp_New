@@ -134,10 +134,8 @@ class Player(BasePlayer):
     completion_code = models.StringField()
     full_return_url = models.StringField(blank=True)
     vars_dump = models.LongStringField()
-
-    producer_decision = models.LongStringField(blank=True)
-    interpreter_decision = models.LongStringField(blank=True)
-
+    producer_decision = models.LongStringField()
+    interpreter_decision = models.LongStringField()
     start_decision_time = djmodels.DateTimeField(null=True)
     end_decision_time = djmodels.DateTimeField(null=True)
     decision_seconds = models.FloatField()
@@ -155,62 +153,34 @@ class Player(BasePlayer):
                 return b
         return None
 
-    def get_partner_producer_row(self):
-        """
-        For interpreter rows, find the matching producer row.
-        First try SAME active batch (most common in your design),
-        then fallback to previous batch if not found.
-        """
+    def get_previous_batch(self):
         if self.inner_role != INTERPRETER:
-            return None
-
+            return dict(sentences="[]")
         l = self.get_linked_batch()
-        if not l:
-            return None
-
+        if not l or l["partner_id"] == 0:
+            return dict(sentences="[]")
+        target_batch_idx = self.subsession.active_batch - 1
         all_data = get_all_batches_sql(self.session.code)
-
-        def match_in_batch(target_batch_idx):
-            for obj in all_data:
-                if (
-                    obj.get("batch") == target_batch_idx
-                    and obj.get("role") == PRODUCER
-                    and obj.get("condition") == l.get("condition")
-                    and obj.get("id_in_group") == l.get("partner_id")
-                    and obj.get("partner_id") == l.get("id_in_group")
-                ):
-                    return obj
-            return None
-
-        # 1) same active batch
-        same = match_in_batch(self.subsession.active_batch)
-        if same:
-            return same
-
-        # 2) fallback previous batch (your old logic)
-        prev = match_in_batch(self.subsession.active_batch - 1)
-        return prev
+        for obj in all_data:
+            if (
+                obj["batch"] == target_batch_idx
+                and obj["role"] == PRODUCER
+                and obj["partner_id"] == l["id_in_group"]
+                and obj["id_in_group"] == l["partner_id"]
+                and obj["condition"] == l["condition"]
+            ):
+                return obj
+        return dict(sentences="[]")
 
     def get_sentences_data(self):
-        """
-        Producer: read my own linked row sentences.
-        Interpreter: read partner producer row sentences.
-        """
         l = self.get_linked_batch()
         if not l:
             return []
-
         try:
-            if self.inner_role == PRODUCER:
-                return json.loads(l.get("sentences") or "[]")
-
-            if self.inner_role == INTERPRETER:
-                partner = self.get_partner_producer_row()
-                if not partner:
-                    return []
-                return json.loads(partner.get("sentences") or "[]")
-
-            return []
+            if l["partner_id"] == 0:
+                return json.loads(l["sentences"])
+            else:
+                return json.loads(self.get_previous_batch().get("sentences"))
         except Exception:
             return []
 
@@ -219,9 +189,9 @@ class Player(BasePlayer):
             return
         updates = {}
         if self.inner_role == PRODUCER:
-            updates["sentences"] = self.producer_decision or "[]"
+            updates["sentences"] = self.producer_decision
         if self.inner_role == INTERPRETER:
-            updates["rewards"] = self.interpreter_decision or ""
+            updates["rewards"] = self.interpreter_decision
         if updates:
             sql_update_batch(self.link_id, **updates)
 
@@ -235,21 +205,12 @@ class Player(BasePlayer):
         self.subsession.check_for_batch_completion()
 
     def get_full_sentences(self):
-        prefix = self.session.vars.get("prefix") or ""
+        prefix = self.session.vars.get("prefix", "")
         suffixes = self.session.vars.get("suffixes") or []
         sentences = self.get_sentences_data() or []
-
-        # keep only list rows with no empty strings
-        cleaned = []
-        for sub in sentences:
-            if not isinstance(sub, list):
-                continue
-            if any(str(x).strip() == "" for x in sub):
-                continue
-            cleaned.append([str(x).strip() for x in sub])
-
+        sentences = [sub for sub in sentences if isinstance(sub, list) and "" not in sub]
         res = []
-        for sentence in cleaned:
+        for sentence in sentences:
             expansion = [str(item) for pair in zip(sentence, suffixes) for item in pair]
             if prefix:
                 expansion.insert(0, prefix)
@@ -260,11 +221,11 @@ class Player(BasePlayer):
         l = self.get_linked_batch()
         if not l:
             return ""
-        image_name = l.get("image")
+        image_name = l["image"]
         if not image_name:
             return ""
-        ext = self.session.vars.get("extension") or "png"
-        if not str(image_name).lower().endswith(f".{ext}"):
+        ext = self.session.vars.get("extension", "png")
+        if not image_name.lower().endswith(f".{ext}"):
             image_name = f"{image_name}.{ext}"
         base = (self.session.vars.get("s3path_base") or "").rstrip("/")
         if "amazonaws.com" in base:
@@ -274,41 +235,41 @@ class Player(BasePlayer):
     def start(self):
         session = self.session
         subsession = self.subsession
-
         all_data = get_all_batches_sql(session.code)
 
-        # First round: claim a (batch, id_in_group)
         if self.round_number == 1:
             candidates = [
                 b for b in all_data
-                if b.get("batch") == subsession.active_batch
-                and not b.get("busy")
-                and (b.get("owner_code") or "") == ""
+                if b["batch"] == subsession.active_batch
+                and not b["busy"]
+                and b["owner_code"] == ""
             ]
-
             if not candidates:
                 self.faulty = True
                 return
 
-            candidates.sort(key=lambda b: int(b.get("id_in_group") or 0))
+            candidates.sort(key=lambda b: b["id_in_group"])
             free = candidates[0]
-
             chosen_batch = free["batch"]
             chosen_id = free["id_in_group"]
+
             self.batch = chosen_batch
 
             for b in all_data:
-                if b.get("batch") == chosen_batch and b.get("id_in_group") == chosen_id:
-                    sql_update_batch(b["id"], busy=True, owner_code=self.participant.code)
+                if b["batch"] == chosen_batch and b["id_in_group"] == chosen_id:
+                    sql_update_batch(
+                        b["id"],
+                        busy=True,
+                        owner_code=self.participant.code
+                    )
 
             all_data = get_all_batches_sql(session.code)
 
-        # Find my row for this round
         my_row = None
         for b in all_data:
             if (
-                b.get("owner_code") == self.participant.code
-                and int(b.get("round_number") or 0) == int(self.round_number)
+                b["owner_code"] == self.participant.code
+                and b["round_number"] == self.round_number
             ):
                 my_row = b
                 break
@@ -404,6 +365,7 @@ class FaultyCatcher(Page):
 
 
 class Q(Page):
+    instructions = True
     form_model = "player"
 
     @staticmethod
@@ -421,47 +383,33 @@ class Q(Page):
     @staticmethod
     def get_form_fields(player):
         role = player.field_maybe_none("inner_role")
+
         if role == PRODUCER:
             return ["producer_decision"]
-        if role == INTERPRETER:
+        elif role == INTERPRETER:
             return ["interpreter_decision"]
         return []
 
     @staticmethod
     def vars_for_template(player):
-        # SAFE defaults
-        choices = player.session.vars.get("interpreter_choices") or []
-        if isinstance(choices, str):
-            # allow "a;b;c;d" style
-            choices = [x.strip() for x in choices.split(";") if x.strip()]
+        # IMPORTANT: provide these so the template JSON works reliably
+        raw_choices = player.session.vars.get("interpreter_choices") or ""
+        if isinstance(raw_choices, str):
+            interpreter_choices = [x.strip() for x in raw_choices.split(";") if x.strip()]
+        elif isinstance(raw_choices, list):
+            interpreter_choices = raw_choices
+        else:
+            interpreter_choices = []
 
-        title = player.session.vars.get("interpreter_title") or "Buy medals:"
+        interpreter_title = player.session.vars.get("interpreter_title") or "Buy medals:"
 
         return dict(
             d=player.get_linked_batch(),
             allowed_values=player.session.vars.get("allowed_values", []),
             suffixes=player.session.vars.get("suffixes", []),
-            interpreter_choices=choices,
-            interpreter_title=title,
+            interpreter_choices=interpreter_choices,
+            interpreter_title=interpreter_title,
         )
-
-    @staticmethod
-    def error_message(player, values):
-        role = player.field_maybe_none("inner_role")
-
-        # Producer must submit at least one complete row (server-side safety)
-        if role == PRODUCER:
-            raw = (values.get("producer_decision") or "").strip()
-            if not raw or raw in ("[]", "null"):
-                return "Please write at least one complete sentence."
-
-        # Interpreter must submit something non-empty (server-side safety)
-        if role == INTERPRETER:
-            raw = (values.get("interpreter_decision") or "").strip()
-            if not raw or raw in ("[]", "null"):
-                return "Please choose Yes/No for every row before continuing."
-
-        return None
 
     @staticmethod
     def before_next_page(player, timeout_happened):
@@ -474,17 +422,14 @@ class Feedback(Page):
     form_model = "player"
     form_fields = ["feedback"]
 
-    @staticmethod
-    def is_displayed(player):
-        return player.round_number == Constants.num_rounds
+    def is_displayed(self):
+        return self.round_number == Constants.num_rounds
 
 
 class FinalForProlific(Page):
     @staticmethod
     def is_displayed(player):
-        return player.session.config.get("for_prolific") and (
-            player.round_number == Constants.num_rounds
-        )
+        return player.session.config.get("for_prolific") and (player.round_number == Constants.num_rounds)
 
     def get(self):
         url = self.player.field_maybe_none("full_return_url")
