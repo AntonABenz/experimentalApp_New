@@ -97,7 +97,7 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
     suffixes: {{ suffixes|json }},
     full_sentences: {{ player.get_full_sentences|json }},
     interpreter_choices: {{ session.vars.interpreter_choices|json }},
-    interpreter_title: "{{ session.vars.interpreter_title|default_if_none:'' }}"
+    interpreter_title: "{{ session.vars.interpreter_title }}"
   };
 </script>
 
@@ -225,7 +225,6 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
       </tbody>
     </table>
 
-    <!-- store all row answers in one oTree field -->
     <input type="hidden" name="interpreter_decision" :value="interpreterPayload">
 
     <p v-if="errorMsg" class="alert alert-danger text-center mt-3">
@@ -265,18 +264,16 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         ],
 
         // Interpreter
-        decisions: {}  // idx -> "yes"/"no"
+        decisions: {} // idx -> "yes"/"no"
       };
     },
 
     computed: {
       producerPayload() {
-        // [["All","the A"],["Some","the B"],...]
         return JSON.stringify(this.items.map(item => item.fields.map(f => f.value)));
       },
 
       interpreterPayload() {
-        // {"0":"yes","1":"no",...}
         return JSON.stringify(this.decisions || {});
       }
     },
@@ -294,10 +291,7 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
 
       validateInterpreter() {
         const choices = this.props.interpreter_choices || [];
-        const needed = choices.length;
-
-        // must answer every row
-        for (let i = 0; i < needed; i++) {
+        for (let i = 0; i < choices.length; i++) {
           if (!this.decisions[i]) {
             this.errorMsg = "Please answer Yes/No for every row before continuing.";
             return false;
@@ -308,12 +302,11 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
       },
 
       handleNext() {
-        // IMPORTANT: prevent going next when invalid
+        // stop submit if invalid
         if (this.props.role === "I") {
           if (!this.validateInterpreter()) return;
         }
 
-        // Producer: permissive (as your current implementation)
         const outerForm = document.querySelector("form");
         if (outerForm) outerForm.submit();
       }
