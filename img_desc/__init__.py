@@ -333,11 +333,16 @@ def creating_session(subsession: Subsession):
         clean_settings[normalize_key(k)] = v
     session.vars["user_settings"] = clean_settings
 
-    # Added "instructions_url" to this list to ensure it's saved in session.vars
-    # -------------------------------------------------------------------------
-    for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title", "instructions_url"]:
+    # --- INSTRUCTIONS URL LOGIC START ---
+    default_url = "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
+    
+    # Try to find a URL in settings; otherwise, use the default
+    url_from_settings = clean_settings.get(normalize_key("instructions_url"))
+    session.vars["instructions_url"] = url_from_settings if url_from_settings else default_url
+    # --- INSTRUCTIONS URL LOGIC END ---
+
+    for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title"]:
         session.vars[k] = clean_settings.get(normalize_key(k))
-    # -------------------------------------------------------------------------
 
     session.vars["suffixes"] = clean_settings.get("suffixes") or []
 
@@ -395,7 +400,6 @@ class Q(Page):
 
     @staticmethod
     def vars_for_template(player):
-        # IMPORTANT: provide these so the template JSON works reliably
         raw_choices = player.session.vars.get("interpreter_choices") or ""
         if isinstance(raw_choices, str):
             interpreter_choices = [x.strip() for x in raw_choices.split(";") if x.strip()]
@@ -405,11 +409,6 @@ class Q(Page):
             interpreter_choices = []
 
         interpreter_title = player.session.vars.get("interpreter_title") or "Buy medals:"
-        
-        # Added instructions_url retrieval here
-        # -------------------------------------
-        instructions_url = player.session.vars.get("instructions_url")
-        # -------------------------------------
 
         return dict(
             d=player.get_linked_batch(),
@@ -417,8 +416,8 @@ class Q(Page):
             suffixes=player.session.vars.get("suffixes", []),
             interpreter_choices=interpreter_choices,
             interpreter_title=interpreter_title,
-            # Pass it to the template dictionary
-            instructions_url=instructions_url,  # <--- ADDED THIS
+            # Pass the Google Doc URL to the template
+            instructions_url=player.session.vars.get("instructions_url"),
         )
 
     @staticmethod
