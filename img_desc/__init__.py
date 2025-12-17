@@ -333,8 +333,11 @@ def creating_session(subsession: Subsession):
         clean_settings[normalize_key(k)] = v
     session.vars["user_settings"] = clean_settings
 
-    for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title"]:
+    # Added "instructions_url" to this list to ensure it's saved in session.vars
+    # -------------------------------------------------------------------------
+    for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title", "instructions_url"]:
         session.vars[k] = clean_settings.get(normalize_key(k))
+    # -------------------------------------------------------------------------
 
     session.vars["suffixes"] = clean_settings.get("suffixes") or []
 
@@ -402,6 +405,11 @@ class Q(Page):
             interpreter_choices = []
 
         interpreter_title = player.session.vars.get("interpreter_title") or "Buy medals:"
+        
+        # Added instructions_url retrieval here
+        # -------------------------------------
+        instructions_url = player.session.vars.get("instructions_url")
+        # -------------------------------------
 
         return dict(
             d=player.get_linked_batch(),
@@ -409,6 +417,8 @@ class Q(Page):
             suffixes=player.session.vars.get("suffixes", []),
             interpreter_choices=interpreter_choices,
             interpreter_title=interpreter_title,
+            # Pass it to the template dictionary
+            instructions_url=instructions_url,  # <--- ADDED THIS
         )
 
     @staticmethod
