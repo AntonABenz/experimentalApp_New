@@ -9,26 +9,61 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
 <style>
     [v-cloak] { display: none; }
 
-    .page-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 18px;
-    }
-
-    .help-btn {
-        width: 34px;
-        height: 34px;
+    /* FIXED help button: always top-right */
+    .help-fab {
+        position: fixed;
+        top: 14px;
+        right: 14px;
+        width: 38px;
+        height: 38px;
         border-radius: 50%;
         border: 1px solid #999;
-        background: #f8f9fa;
-        font-weight: 700;
+        background: #ffffff;
+        font-weight: 800;
+        font-size: 18px;
+        line-height: 36px;
         text-align: center;
-        line-height: 30px;
         cursor: pointer;
+        z-index: 3000;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.12);
         user-select: none;
     }
+    .help-fab:hover { background: #f6f6f6; }
 
+    /* Modal overlay */
+    .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.55);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 4000;
+        padding: 12px;
+    }
+
+    .modal-box {
+        background: white;
+        width: 96%;
+        max-width: 1100px;
+        height: 92%;
+        border-radius: 10px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .modal-header {
+        padding: 10px 12px;
+        border-bottom: 1px solid #e5e5e5;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+    }
+
+    .modal-body { flex: 1; }
+
+    /* Producer */
     .input-group { max-width: fit-content; margin: 0 auto; }
     .input-kids { min-width: 200px; }
     .clean-row { margin-bottom: 10px; }
@@ -41,6 +76,7 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         margin-bottom: 22px;
     }
 
+    /* Interpreter */
     .sentence-card {
         background: #e3f2fd;
         border-left: 5px solid #2196f3;
@@ -55,35 +91,6 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         max-width: 900px;
         margin: 0 auto;
     }
-
-    .modal-overlay {
-        position: fixed;
-        inset: 0;
-        background: rgba(0,0,0,0.5);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 2000;
-    }
-
-    .modal-box {
-        background: white;
-        width: 92%;
-        max-width: 1000px;
-        height: 90%;
-        border-radius: 8px;
-        overflow: hidden;
-        display: flex;
-        flex-direction: column;
-    }
-
-    .modal-header {
-        padding: 10px;
-        text-align: right;
-        border-bottom: 1px solid #ddd;
-    }
-
-    .modal-body { flex: 1; }
 </style>
 
 <script>
@@ -94,134 +101,135 @@ window.props = {
     full_sentences: {{ player.get_full_sentences|json }},
     interpreter_choices: {{ interpreter_choices|json }},
     interpreter_title: {{ interpreter_title|json }},
-    instructions_url: "/p/{{ participant.code }}/start/Instructions/1"
+    instructions_url: {{ instructions_url|json }}
 };
 </script>
 
 <div id="app" v-cloak>
 
-  <div class="page-header">
-      <h3>Task</h3>
-      <div class="help-btn" @click="showHelp=true">?</div>
-  </div>
+    <!-- FIXED top-right help button -->
+    <div class="help-fab" title="Help" @click="openHelp">?</div>
 
-  <!-- HELP MODAL -->
-  <div v-if="showHelp" class="modal-overlay" @click.self="showHelp=false">
-      <div class="modal-box">
-          <div class="modal-header">
-              <button type="button" class="btn btn-sm btn-danger" @click="showHelp=false">Close</button>
-          </div>
-          <div class="modal-body">
-              <iframe :src="props.instructions_url"
-                      style="width:100%;height:100%;border:none;"></iframe>
-          </div>
-      </div>
-  </div>
+    <!-- HELP MODAL (same page) -->
+    <div v-if="showHelp" class="modal-overlay" @click.self="closeHelp">
+        <div class="modal-box">
+            <div class="modal-header">
+                <button type="button" class="btn btn-sm btn-secondary" @click="reloadHelp">Reload</button>
+                <button type="button" class="btn btn-sm btn-danger" @click="closeHelp">Close</button>
+            </div>
+            <div class="modal-body">
+                <!-- key trick: bind :src and force refresh with cache-bust -->
+                <iframe
+                    :src="helpSrc"
+                    style="width:100%; height:100%; border:none;"
+                ></iframe>
+            </div>
+        </div>
+    </div>
 
-  <!-- ================= PRODUCER ================= -->
-  <div v-if="props.role === 'P'">
+    <!-- ================= PRODUCER ================= -->
+    <div v-if="props.role === 'P'">
 
-      <div class="text-center my-4">
-          <img src="{{ player.get_image_url }}"
-               style="max-width:100%;max-height:520px;border:1px solid #ddd;">
-      </div>
+        <div class="text-center my-4">
+            <img src="{{ player.get_image_url }}"
+                 style="max-width:100%;max-height:520px;border:1px solid #ddd;">
+        </div>
 
-      <div class="vocabulary-box text-center">
-          <h5>Allowed Vocabulary</h5>
-          <div class="row">
-              <div class="col-md-6">
-                  <div v-for="(v,idx) in props.allowedValues[0]" :key="'av1-'+idx">[[ v ]]</div>
-              </div>
-              <div class="col-md-6">
-                  <div v-for="(v,idx) in props.allowedValues[1]" :key="'av2-'+idx">[[ v ]]</div>
-              </div>
-          </div>
-      </div>
+        <div class="vocabulary-box text-center">
+            <h5>Allowed Vocabulary</h5>
+            <div class="row">
+                <div class="col-md-6">
+                    <div v-for="(v,idx) in props.allowedValues[0]" :key="'av1-'+idx">[[ v ]]</div>
+                </div>
+                <div class="col-md-6">
+                    <div v-for="(v,idx) in props.allowedValues[1]" :key="'av2-'+idx">[[ v ]]</div>
+                </div>
+            </div>
+        </div>
 
-      <div class="text-center">
-          <div v-for="(item, i) in items" :key="i" class="clean-row">
-              <div class="input-group">
-                  <div v-for="(f, j) in item.fields" :key="j" class="d-flex align-items-baseline">
-                      <input class="form-control input-kids"
-                             v-model="f.value"
-                             placeholder="..."
-                             autocomplete="off">
-                      <span class="mx-2">[[ f.suffix ]]</span>
-                  </div>
+        <div class="text-center">
+            <div v-for="(item, i) in items" :key="i" class="clean-row">
+                <div class="input-group">
+                    <div v-for="(f, j) in item.fields" :key="j" class="d-flex align-items-baseline">
+                        <input class="form-control input-kids"
+                               v-model="f.value"
+                               placeholder="..."
+                               autocomplete="off">
+                        <span class="mx-2">[[ f.suffix ]]</span>
+                    </div>
 
-                  <button type="button"
-                          class="btn btn-outline-secondary"
-                          @click="addItem"
-                          :disabled="items.length>=maxItems">+</button>
+                    <button type="button"
+                            class="btn btn-outline-secondary"
+                            @click="addItem"
+                            :disabled="items.length>=maxItems">+</button>
 
-                  <button type="button"
-                          class="btn btn-outline-danger"
-                          @click="removeItem(i)"
-                          :disabled="items.length<=1">-</button>
-              </div>
-          </div>
-      </div>
+                    <button type="button"
+                            class="btn btn-outline-danger"
+                            @click="removeItem(i)"
+                            :disabled="items.length<=1">-</button>
+                </div>
+            </div>
+        </div>
 
-      <input type="hidden" name="producer_decision" :value="producerPayload">
+        <input type="hidden" name="producer_decision" :value="producerPayload">
 
-  </div>
+    </div>
 
-  <!-- ================= INTERPRETER ================= -->
-  <div v-else>
+    <!-- ================= INTERPRETER ================= -->
+    <div v-else>
 
-      <h4 class="text-center mb-3">[[ props.interpreter_title ]]</h4>
+        <h4 class="text-center mb-3">[[ props.interpreter_title ]]</h4>
 
-      <div v-if="props.full_sentences.length === 0" class="alert alert-danger text-center">
-          Internal error: no sentences received. Please contact the experimenter.
-      </div>
+        <div v-if="props.full_sentences.length === 0" class="alert alert-danger text-center">
+            Internal error: no sentences received. Please contact the experimenter.
+        </div>
 
-      <div v-else class="sentence-card">
-          <div v-for="(s,idx) in props.full_sentences" :key="'fs-'+idx">[[ s ]]</div>
-      </div>
+        <div v-else class="sentence-card">
+            <div v-for="(s,idx) in props.full_sentences" :key="'fs-'+idx">[[ s ]]</div>
+        </div>
 
-      <h5 class="text-center mb-3">Buy medals:</h5>
+        <h5 class="text-center mb-3">Buy medals:</h5>
 
-      <table class="table table-bordered buy-table">
-          <thead>
-              <tr>
-                  <th>Description</th>
-                  <th class="text-center">Yes</th>
-                  <th class="text-center">No</th>
-              </tr>
-          </thead>
-          <tbody>
-              <tr v-for="(choice,i) in props.interpreter_choices" :key="'ic-'+i">
-                  <td>[[ choice ]]</td>
-                  <td class="text-center">
-                      <input type="radio"
-                             :name="'row_'+i"
-                             value="Yes"
-                             v-model="interpRows[i]">
-                  </td>
-                  <td class="text-center">
-                      <input type="radio"
-                             :name="'row_'+i"
-                             value="No"
-                             v-model="interpRows[i]">
-                  </td>
-              </tr>
-          </tbody>
-      </table>
+        <table class="table table-bordered buy-table">
+            <thead>
+                <tr>
+                    <th>Description</th>
+                    <th class="text-center">Yes</th>
+                    <th class="text-center">No</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr v-for="(choice,i) in props.interpreter_choices" :key="'ic-'+i">
+                    <td>[[ choice ]]</td>
+                    <td class="text-center">
+                        <input type="radio"
+                               :name="'row_'+i"
+                               value="Yes"
+                               v-model="interpRows[i]">
+                    </td>
+                    <td class="text-center">
+                        <input type="radio"
+                               :name="'row_'+i"
+                               value="No"
+                               v-model="interpRows[i]">
+                    </td>
+                </tr>
+            </tbody>
+        </table>
 
-      <input type="hidden" name="interpreter_decision" :value="interpreterPayload">
+        <input type="hidden" name="interpreter_decision" :value="interpreterPayload">
 
-      <!-- IMPORTANT: this must be server-side conditional, NOT Vue -->
-      {% if player.inner_role == 'I' %}
-          {{ formfield_errors 'interpreter_decision' }}
-      {% endif %}
+        {% if player.inner_role == 'I' %}
+            {{ formfield_errors 'interpreter_decision' }}
+        {% endif %}
 
-  </div>
+    </div>
 
-  <p v-if="errorMsg" class="alert alert-danger text-center mt-3">[[ errorMsg ]]</p>
+    <p v-if="errorMsg" class="alert alert-danger text-center mt-3">[[ errorMsg ]]</p>
 
-  <div class="text-center mt-4">
-      <button type="button" class="btn btn-primary btn-lg" @click="handleNext">Next</button>
-  </div>
+    <div class="text-center mt-4">
+        <button type="button" class="btn btn-primary btn-lg" @click="handleNext">Next</button>
+    </div>
 
 </div>
 
@@ -239,7 +247,8 @@ const app = Vue.createApp({
             maxItems: 5,
             interpRows: Array(ic.length).fill(null),
             errorMsg: "",
-            showHelp: false
+            showHelp: false,
+            helpNonce: 0
         };
     },
     computed: {
@@ -253,9 +262,25 @@ const app = Vue.createApp({
                     answer: this.interpRows[i]
                 }))
             );
+        },
+        helpSrc() {
+            // cache-bust so it reliably loads inside iframe
+            const base = String(this.props.instructions_url || "");
+            const joiner = base.includes("?") ? "&" : "?";
+            return base + joiner + "v=" + this.helpNonce;
         }
     },
     methods: {
+        openHelp() {
+            this.helpNonce += 1;
+            this.showHelp = true;
+        },
+        closeHelp() {
+            this.showHelp = false;
+        },
+        reloadHelp() {
+            this.helpNonce += 1;
+        },
         addItem() {
             if (this.items.length >= this.maxItems) return;
             const suffixes = this.items[0].fields.map(f => f.suffix);
@@ -268,7 +293,6 @@ const app = Vue.createApp({
         handleNext() {
             this.errorMsg = "";
 
-            // Interpreter must answer every row
             if (this.props.role === "I") {
                 if (this.interpRows.some(v => !v)) {
                     this.errorMsg = "Please answer Yes/No for every row.";
@@ -276,7 +300,6 @@ const app = Vue.createApp({
                 }
             }
 
-            // Producer must write at least 1 complete sentence (optional but recommended)
             if (this.props.role === "P") {
                 const completeRows = this.items.filter(row =>
                     row.fields.every(f => String(f.value || "").trim())
