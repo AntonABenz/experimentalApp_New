@@ -1,5 +1,3 @@
-# img_desc/__init__.py
-
 from otree.api import *
 import json
 import logging
@@ -19,7 +17,6 @@ STUBURL = "https://app.prolific.co/submissions/complete?cc="
 class Constants(BaseConstants):
     name_in_url = "img_desc"
     players_per_group = None
-    # TRUE number of rounds your data supports
     num_rounds = 80
 
     STUBURL = STUBURL
@@ -48,7 +45,6 @@ class Batch(ExtraModel):
     processed = models.BooleanField(initial=False)
 
 
-# --- SQL Helper ---
 _custom_engine = None
 
 
@@ -91,14 +87,12 @@ def sql_update_batch(batch_id, **kwargs):
             conn.commit()
 
 
-# --- Helpers ---
 def normalize_key(key):
     if not key:
         return ""
     return re.sub(r"[\s_]+", "_", str(key).lower().strip())
 
 
-# --- Subsession ---
 class Subsession(BaseSubsession):
     active_batch = models.IntegerField()
     study_id = models.StringField()
@@ -115,23 +109,19 @@ class Subsession(BaseSubsession):
         active_batch = self.active_batch
         all_data = get_all_batches_sql(session.code)
         remaining = [
-            b
-            for b in all_data
+            b for b in all_data
             if b["batch"] == active_batch and not b["processed"]
         ]
         if remaining:
             return
         session.vars["active_batch"] = active_batch + 1
-        Subsession.objects.filter(session=session).update(
-            active_batch=active_batch + 1
-        )
+        Subsession.objects.filter(session=session).update(active_batch=active_batch + 1)
 
 
 class Group(BaseGroup):
     pass
 
 
-# --- Player ---
 class Player(BasePlayer):
     inner_role = models.StringField()
     inner_sentences = models.LongStringField()
@@ -142,11 +132,12 @@ class Player(BasePlayer):
     prol_study_id = models.StringField()
     prol_session_id = models.StringField()
     completion_code = models.StringField()
-    # allow blank to avoid None errors
     full_return_url = models.StringField(blank=True)
     vars_dump = models.LongStringField()
-    producer_decision = models.LongStringField()
-    interpreter_decision = models.LongStringField()
+
+    producer_decision = models.LongStringField(blank=True)
+    interpreter_decision = models.LongStringField(blank=True)
+
     start_decision_time = djmodels.DateTimeField(null=True)
     end_decision_time = djmodels.DateTimeField(null=True)
     decision_seconds = models.FloatField()
@@ -155,7 +146,6 @@ class Player(BasePlayer):
     def role(self):
         return self.inner_role
 
-    # FIX: Changed to method to prevent oTree interception
     def get_linked_batch(self):
         if not self.link_id:
             return None
@@ -165,45 +155,73 @@ class Player(BasePlayer):
                 return b
         return None
 
+    def get_partner_producer_row(self):
+        """
+        For interpreter rows, find the matching producer row.
+        First try SAME active batch (most common in your design),
+        then fallback to previous batch if not found.
+        """
+        if self.inner_role != INTERPRETER:
+            return None
+
+        l = self.get_linked_batch()
+        if not l:
+            return None
+
+        all_data = get_all_batches_sql(self.session.code)
+
+        def match_in_batch(target_batch_idx):
+            for obj in all_data:
+                if (
+                    obj.get("batch") == target_batch_idx
+                    and obj.get("role") == PRODUCER
+                    and obj.get("condition") == l.get("condition")
+                    and obj.get("id_in_group") == l.get("partner_id")
+                    and obj.get("partner_id") == l.get("id_in_group")
+                ):
+                    return obj
+            return None
+
+        # 1) same active batch
+        same = match_in_batch(self.subsession.active_batch)
+        if same:
+            return same
+
+        # 2) fallback previous batch (your old logic)
+        prev = match_in_batch(self.subsession.active_batch - 1)
+        return prev
+
     def get_sentences_data(self):
+        """
+        Producer: read my own linked row sentences.
+        Interpreter: read partner producer row sentences.
+        """
         l = self.get_linked_batch()
         if not l:
             return []
+
         try:
-            if l["partner_id"] == 0:
-                return json.loads(l["sentences"])
-            else:
-                return json.loads(self.get_previous_batch().get("sentences"))
+            if self.inner_role == PRODUCER:
+                return json.loads(l.get("sentences") or "[]")
+
+            if self.inner_role == INTERPRETER:
+                partner = self.get_partner_producer_row()
+                if not partner:
+                    return []
+                return json.loads(partner.get("sentences") or "[]")
+
+            return []
         except Exception:
             return []
-
-    def get_previous_batch(self):
-        if self.inner_role != INTERPRETER:
-            return dict(sentences="[]")
-        l = self.get_linked_batch()
-        if not l or l["partner_id"] == 0:
-            return dict(sentences="[]")
-        target_batch_idx = self.subsession.active_batch - 1
-        all_data = get_all_batches_sql(self.session.code)
-        for obj in all_data:
-            if (
-                obj["batch"] == target_batch_idx
-                and obj["role"] == PRODUCER
-                and obj["partner_id"] == l["id_in_group"]
-                and obj["id_in_group"] == l["partner_id"]
-                and obj["condition"] == l["condition"]
-            ):
-                return obj
-        return dict(sentences="[]")
 
     def update_batch(self):
         if not self.link_id:
             return
         updates = {}
         if self.inner_role == PRODUCER:
-            updates["sentences"] = self.producer_decision
+            updates["sentences"] = self.producer_decision or "[]"
         if self.inner_role == INTERPRETER:
-            updates["rewards"] = self.interpreter_decision
+            updates["rewards"] = self.interpreter_decision or ""
         if updates:
             sql_update_batch(self.link_id, **updates)
 
@@ -217,18 +235,22 @@ class Player(BasePlayer):
         self.subsession.check_for_batch_completion()
 
     def get_full_sentences(self):
-        prefix = self.session.vars.get("prefix", "")
+        prefix = self.session.vars.get("prefix") or ""
         suffixes = self.session.vars.get("suffixes") or []
         sentences = self.get_sentences_data() or []
-        # Filter valid sentences
-        sentences = [
-            sub for sub in sentences if isinstance(sub, list) and "" not in sub
-        ]
+
+        # keep only list rows with no empty strings
+        cleaned = []
+        for sub in sentences:
+            if not isinstance(sub, list):
+                continue
+            if any(str(x).strip() == "" for x in sub):
+                continue
+            cleaned.append([str(x).strip() for x in sub])
+
         res = []
-        for sentence in sentences:
-            expansion = [
-                str(item) for pair in zip(sentence, suffixes) for item in pair
-            ]
+        for sentence in cleaned:
+            expansion = [str(item) for pair in zip(sentence, suffixes) for item in pair]
             if prefix:
                 expansion.insert(0, prefix)
             res.append(" ".join(expansion))
@@ -238,13 +260,13 @@ class Player(BasePlayer):
         l = self.get_linked_batch()
         if not l:
             return ""
-        image_name = l["image"]
+        image_name = l.get("image")
         if not image_name:
             return ""
-        ext = self.session.vars.get("extension", "png")
-        if not image_name.lower().endswith(f".{ext}"):
+        ext = self.session.vars.get("extension") or "png"
+        if not str(image_name).lower().endswith(f".{ext}"):
             image_name = f"{image_name}.{ext}"
-        base = self.session.vars.get("s3path_base", "").rstrip("/")
+        base = (self.session.vars.get("s3path_base") or "").rstrip("/")
         if "amazonaws.com" in base:
             base = base.replace("/practice", "")
         return f"{base}/{image_name}"
@@ -253,61 +275,52 @@ class Player(BasePlayer):
         session = self.session
         subsession = self.subsession
 
-        # Always load batch data once
         all_data = get_all_batches_sql(session.code)
 
-        # --- First round: choose one (batch, id_in_group) "line" ---
+        # First round: claim a (batch, id_in_group)
         if self.round_number == 1:
-            # all rows of the currently active batch that are not yet used
             candidates = [
                 b for b in all_data
-                if b['batch'] == subsession.active_batch
-                and not b['busy']
-                and b['owner_code'] == ""
+                if b.get("batch") == subsession.active_batch
+                and not b.get("busy")
+                and (b.get("owner_code") or "") == ""
             ]
 
             if not candidates:
                 self.faulty = True
                 return
 
-            # Deterministic choice: lowest id_in_group
-            candidates.sort(key=lambda b: b['id_in_group'])
+            candidates.sort(key=lambda b: int(b.get("id_in_group") or 0))
             free = candidates[0]
 
-            chosen_batch = free['batch']
-            chosen_id = free['id_in_group']
-
-            # optional: remember for debugging / analysis
+            chosen_batch = free["batch"]
+            chosen_id = free["id_in_group"]
             self.batch = chosen_batch
 
-            # IMPORTANT: mark *all* rows for this (batch, id_in_group)
             for b in all_data:
-                if b['batch'] == chosen_batch and b['id_in_group'] == chosen_id:
-                    sql_update_batch(b['id'], busy=True, owner_code=self.participant.code)
+                if b.get("batch") == chosen_batch and b.get("id_in_group") == chosen_id:
+                    sql_update_batch(b["id"], busy=True, owner_code=self.participant.code)
 
-            # reload to see updated owner_code/busy (optional but clean)
             all_data = get_all_batches_sql(session.code)
 
-        # --- All rounds: find the row for this participant & round ---
+        # Find my row for this round
         my_row = None
         for b in all_data:
             if (
-                b['owner_code'] == self.participant.code
-                and b['round_number'] == self.round_number
+                b.get("owner_code") == self.participant.code
+                and int(b.get("round_number") or 0) == int(self.round_number)
             ):
                 my_row = b
                 break
 
         if not my_row:
-            # This should not happen if the Excel and num_rounds line up
             self.faulty = True
             return
 
-        self.link_id = my_row['id']
-        self.inner_role = my_row['role']
+        self.link_id = my_row["id"]
+        self.inner_role = my_row["role"]
         self.inner_sentences = json.dumps(self.get_sentences_data())
 
-        # Prolific label handling (unchanged)
         if self.round_number == 1 and session.config.get("for_prolific"):
             p = self.participant
             vars_ = p.vars
@@ -316,7 +329,6 @@ class Player(BasePlayer):
                 p.label = vars_.get("prolific_session_id")
 
 
-# --- Creating Session ---
 def creating_session(subsession: Subsession):
     session = subsession.session
     if subsession.round_number != 1:
@@ -330,12 +342,10 @@ def creating_session(subsession: Subsession):
         raise RuntimeError("Missing filename")
 
     from reading_xls.get_data import get_data
-
     excel_data = get_data(filename)
     df = excel_data.get("data")
     session.vars["user_data"] = df
 
-    # optional: log max group_enumeration; should be 80
     max_round = int(df["group_enumeration"].max())
     logger.info(f"img_desc: max group_enumeration in data = {max_round}")
 
@@ -355,39 +365,25 @@ def creating_session(subsession: Subsession):
             sentences=r.get("sentences"),
         )
 
-    max_round = int(df["group_enumeration"].max())
-    logger.info(f"img_desc: max group_enumeration in data = {max_round}")
-
     settings = excel_data.get("settings") or {}
 
-    # Robust Dictionary Creation
     clean_settings = {}
     for k, v in settings.items():
         clean_settings[normalize_key(k)] = v
     session.vars["user_settings"] = clean_settings
 
-    for k in [
-        "s3path_base",
-        "extension",
-        "prefix",
-        "interpreter_choices",
-        "interpreter_title",
-    ]:
+    for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title"]:
         session.vars[k] = clean_settings.get(normalize_key(k))
 
     session.vars["suffixes"] = clean_settings.get("suffixes") or []
 
-    # Robust Allowed Values
     allowed_values = []
     i = 1
     while True:
         key = f"allowed_values_{i}"
         val = clean_settings.get(key)
-
         if val:
-            allowed_values.append(
-                [x.strip() for x in str(val).split(";") if x.strip()]
-            )
+            allowed_values.append([x.strip() for x in str(val).split(";") if x.strip()])
         else:
             if i > 5:
                 break
@@ -396,7 +392,6 @@ def creating_session(subsession: Subsession):
     session.vars["allowed_values"] = allowed_values
 
 
-# --- Pages ---
 class FaultyCatcher(Page):
     @staticmethod
     def is_displayed(player):
@@ -409,7 +404,6 @@ class FaultyCatcher(Page):
 
 
 class Q(Page):
-    instructions = True
     form_model = "player"
 
     @staticmethod
@@ -422,27 +416,52 @@ class Q(Page):
         if player.faulty:
             return False
 
-        # Use app-local constant, not shared session vars
         return player.round_number <= Constants.num_rounds
 
     @staticmethod
     def get_form_fields(player):
-        # We rely on oTree forms to read producer_decision / interpreter_decision
         role = player.field_maybe_none("inner_role")
-
         if role == PRODUCER:
             return ["producer_decision"]
-        elif role == INTERPRETER:
+        if role == INTERPRETER:
             return ["interpreter_decision"]
         return []
 
     @staticmethod
     def vars_for_template(player):
+        # SAFE defaults
+        choices = player.session.vars.get("interpreter_choices") or []
+        if isinstance(choices, str):
+            # allow "a;b;c;d" style
+            choices = [x.strip() for x in choices.split(";") if x.strip()]
+
+        title = player.session.vars.get("interpreter_title") or "Buy medals:"
+
         return dict(
             d=player.get_linked_batch(),
             allowed_values=player.session.vars.get("allowed_values", []),
             suffixes=player.session.vars.get("suffixes", []),
+            interpreter_choices=choices,
+            interpreter_title=title,
         )
+
+    @staticmethod
+    def error_message(player, values):
+        role = player.field_maybe_none("inner_role")
+
+        # Producer must submit at least one complete row (server-side safety)
+        if role == PRODUCER:
+            raw = (values.get("producer_decision") or "").strip()
+            if not raw or raw in ("[]", "null"):
+                return "Please write at least one complete sentence."
+
+        # Interpreter must submit something non-empty (server-side safety)
+        if role == INTERPRETER:
+            raw = (values.get("interpreter_decision") or "").strip()
+            if not raw or raw in ("[]", "null"):
+                return "Please choose Yes/No for every row before continuing."
+
+        return None
 
     @staticmethod
     def before_next_page(player, timeout_happened):
@@ -455,9 +474,9 @@ class Feedback(Page):
     form_model = "player"
     form_fields = ["feedback"]
 
-    def is_displayed(self):
-        # Feedback only at the end of the main experiment
-        return self.round_number == Constants.num_rounds
+    @staticmethod
+    def is_displayed(player):
+        return player.round_number == Constants.num_rounds
 
 
 class FinalForProlific(Page):
@@ -468,7 +487,6 @@ class FinalForProlific(Page):
         )
 
     def get(self):
-        # Safely read possibly-null DB field
         url = self.player.field_maybe_none("full_return_url")
         if url:
             return redirect(url)
