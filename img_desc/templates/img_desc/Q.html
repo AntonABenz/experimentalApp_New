@@ -9,42 +9,44 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
 <style>
     [v-cloak] { display: none; }
 
-    /* Header + help */
+    /* Header */
     .page-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
+        margin-bottom: 20px;
     }
 
     .help-btn {
-        font-size: 1.5rem;
-        font-weight: bold;
-        cursor: pointer;
-        border: 1px solid #999;
-        border-radius: 50%;
         width: 32px;
         height: 32px;
+        border-radius: 50%;
+        border: 1px solid #999;
+        background: #f8f9fa;
+        font-weight: bold;
         text-align: center;
         line-height: 28px;
-        background: #f8f9fa;
+        cursor: pointer;
     }
 
     /* Producer */
     .input-group { max-width: fit-content; margin: 0 auto; }
-    .input-kids  { min-width: 200px; }
+    .input-kids { min-width: 200px; }
+    .clean-row { margin-bottom: 10px; }
 
     .vocabulary-box {
         border: 1px solid #ccc;
-        background-color: #f8f9fa;
+        background: #f8f9fa;
         padding: 20px;
         border-radius: 5px;
         margin-bottom: 25px;
     }
 
-    .clean-row { margin-bottom: 10px; }
-
     /* Interpreter */
-    table { max-width: 700px; margin: 0 auto; }
+    table {
+        max-width: 750px;
+        margin: 0 auto;
+    }
 
     /* Modal */
     .modal-overlay {
@@ -54,11 +56,11 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         display: flex;
         align-items: center;
         justify-content: center;
-        z-index: 1000;
+        z-index: 2000;
     }
 
     .modal-box {
-        background: #fff;
+        background: white;
         width: 90%;
         max-width: 900px;
         height: 90%;
@@ -93,7 +95,7 @@ window.props = {
 <div id="app" v-cloak>
 
     <!-- HEADER -->
-    <div class="page-header mb-3">
+    <div class="page-header">
         <h3>Task</h3>
         <div class="help-btn" @click="showHelp = true">?</div>
     </div>
@@ -144,7 +146,7 @@ window.props = {
                     </div>
                     <button class="btn btn-outline-secondary"
                             @click.prevent="addItem"
-                            :disabled="items.length >= 5">+</button>
+                            :disabled="items.length >= maxItems">+</button>
                     <button class="btn btn-outline-danger"
                             @click.prevent="removeItem(idx)"
                             :disabled="items.length <= 1">-</button>
@@ -160,10 +162,15 @@ window.props = {
     <div v-else>
 
         <h4 class="text-center mb-3">
-            [[ props.interpreter_title || 'Buy medals' ]]
+            [[ props.interpreter_title || 'Buy medals:' ]]
         </h4>
 
-        <table class="table table-bordered">
+        <!-- HARD GUARANTEE -->
+        <div v-if="props.full_sentences.length === 0" class="alert alert-danger text-center">
+            Internal error: no sentences received. Please contact the experimenter.
+        </div>
+
+        <table v-else class="table table-bordered">
             <thead>
                 <tr>
                     <th>Description</th>
@@ -174,8 +181,12 @@ window.props = {
             <tbody>
                 <tr v-for="(s, i) in props.full_sentences" :key="i">
                     <td>[[ s ]]</td>
-                    <td><input type="radio" :name="'interp_'+i" value="Yes" required></td>
-                    <td><input type="radio" :name="'interp_'+i" value="No" required></td>
+                    <td>
+                        <input type="radio" :name="'interp_'+i" value="Yes" required>
+                    </td>
+                    <td>
+                        <input type="radio" :name="'interp_'+i" value="No" required>
+                    </td>
                 </tr>
             </tbody>
         </table>
@@ -199,10 +210,12 @@ window.props = {
 const app = Vue.createApp({
     data() {
         const p = window.props;
-        let suffixes = p.suffixes || ["",""];
+        const suffixes = p.suffixes || ["", ""];
+
         return {
             props: p,
-            items: [{ fields: suffixes.map(s => ({ value:"", suffix:s })) }],
+            items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
+            maxItems: 5,
             showHelp: false,
             errorMsg: ""
         };
@@ -216,22 +229,24 @@ const app = Vue.createApp({
     },
     methods: {
         addItem() {
-            if (this.items.length < 5) {
+            if (this.items.length < this.maxItems) {
                 this.items.push({
-                    fields: this.props.suffixes.map(s => ({ value:"", suffix:s }))
+                    fields: this.props.suffixes.map(s => ({ value: "", suffix: s }))
                 });
             }
         },
         removeItem(i) {
-            if (this.items.length > 1) this.items.splice(i,1);
+            if (this.items.length > 1) this.items.splice(i, 1);
         },
         handleNext() {
             this.errorMsg = "";
 
             if (this.props.role === "P") {
-                const firstComplete =
-                    this.items[0].fields.every(f => f.value.trim());
-                if (!firstComplete) {
+                const completeRows = this.items.filter(row =>
+                    row.fields.every(f => f.value.trim())
+                );
+
+                if (completeRows.length === 0) {
                     this.errorMsg = "Please write at least one complete sentence.";
                     return;
                 }
@@ -240,6 +255,7 @@ const app = Vue.createApp({
                     const vals = row.fields.map(f => f.value.trim());
                     return vals.some(v => v) && !vals.every(v => v);
                 });
+
                 if (partial) {
                     this.errorMsg = "Please complete or remove partial sentences.";
                     return;
