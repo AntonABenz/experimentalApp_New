@@ -26,6 +26,7 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         text-align: center;
         line-height: 30px;
         cursor: pointer;
+        user-select: none;
     }
 
     .input-group { max-width: fit-content; margin: 0 auto; }
@@ -99,107 +100,128 @@ window.props = {
 
 <div id="app" v-cloak>
 
-<div class="page-header">
-    <h3>Task</h3>
-    <div class="help-btn" @click="showHelp=true">?</div>
-</div>
+  <div class="page-header">
+      <h3>Task</h3>
+      <div class="help-btn" @click="showHelp=true">?</div>
+  </div>
 
-<!-- HELP MODAL -->
-<div v-if="showHelp" class="modal-overlay" @click.self="showHelp=false">
-    <div class="modal-box">
-        <div class="modal-header">
-            <button type="button" class="btn btn-sm btn-danger" @click="showHelp=false">Close</button>
-        </div>
-        <div class="modal-body">
-            <iframe :src="props.instructions_url"
-                    style="width:100%;height:100%;border:none;"></iframe>
-        </div>
-    </div>
-</div>
+  <!-- HELP MODAL -->
+  <div v-if="showHelp" class="modal-overlay" @click.self="showHelp=false">
+      <div class="modal-box">
+          <div class="modal-header">
+              <button type="button" class="btn btn-sm btn-danger" @click="showHelp=false">Close</button>
+          </div>
+          <div class="modal-body">
+              <iframe :src="props.instructions_url"
+                      style="width:100%;height:100%;border:none;"></iframe>
+          </div>
+      </div>
+  </div>
 
-<!-- ================= PRODUCER ================= -->
-<div v-if="props.role === 'P'">
+  <!-- ================= PRODUCER ================= -->
+  <div v-if="props.role === 'P'">
 
-    <div class="text-center my-4">
-        <img src="{{ player.get_image_url }}"
-             style="max-width:100%;max-height:520px;border:1px solid #ddd;">
-    </div>
+      <div class="text-center my-4">
+          <img src="{{ player.get_image_url }}"
+               style="max-width:100%;max-height:520px;border:1px solid #ddd;">
+      </div>
 
-    <div class="vocabulary-box text-center">
-        <h5>Allowed Vocabulary</h5>
-        <div class="row">
-            <div class="col-md-6">
-                <div v-for="v in props.allowedValues[0]">[[ v ]]</div>
-            </div>
-            <div class="col-md-6">
-                <div v-for="v in props.allowedValues[1]">[[ v ]]</div>
-            </div>
-        </div>
-    </div>
+      <div class="vocabulary-box text-center">
+          <h5>Allowed Vocabulary</h5>
+          <div class="row">
+              <div class="col-md-6">
+                  <div v-for="(v,idx) in props.allowedValues[0]" :key="'av1-'+idx">[[ v ]]</div>
+              </div>
+              <div class="col-md-6">
+                  <div v-for="(v,idx) in props.allowedValues[1]" :key="'av2-'+idx">[[ v ]]</div>
+              </div>
+          </div>
+      </div>
 
-    <div class="text-center">
-        <div v-for="(item, i) in items" :key="i" class="clean-row">
-            <div class="input-group">
-                <div v-for="(f, j) in item.fields" :key="j" class="d-flex">
-                    <input class="form-control input-kids" v-model="f.value" placeholder="...">
-                    <span class="mx-2">[[ f.suffix ]]</span>
-                </div>
-                <button type="button" class="btn btn-outline-secondary"
-                        @click="addItem" :disabled="items.length>=maxItems">+</button>
-                <button type="button" class="btn btn-outline-danger"
-                        @click="removeItem(i)" :disabled="items.length<=1">-</button>
-            </div>
-        </div>
-    </div>
+      <div class="text-center">
+          <div v-for="(item, i) in items" :key="i" class="clean-row">
+              <div class="input-group">
+                  <div v-for="(f, j) in item.fields" :key="j" class="d-flex align-items-baseline">
+                      <input class="form-control input-kids"
+                             v-model="f.value"
+                             placeholder="..."
+                             autocomplete="off">
+                      <span class="mx-2">[[ f.suffix ]]</span>
+                  </div>
 
-    <input type="hidden" name="producer_decision" :value="producerPayload">
+                  <button type="button"
+                          class="btn btn-outline-secondary"
+                          @click="addItem"
+                          :disabled="items.length>=maxItems">+</button>
 
-</div>
+                  <button type="button"
+                          class="btn btn-outline-danger"
+                          @click="removeItem(i)"
+                          :disabled="items.length<=1">-</button>
+              </div>
+          </div>
+      </div>
 
-<!-- ================= INTERPRETER ================= -->
-<div v-else>
+      <input type="hidden" name="producer_decision" :value="producerPayload">
 
-    <h4 class="text-center mb-3">[[ props.interpreter_title ]]</h4>
+  </div>
 
-    <div class="sentence-card">
-        <div v-for="s in props.full_sentences">[[ s ]]</div>
-    </div>
+  <!-- ================= INTERPRETER ================= -->
+  <div v-else>
 
-    <h5 class="text-center mb-3">Buy medals:</h5>
+      <h4 class="text-center mb-3">[[ props.interpreter_title ]]</h4>
 
-    <table class="table table-bordered buy-table">
-        <thead>
-            <tr>
-                <th>Description</th>
-                <th class="text-center">Yes</th>
-                <th class="text-center">No</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr v-for="(choice,i) in props.interpreter_choices" :key="i">
-                <td>[[ choice ]]</td>
-                <td class="text-center">
-                    <input type="radio" :name="'row_'+i" value="Yes" v-model="interpRows[i]">
-                </td>
-                <td class="text-center">
-                    <input type="radio" :name="'row_'+i" value="No" v-model="interpRows[i]">
-                </td>
-            </tr>
-        </tbody>
-    </table>
+      <div v-if="props.full_sentences.length === 0" class="alert alert-danger text-center">
+          Internal error: no sentences received. Please contact the experimenter.
+      </div>
 
-    <input type="hidden" name="interpreter_decision" :value="interpreterPayload">
+      <div v-else class="sentence-card">
+          <div v-for="(s,idx) in props.full_sentences" :key="'fs-'+idx">[[ s ]]</div>
+      </div>
 
-    <!-- ONLY HERE -->
-    {{ formfield_errors 'interpreter_decision' }}
+      <h5 class="text-center mb-3">Buy medals:</h5>
 
-</div>
+      <table class="table table-bordered buy-table">
+          <thead>
+              <tr>
+                  <th>Description</th>
+                  <th class="text-center">Yes</th>
+                  <th class="text-center">No</th>
+              </tr>
+          </thead>
+          <tbody>
+              <tr v-for="(choice,i) in props.interpreter_choices" :key="'ic-'+i">
+                  <td>[[ choice ]]</td>
+                  <td class="text-center">
+                      <input type="radio"
+                             :name="'row_'+i"
+                             value="Yes"
+                             v-model="interpRows[i]">
+                  </td>
+                  <td class="text-center">
+                      <input type="radio"
+                             :name="'row_'+i"
+                             value="No"
+                             v-model="interpRows[i]">
+                  </td>
+              </tr>
+          </tbody>
+      </table>
 
-<p v-if="errorMsg" class="alert alert-danger text-center mt-3">[[ errorMsg ]]</p>
+      <input type="hidden" name="interpreter_decision" :value="interpreterPayload">
 
-<div class="text-center mt-4">
-    <button type="button" class="btn btn-primary btn-lg" @click="handleNext">Next</button>
-</div>
+      <!-- IMPORTANT: this must be server-side conditional, NOT Vue -->
+      {% if player.inner_role == 'I' %}
+          {{ formfield_errors 'interpreter_decision' }}
+      {% endif %}
+
+  </div>
+
+  <p v-if="errorMsg" class="alert alert-danger text-center mt-3">[[ errorMsg ]]</p>
+
+  <div class="text-center mt-4">
+      <button type="button" class="btn btn-primary btn-lg" @click="handleNext">Next</button>
+  </div>
 
 </div>
 
@@ -207,44 +229,70 @@ window.props = {
 <script>
 const app = Vue.createApp({
     data() {
-        const p = window.props;
-        const suffixes = p.suffixes || ["",""];
+        const p = window.props || {};
+        const suffixes = Array.isArray(p.suffixes) && p.suffixes.length ? p.suffixes : ["", ""];
+        const ic = Array.isArray(p.interpreter_choices) ? p.interpreter_choices : [];
+
         return {
             props: p,
-            items: [{ fields: suffixes.map(s=>({value:"",suffix:s})) }],
+            items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
             maxItems: 5,
-            interpRows: Array((p.interpreter_choices||[]).length).fill(null),
+            interpRows: Array(ic.length).fill(null),
             errorMsg: "",
             showHelp: false
         };
     },
-    computed:{
-        producerPayload(){
-            return JSON.stringify(this.items.map(i=>i.fields.map(f=>f.value)));
+    computed: {
+        producerPayload() {
+            return JSON.stringify(this.items.map(i => i.fields.map(f => f.value)));
         },
-        interpreterPayload(){
+        interpreterPayload() {
             return JSON.stringify(
-                this.props.interpreter_choices.map((c,i)=>({
-                    choice:c,
-                    answer:this.interpRows[i]
+                (this.props.interpreter_choices || []).map((choice, i) => ({
+                    choice,
+                    answer: this.interpRows[i]
                 }))
             );
         }
     },
-    methods:{
-        addItem(){ if(this.items.length<this.maxItems) this.items.push({fields:this.items[0].fields.map(f=>({value:"",suffix:f.suffix}))}); },
-        removeItem(i){ if(this.items.length>1) this.items.splice(i,1); },
-        handleNext(){
-            this.errorMsg="";
-            if(this.props.role==="I" && this.interpRows.some(v=>!v)){
-                this.errorMsg="Please answer Yes/No for every row.";
-                return;
+    methods: {
+        addItem() {
+            if (this.items.length >= this.maxItems) return;
+            const suffixes = this.items[0].fields.map(f => f.suffix);
+            this.items.push({ fields: suffixes.map(s => ({ value: "", suffix: s })) });
+        },
+        removeItem(i) {
+            if (this.items.length <= 1) return;
+            this.items.splice(i, 1);
+        },
+        handleNext() {
+            this.errorMsg = "";
+
+            // Interpreter must answer every row
+            if (this.props.role === "I") {
+                if (this.interpRows.some(v => !v)) {
+                    this.errorMsg = "Please answer Yes/No for every row.";
+                    return;
+                }
             }
-            document.querySelector("form").submit();
+
+            // Producer must write at least 1 complete sentence (optional but recommended)
+            if (this.props.role === "P") {
+                const completeRows = this.items.filter(row =>
+                    row.fields.every(f => String(f.value || "").trim())
+                );
+                if (completeRows.length === 0) {
+                    this.errorMsg = "Please write at least one complete sentence (or remove empty rows).";
+                    return;
+                }
+            }
+
+            const outerForm = document.querySelector("form");
+            if (outerForm) outerForm.submit();
         }
     }
 });
-app.config.compilerOptions.delimiters=["[[","]]"];
+app.config.compilerOptions.delimiters = ["[[", "]]"];
 app.mount("#app");
 </script>
 {% endblock %}
