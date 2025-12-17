@@ -1,5 +1,5 @@
 {% extends "otree/Page.html" %}
-{% load otree %}
+{% load otree static %}
 
 {% block title %}
 Round {{ player.round_number }} / {{ Constants.num_rounds }}
@@ -7,313 +7,251 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
 
 {% block content %}
 <style>
-  [v-cloak] { display: none; }
+    [v-cloak] { display: none; }
 
-  /* Help button */
-  .help-btn-wrap{
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    z-index: 2000;
-  }
-  .help-btn{
-    width: 44px;
-    height: 44px;
-    border-radius: 999px;
-    font-weight: 700;
-  }
+    /* Header + help */
+    .page-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
 
-  /* Modal */
-  .modal-backdrop-custom {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.55);
-    z-index: 3000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 16px;
-  }
-  .modal-content-custom {
-    background: #fff;
-    width: min(1100px, 96vw);
-    max-height: 92vh;
-    overflow-y: auto;
-    border-radius: 10px;
-    padding: 18px;
-    position: relative;
-  }
-  .modal-close-btn{
-    position: sticky;
-    top: 0;
-    float: right;
-    z-index: 10;
-  }
+    .help-btn {
+        font-size: 1.5rem;
+        font-weight: bold;
+        cursor: pointer;
+        border: 1px solid #999;
+        border-radius: 50%;
+        width: 32px;
+        height: 32px;
+        text-align: center;
+        line-height: 28px;
+        background: #f8f9fa;
+    }
 
-  /* Producer */
-  .input-group { max-width: fit-content; margin: 0 auto; }
-  .input-kids  { min-width: 200px; }
+    /* Producer */
+    .input-group { max-width: fit-content; margin: 0 auto; }
+    .input-kids  { min-width: 200px; }
 
-  .vocabulary-box {
-    border: 1px solid #ccc;
-    background-color: #f8f9fa;
-    padding: 20px;
-    border-radius: 5px;
-    margin-bottom: 25px;
-  }
-  .vocab-column { font-size: 1.1rem; line-height: 1.6; text-align: left; }
-  .vocab-item { display: block; margin-bottom: 2px; }
+    .vocabulary-box {
+        border: 1px solid #ccc;
+        background-color: #f8f9fa;
+        padding: 20px;
+        border-radius: 5px;
+        margin-bottom: 25px;
+    }
 
-  @media (min-width: 768px) {
-    .vocab-column:first-child { border-right: 2px solid #e9ecef; }
-  }
-  .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
+    .clean-row { margin-bottom: 10px; }
 
-  /* Interpreter */
-  .sentence-card {
-    background: #e3f2fd;
-    border-left: 5px solid #2196f3;
-    padding: 18px 20px;
-    margin: 18px 0;
-    font-size: 1.1rem;
-    text-align: center;
-  }
-  .buy-medals-title{
-    text-align:center;
-    font-weight: 700;
-    margin-top: 12px;
-    margin-bottom: 8px;
-    font-size: 1.25rem;
-  }
-  .table th, .table td { vertical-align: middle; }
+    /* Interpreter */
+    table { max-width: 700px; margin: 0 auto; }
+
+    /* Modal */
+    .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+    }
+
+    .modal-box {
+        background: #fff;
+        width: 90%;
+        max-width: 900px;
+        height: 90%;
+        border-radius: 6px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .modal-header {
+        padding: 10px;
+        text-align: right;
+        border-bottom: 1px solid #ccc;
+    }
+
+    .modal-body {
+        flex: 1;
+    }
 </style>
 
 <script>
-  window.props = {
+window.props = {
     role: "{{ player.role }}",
     allowedValues: {{ allowed_values|json }},
     suffixes: {{ suffixes|json }},
     full_sentences: {{ player.get_full_sentences|json }},
-    interpreter_choices: {{ session.vars.interpreter_choices|json }}
-  };
+    interpreter_choices: {{ session.vars.interpreter_choices|json }},
+    interpreter_title: "{{ session.vars.interpreter_title }}"
+};
 </script>
 
 <div id="app" v-cloak>
 
-  <!-- Help button -->
-  <div class="help-btn-wrap">
-    <button type="button" class="btn btn-primary help-btn" @click="showHelp = true">?</button>
-  </div>
-
-  <!-- Help modal: direct iframe (same as Instructions.html) -->
-  <div v-if="showHelp" class="modal-backdrop-custom" @click.self="showHelp=false">
-    <div class="modal-content-custom">
-      <button type="button" class="btn btn-sm btn-danger modal-close-btn" @click="showHelp=false">✕</button>
-
-      <div class="card bg-light m-1">
-        <div class="card-body">
-          <iframe
-            src="https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
-            width="100%"
-            height="800px"
-            style="border: 1px solid #ccc;">
-          </iframe>
-        </div>
-      </div>
-
-    </div>
-  </div>
-
-  <!-- PRODUCER -->
-  <div v-if="props.role === 'P'">
-
-    <div class="text-center my-4">
-      <img src="{{ player.get_image_url }}"
-           style="max-width: 100%; height: auto; max-height: 500px; border:1px solid #ddd; padding:5px;">
+    <!-- HEADER -->
+    <div class="page-header mb-3">
+        <h3>Task</h3>
+        <div class="help-btn" @click="showHelp = true">?</div>
     </div>
 
-    <div class="vocabulary-box text-center">
-      <h5 class="mb-4">Allowed Vocabulary</h5>
-
-      <div class="row justify-content-center">
-        <div class="col-md-5 vocab-column px-4">
-          <div v-if="props.allowedValues && props.allowedValues[0] && props.allowedValues[0].length">
-            <div v-for="(val, idx) in props.allowedValues[0]" :key="'pav1-'+idx" class="vocab-item">
-              [[ val ]]
+    <!-- HELP MODAL -->
+    <div v-if="showHelp" class="modal-overlay" @click.self="showHelp=false">
+        <div class="modal-box">
+            <div class="modal-header">
+                <button class="btn btn-sm btn-danger" @click="showHelp=false">Close</button>
             </div>
-          </div>
-        </div>
-
-        <div class="col-md-5 vocab-column px-4">
-          <div v-if="props.allowedValues && props.allowedValues[1] && props.allowedValues[1].length">
-            <div v-for="(val, idx) in props.allowedValues[1]" :key="'pav2-'+idx" class="vocab-item">
-              [[ val ]]
+            <div class="modal-body">
+                <iframe
+                    src="/p/{{ participant.code }}/start/Instructions/1"
+                    style="width:100%; height:100%; border:none;">
+                </iframe>
             </div>
-          </div>
         </div>
-      </div>
     </div>
 
-    <div class="text-center mt-4">
-      <div v-for="(item, itemIndex) in items"
-           :key="'row-'+itemIndex"
-           class="clean-row d-flex justify-content-center">
-        <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
+    <!-- ================= PRODUCER ================= -->
+    <div v-if="props.role === 'P'">
 
-          <div v-for="(field, fieldIndex) in item.fields"
-               :key="'f-'+itemIndex+'-'+fieldIndex"
-               class="d-flex align-items-baseline">
-            <input type="text"
-                   v-model="field.value"
-                   class="form-control input-kids"
-                   placeholder="..."
-                   autocomplete="off">
-            <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
-          </div>
-
-          <button type="button"
-                  class="btn btn-outline-secondary ml-2"
-                  @click.prevent="addItem"
-                  :disabled="items.length >= maxProducerRows">+</button>
-
-          <button type="button"
-                  class="btn btn-outline-danger ml-1"
-                  @click.prevent="removeItem(itemIndex)"
-                  :disabled="items.length <= 1">-</button>
-
+        <div class="text-center my-4">
+            <img src="{{ player.get_image_url }}"
+                 style="max-width:100%; max-height:500px; border:1px solid #ddd;">
         </div>
-      </div>
+
+        <div class="vocabulary-box text-center">
+            <h5>Allowed Vocabulary</h5>
+            <div class="row">
+                <div class="col-md-6">
+                    <div v-for="v in props.allowedValues[0]">[[ v ]]</div>
+                </div>
+                <div class="col-md-6">
+                    <div v-for="v in props.allowedValues[1]">[[ v ]]</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="text-center">
+            <div v-for="(item, idx) in items" :key="idx" class="clean-row">
+                <div class="input-group">
+                    <div v-for="(f, j) in item.fields" :key="j" class="d-flex">
+                        <input class="form-control input-kids"
+                               v-model="f.value"
+                               placeholder="...">
+                        <span class="mx-2">[[ f.suffix ]]</span>
+                    </div>
+                    <button class="btn btn-outline-secondary"
+                            @click.prevent="addItem"
+                            :disabled="items.length >= 5">+</button>
+                    <button class="btn btn-outline-danger"
+                            @click.prevent="removeItem(idx)"
+                            :disabled="items.length <= 1">-</button>
+                </div>
+            </div>
+        </div>
+
+        <input type="hidden" name="producer_decision" :value="jsonPayload">
+
     </div>
 
-    <input type="hidden" name="producer_decision" :value="producerPayload">
+    <!-- ================= INTERPRETER ================= -->
+    <div v-else>
 
-  </div>
+        <h4 class="text-center mb-3">
+            [[ props.interpreter_title || 'Buy medals' ]]
+        </h4>
 
-  <!-- INTERPRETER -->
-  <div v-else-if="props.role === 'I'">
+        <table class="table table-bordered">
+            <thead>
+                <tr>
+                    <th>Description</th>
+                    <th>Yes</th>
+                    <th>No</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr v-for="(s, i) in props.full_sentences" :key="i">
+                    <td>[[ s ]]</td>
+                    <td><input type="radio" :name="'interp_'+i" value="Yes" required></td>
+                    <td><input type="radio" :name="'interp_'+i" value="No" required></td>
+                </tr>
+            </tbody>
+        </table>
 
-    <div class="buy-medals-title">Buy medals:</div>
-
-    <div class="sentence-card">
-      <div v-if="(props.full_sentences || []).length === 0">
-        <em>(Your partner did not produce any sentences)</em>
-      </div>
-      <div v-for="(s, i) in (props.full_sentences || [])" :key="'s-'+i">
-        [[ s ]]
-      </div>
     </div>
 
-    <table class="table table-bordered mt-4">
-      <thead>
-        <tr>
-          <th>Description</th>
-          <th class="text-center">Yes</th>
-          <th class="text-center">No</th>
-        </tr>
-      </thead>
-
-      <tbody>
-        <tr v-for="(label, idx) in (props.interpreter_choices || [])" :key="'c-'+idx">
-          <td>[[ label ]]</td>
-
-          <!-- IMPORTANT: same name per row => Yes/No exclusive within that row only -->
-          <td class="text-center">
-            <input type="radio"
-                   :name="'row_' + idx"
-                   value="yes"
-                   v-model="decisions[idx]">
-          </td>
-
-          <td class="text-center">
-            <input type="radio"
-                   :name="'row_' + idx"
-                   value="no"
-                   v-model="decisions[idx]">
-          </td>
-        </tr>
-      </tbody>
-    </table>
-
-    <input type="hidden" name="interpreter_decision" :value="interpreterPayload">
-
+    <!-- ERROR -->
     <p v-if="errorMsg" class="alert alert-danger text-center mt-3">
-      [[ errorMsg ]]
+        [[ errorMsg ]]
     </p>
 
-  </div>
-
-  <div class="text-center mt-5">
-    <button type="button" class="btn btn-primary btn-lg" @click="handleNext">
-      Next
-    </button>
-  </div>
+    <!-- NEXT -->
+    <div class="text-center mt-4">
+        <button class="btn btn-primary btn-lg" @click="handleNext">Next</button>
+    </div>
 
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
-  const app = Vue.createApp({
+const app = Vue.createApp({
     data() {
-      const p = window.props || {};
-
-      let suffixes = p.suffixes;
-      if (!Array.isArray(suffixes) || suffixes.length === 0) suffixes = ["", ""];
-
-      return {
-        props: p,
-        showHelp: false,
-        errorMsg: "",
-        maxProducerRows: 5,
-        suffixes,
-        items: [
-          { fields: suffixes.map(s => ({ value: "", suffix: s })) }
-        ],
-        decisions: {} // idx -> "yes"/"no"
-      };
+        const p = window.props;
+        let suffixes = p.suffixes || ["",""];
+        return {
+            props: p,
+            items: [{ fields: suffixes.map(s => ({ value:"", suffix:s })) }],
+            showHelp: false,
+            errorMsg: ""
+        };
     },
-
     computed: {
-      producerPayload() {
-        return JSON.stringify(this.items.map(item => item.fields.map(f => f.value)));
-      },
-      interpreterPayload() {
-        return JSON.stringify(this.decisions || {});
-      }
+        jsonPayload() {
+            return JSON.stringify(
+                this.items.map(i => i.fields.map(f => f.value))
+            );
+        }
     },
-
     methods: {
-      addItem() {
-        if (this.items.length < this.maxProducerRows) {
-          this.items.push({ fields: this.suffixes.map(s => ({ value: "", suffix: s })) });
-        }
-      },
-      removeItem(index) {
-        if (this.items.length > 1) this.items.splice(index, 1);
-      },
+        addItem() {
+            if (this.items.length < 5) {
+                this.items.push({
+                    fields: this.props.suffixes.map(s => ({ value:"", suffix:s }))
+                });
+            }
+        },
+        removeItem(i) {
+            if (this.items.length > 1) this.items.splice(i,1);
+        },
+        handleNext() {
+            this.errorMsg = "";
 
-      validateInterpreter() {
-        const choices = this.props.interpreter_choices || [];
-        for (let i = 0; i < choices.length; i++) {
-          if (!this.decisions[i]) {
-            this.errorMsg = "Please answer Yes/No for every row before continuing.";
-            return false;
-          }
-        }
-        this.errorMsg = "";
-        return true;
-      },
+            if (this.props.role === "P") {
+                const firstComplete =
+                    this.items[0].fields.every(f => f.value.trim());
+                if (!firstComplete) {
+                    this.errorMsg = "Please write at least one complete sentence.";
+                    return;
+                }
 
-      handleNext() {
-        if (this.props.role === "I") {
-          if (!this.validateInterpreter()) return;
+                const partial = this.items.some(row => {
+                    const vals = row.fields.map(f => f.value.trim());
+                    return vals.some(v => v) && !vals.every(v => v);
+                });
+                if (partial) {
+                    this.errorMsg = "Please complete or remove partial sentences.";
+                    return;
+                }
+            }
+
+            document.querySelector("form").submit();
         }
-        const outerForm = document.querySelector("form");
-        if (outerForm) outerForm.submit();
-      }
     }
-  });
-
-  app.config.compilerOptions.delimiters = ["[[", "]]"];
-  app.mount("#app");
+});
+app.config.compilerOptions.delimiters = ["[[", "]]"];
+app.mount("#app");
 </script>
+
 {% endblock %}
