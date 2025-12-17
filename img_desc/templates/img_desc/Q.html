@@ -65,16 +65,11 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
 
     /* Producer */
     .input-group { max-width: fit-content; margin: 0 auto; }
-    .input-kids { min-width: 200px; }
-    .clean-row { margin-bottom: 10px; }
-
-    .vocabulary-box {
-        border: 1px solid #ccc;
-        background: #f8f9fa;
-        padding: 18px;
-        border-radius: 6px;
-        margin-bottom: 22px;
-    }
+    
+    /* Increased width for dropdowns to make reading easier */
+    .input-kids { min-width: 220px; } 
+    
+    .clean-row { margin-bottom: 15px; }
 
     /* Interpreter */
     .sentence-card {
@@ -107,10 +102,8 @@ window.props = {
 
 <div id="app" v-cloak>
 
-    <!-- FIXED top-right help button -->
     <div class="help-fab" title="Help" @click="openHelp">?</div>
 
-    <!-- HELP MODAL (same page) -->
     <div v-if="showHelp" class="modal-overlay" @click.self="closeHelp">
         <div class="modal-box">
             <div class="modal-header">
@@ -118,7 +111,6 @@ window.props = {
                 <button type="button" class="btn btn-sm btn-danger" @click="closeHelp">Close</button>
             </div>
             <div class="modal-body">
-                <!-- key trick: bind :src and force refresh with cache-bust -->
                 <iframe
                     :src="helpSrc"
                     style="width:100%; height:100%; border:none;"
@@ -127,7 +119,6 @@ window.props = {
         </div>
     </div>
 
-    <!-- ================= PRODUCER ================= -->
     <div v-if="props.role === 'P'">
 
         <div class="text-center my-4">
@@ -135,36 +126,37 @@ window.props = {
                  style="max-width:100%;max-height:520px;border:1px solid #ddd;">
         </div>
 
-        <div class="vocabulary-box text-center">
-            <h5>Allowed Vocabulary</h5>
-            <div class="row">
-                <div class="col-md-6">
-                    <div v-for="(v,idx) in props.allowedValues[0]" :key="'av1-'+idx">[[ v ]]</div>
-                </div>
-                <div class="col-md-6">
-                    <div v-for="(v,idx) in props.allowedValues[1]" :key="'av2-'+idx">[[ v ]]</div>
-                </div>
-            </div>
-        </div>
-
         <div class="text-center">
             <div v-for="(item, i) in items" :key="i" class="clean-row">
                 <div class="input-group">
+                    
                     <div v-for="(f, j) in item.fields" :key="j" class="d-flex align-items-baseline">
-                        <input class="form-control input-kids"
+                        
+                        <select v-if="props.allowedValues[j] && props.allowedValues[j].length > 0"
+                                class="form-control input-kids"
+                                v-model="f.value">
+                            <option disabled value="">Select...</option>
+                            <option v-for="val in props.allowedValues[j]" :value="val">
+                                [[ val ]]
+                            </option>
+                        </select>
+
+                        <input v-else
+                               class="form-control input-kids"
                                v-model="f.value"
                                placeholder="..."
                                autocomplete="off">
-                        <span class="mx-2">[[ f.suffix ]]</span>
+                        
+                        <span class="mx-2 font-weight-bold">[[ f.suffix ]]</span>
                     </div>
 
                     <button type="button"
-                            class="btn btn-outline-secondary"
+                            class="btn btn-outline-secondary ml-2"
                             @click="addItem"
                             :disabled="items.length>=maxItems">+</button>
 
                     <button type="button"
-                            class="btn btn-outline-danger"
+                            class="btn btn-outline-danger ml-1"
                             @click="removeItem(i)"
                             :disabled="items.length<=1">-</button>
                 </div>
@@ -175,7 +167,6 @@ window.props = {
 
     </div>
 
-    <!-- ================= INTERPRETER ================= -->
     <div v-else>
 
         <h4 class="text-center mb-3">[[ props.interpreter_title ]]</h4>
@@ -243,6 +234,7 @@ const app = Vue.createApp({
 
         return {
             props: p,
+            // Start with 1 row
             items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
             maxItems: 5,
             interpRows: Array(ic.length).fill(null),
@@ -264,7 +256,6 @@ const app = Vue.createApp({
             );
         },
         helpSrc() {
-            // cache-bust so it reliably loads inside iframe
             const base = String(this.props.instructions_url || "");
             const joiner = base.includes("?") ? "&" : "?";
             return base + joiner + "v=" + this.helpNonce;
@@ -283,6 +274,7 @@ const app = Vue.createApp({
         },
         addItem() {
             if (this.items.length >= this.maxItems) return;
+            // Copy suffixes structure from the first item
             const suffixes = this.items[0].fields.map(f => f.suffix);
             this.items.push({ fields: suffixes.map(s => ({ value: "", suffix: s })) });
         },
@@ -301,11 +293,13 @@ const app = Vue.createApp({
             }
 
             if (this.props.role === "P") {
-                const completeRows = this.items.filter(row =>
-                    row.fields.every(f => String(f.value || "").trim())
+                // Check if ALL fields in existing rows are filled
+                const allFilled = this.items.every(row => 
+                    row.fields.every(f => String(f.value || "").trim() !== "")
                 );
-                if (completeRows.length === 0) {
-                    this.errorMsg = "Please write at least one complete sentence (or remove empty rows).";
+                
+                if (!allFilled) {
+                    this.errorMsg = "Please fill in all dropdown fields for your sentences.";
                     return;
                 }
             }
