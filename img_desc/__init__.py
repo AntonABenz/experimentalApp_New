@@ -153,34 +153,86 @@ class Player(BasePlayer):
                 return b
         return None
 
-    def get_previous_batch(self):
-        if self.inner_role != INTERPRETER:
-            return dict(sentences="[]")
-        l = self.get_linked_batch()
-        if not l or l["partner_id"] == 0:
-            return dict(sentences="[]")
+    # ---- robust partner lookup for interpreter ----
+    def _find_partner_producer_row_same_round(self, all_data, my_row):
+        if not my_row:
+            return None
+
+        batch_idx = my_row.get("batch")
+        rnd = my_row.get("round_number")
+        cond = my_row.get("condition")
+        my_id = my_row.get("id_in_group")
+        partner_id = my_row.get("partner_id")
+
+        candidates = [
+            r for r in all_data
+            if r.get("batch") == batch_idx
+            and r.get("round_number") == rnd
+            and r.get("condition") == cond
+            and r.get("role") == PRODUCER
+        ]
+
+        # interpreter.partner_id -> producer.id_in_group
+        if partner_id:
+            for r in candidates:
+                if r.get("id_in_group") == partner_id:
+                    return r
+
+        # producer.partner_id -> interpreter.id_in_group
+        for r in candidates:
+            if r.get("partner_id") == my_id:
+                return r
+
+        return None
+
+    def _find_partner_producer_row_previous_batch(self, all_data, my_row):
+        if not my_row:
+            return None
+
         target_batch_idx = self.subsession.active_batch - 1
-        all_data = get_all_batches_sql(self.session.code)
-        for obj in all_data:
-            if (
-                obj["batch"] == target_batch_idx
-                and obj["role"] == PRODUCER
-                and obj["partner_id"] == l["id_in_group"]
-                and obj["id_in_group"] == l["partner_id"]
-                and obj["condition"] == l["condition"]
-            ):
-                return obj
-        return dict(sentences="[]")
+        if target_batch_idx < 1:
+            return None
+
+        cond = my_row.get("condition")
+        my_id = my_row.get("id_in_group")
+        partner_id = my_row.get("partner_id")
+
+        candidates = [
+            r for r in all_data
+            if r.get("batch") == target_batch_idx
+            and r.get("condition") == cond
+            and r.get("role") == PRODUCER
+        ]
+
+        if partner_id:
+            for r in candidates:
+                if r.get("id_in_group") == partner_id or r.get("partner_id") == my_id:
+                    return r
+
+        for r in candidates:
+            if r.get("partner_id") == my_id:
+                return r
+
+        return None
 
     def get_sentences_data(self):
-        l = self.get_linked_batch()
-        if not l:
+        my_row = self.get_linked_batch()
+        if not my_row:
             return []
+
         try:
-            if l["partner_id"] == 0:
-                return json.loads(l["sentences"])
-            else:
-                return json.loads(self.get_previous_batch().get("sentences"))
+            if my_row.get("role") == PRODUCER:
+                return json.loads(my_row.get("sentences") or "[]")
+
+            all_data = get_all_batches_sql(self.session.code)
+            partner_row = self._find_partner_producer_row_same_round(all_data, my_row)
+            if not partner_row:
+                partner_row = self._find_partner_producer_row_previous_batch(all_data, my_row)
+
+            if not partner_row:
+                return []
+
+            return json.loads(partner_row.get("sentences") or "[]")
         except Exception:
             return []
 
@@ -208,7 +260,9 @@ class Player(BasePlayer):
         prefix = self.session.vars.get("prefix", "")
         suffixes = self.session.vars.get("suffixes") or []
         sentences = self.get_sentences_data() or []
+
         sentences = [sub for sub in sentences if isinstance(sub, list) and "" not in sub]
+
         res = []
         for sentence in sentences:
             expansion = [str(item) for pair in zip(sentence, suffixes) for item in pair]
@@ -221,15 +275,23 @@ class Player(BasePlayer):
         l = self.get_linked_batch()
         if not l:
             return ""
-        image_name = l["image"]
+
+        image_name = l.get("image")
         if not image_name:
             return ""
+
         ext = self.session.vars.get("extension", "png")
-        if not image_name.lower().endswith(f".{ext}"):
+        if not str(image_name).lower().endswith(f".{ext}"):
             image_name = f"{image_name}.{ext}"
+
         base = (self.session.vars.get("s3path_base") or "").rstrip("/")
         if "amazonaws.com" in base:
             base = base.replace("/practice", "")
+
+        if not base:
+            logger.warning("img_desc: s3path_base is empty; image cannot be rendered.")
+            return ""
+
         return f"{base}/{image_name}"
 
     def start(self):
@@ -257,20 +319,13 @@ class Player(BasePlayer):
 
             for b in all_data:
                 if b["batch"] == chosen_batch and b["id_in_group"] == chosen_id:
-                    sql_update_batch(
-                        b["id"],
-                        busy=True,
-                        owner_code=self.participant.code
-                    )
+                    sql_update_batch(b["id"], busy=True, owner_code=self.participant.code)
 
             all_data = get_all_batches_sql(session.code)
 
         my_row = None
         for b in all_data:
-            if (
-                b["owner_code"] == self.participant.code
-                and b["round_number"] == self.round_number
-            ):
+            if b["owner_code"] == self.participant.code and b["round_number"] == self.round_number:
                 my_row = b
                 break
 
@@ -280,6 +335,7 @@ class Player(BasePlayer):
 
         self.link_id = my_row["id"]
         self.inner_role = my_row["role"]
+
         self.inner_sentences = json.dumps(self.get_sentences_data())
 
         if self.round_number == 1 and session.config.get("for_prolific"):
@@ -327,38 +383,38 @@ def creating_session(subsession: Subsession):
         )
 
     settings = excel_data.get("settings") or {}
-
-    clean_settings = {}
-    for k, v in settings.items():
-        clean_settings[normalize_key(k)] = v
+    clean_settings = {normalize_key(k): v for k, v in settings.items()}
     session.vars["user_settings"] = clean_settings
 
-    # --- INSTRUCTIONS URL LOGIC START ---
+    # Instructions URL
     default_url = "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
-    
-    # Try to find a URL in settings; otherwise, use the default
-    url_from_settings = clean_settings.get(normalize_key("instructions_url"))
-    session.vars["instructions_url"] = url_from_settings if url_from_settings else default_url
-    # --- INSTRUCTIONS URL LOGIC END ---
+    session.vars["instructions_url"] = clean_settings.get("instructions_url") or default_url
 
-    for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title"]:
+    # Standard settings
+    for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title", "suffixes"]:
         session.vars[k] = clean_settings.get(normalize_key(k))
 
-    session.vars["suffixes"] = clean_settings.get("suffixes") or []
+    session.vars["suffixes"] = session.vars.get("suffixes") or []
 
+    # Allowed values + regexes per field index (1..5)
     allowed_values = []
-    i = 1
-    while True:
-        key = f"allowed_values_{i}"
-        val = clean_settings.get(key)
-        if val:
-            allowed_values.append([x.strip() for x in str(val).split(";") if x.strip()])
+    allowed_regexes = []
+    for i in range(1, 6):
+        v_key = f"allowed_values_{i}"
+        r_key = f"allowed_regex_{i}"
+
+        v = clean_settings.get(v_key)
+        rx = clean_settings.get(r_key)
+
+        if v:
+            allowed_values.append([x.strip() for x in str(v).split(";") if x.strip()])
         else:
-            if i > 5:
-                break
             allowed_values.append([])
-        i += 1
+
+        allowed_regexes.append(str(rx).strip() if rx else "")
+
     session.vars["allowed_values"] = allowed_values
+    session.vars["allowed_regexes"] = allowed_regexes
 
 
 class FaultyCatcher(Page):
@@ -391,7 +447,6 @@ class Q(Page):
     @staticmethod
     def get_form_fields(player):
         role = player.field_maybe_none("inner_role")
-
         if role == PRODUCER:
             return ["producer_decision"]
         elif role == INTERPRETER:
@@ -411,12 +466,11 @@ class Q(Page):
         interpreter_title = player.session.vars.get("interpreter_title") or "Buy medals:"
 
         return dict(
-            d=player.get_linked_batch(),
             allowed_values=player.session.vars.get("allowed_values", []),
+            allowed_regexes=player.session.vars.get("allowed_regexes", []),
             suffixes=player.session.vars.get("suffixes", []),
             interpreter_choices=interpreter_choices,
             interpreter_title=interpreter_title,
-            # Pass the Google Doc URL to the template
             instructions_url=player.session.vars.get("instructions_url"),
         )
 
