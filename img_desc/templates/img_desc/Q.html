@@ -9,28 +9,25 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
 <style>
     [v-cloak] { display: none; }
 
-    /* FIXED help button: always top-right */
+    /* fixed instructions button (top-right) */
     .help-fab {
         position: fixed;
         top: 14px;
         right: 14px;
-        width: 38px;
-        height: 38px;
-        border-radius: 50%;
-        border: 1px solid #999;
-        background: #ffffff;
-        font-weight: 800;
-        font-size: 18px;
-        line-height: 36px;
-        text-align: center;
+        padding: 6px 10px;
+        border-radius: 6px;
+        border: 1px solid #1b7f3a;
+        background: #28a745;
+        color: white;
+        font-weight: 700;
         cursor: pointer;
         z-index: 3000;
         box-shadow: 0 2px 8px rgba(0,0,0,0.12);
         user-select: none;
     }
-    .help-fab:hover { background: #f6f6f6; }
+    .help-fab:hover { filter: brightness(0.95); }
 
-    /* Modal overlay */
+    /* modal overlay */
     .modal-overlay {
         position: fixed;
         inset: 0;
@@ -41,9 +38,8 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         z-index: 4000;
         padding: 12px;
     }
-
     .modal-box {
-        background: white;
+        background: #fff;
         width: 96%;
         max-width: 1100px;
         height: 92%;
@@ -52,7 +48,6 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         display: flex;
         flex-direction: column;
     }
-
     .modal-header {
         padding: 10px 12px;
         border-bottom: 1px solid #e5e5e5;
@@ -60,18 +55,70 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         justify-content: flex-end;
         gap: 8px;
     }
-
     .modal-body { flex: 1; }
 
-    /* Producer */
-    .input-group { max-width: fit-content; margin: 0 auto; }
-    
-    /* Increased width for dropdowns to make reading easier */
-    .input-kids { min-width: 220px; } 
-    
-    .clean-row { margin-bottom: 15px; }
+    /* small help icon next to each input */
+    .field-help {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        border: 1px solid #999;
+        background: #f8f9fa;
+        font-weight: 800;
+        font-size: 12px;
+        line-height: 18px;
+        text-align: center;
+        cursor: pointer;
+        user-select: none;
+        margin-left: 6px;
+        flex: 0 0 auto;
+    }
+    .field-help:hover { background: #f0f0f0; }
 
-    /* Interpreter */
+    /* producer layout */
+    .producer-wrap {
+        max-width: 980px;
+        margin: 0 auto;
+    }
+    .img-wrap {
+        text-align: center;
+        margin: 18px 0 22px 0;
+    }
+    .img-wrap img {
+        max-width: 100%;
+        max-height: 520px;
+        border: 1px solid #ddd;
+    }
+
+    .sentence-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin: 12px 0;
+        flex-wrap: wrap;
+    }
+    .field-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 0;
+    }
+    .input-kids {
+        min-width: 240px;
+        max-width: 360px;
+    }
+    .suffix-text {
+        margin: 0 8px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .row-buttons {
+        display: inline-flex;
+        gap: 6px;
+        margin-left: 10px;
+    }
+
+    /* interpreter */
     .sentence-card {
         background: #e3f2fd;
         border-left: 5px solid #2196f3;
@@ -81,10 +128,34 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         font-size: 1.15rem;
         text-align: center;
     }
-
     table.buy-table {
         max-width: 900px;
         margin: 0 auto;
+    }
+
+    /* modal for field help */
+    .small-modal-box {
+        background: #fff;
+        width: 96%;
+        max-width: 900px;
+        max-height: 88%;
+        border-radius: 10px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+    }
+    .small-modal-body {
+        padding: 14px 16px;
+        overflow: auto;
+    }
+    .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 0.92rem;
+        background: #f6f8fa;
+        border: 1px solid #e5e7eb;
+        padding: 10px;
+        border-radius: 8px;
+        overflow: auto;
     }
 </style>
 
@@ -92,6 +163,7 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
 window.props = {
     role: "{{ player.inner_role }}",
     allowedValues: {{ allowed_values|json }},
+    allowedRegexes: {{ allowed_regexes|json }},
     suffixes: {{ suffixes|json }},
     full_sentences: {{ player.get_full_sentences|json }},
     interpreter_choices: {{ interpreter_choices|json }},
@@ -102,71 +174,88 @@ window.props = {
 
 <div id="app" v-cloak>
 
-    <div class="help-fab" title="Help" @click="openHelp">?</div>
+    <!-- INSTRUCTIONS (top-right) -->
+    <div class="help-fab" @click="openInstructions">Instructions</div>
 
-    <div v-if="showHelp" class="modal-overlay" @click.self="closeHelp">
+    <!-- Instructions modal -->
+    <div v-if="showInstructions" class="modal-overlay" @click.self="closeInstructions">
         <div class="modal-box">
             <div class="modal-header">
-                <button type="button" class="btn btn-sm btn-secondary" @click="reloadHelp">Reload</button>
-                <button type="button" class="btn btn-sm btn-danger" @click="closeHelp">Close</button>
+                <button type="button" class="btn btn-sm btn-secondary" @click="reloadInstructions">Reload</button>
+                <button type="button" class="btn btn-sm btn-danger" @click="closeInstructions">Close</button>
             </div>
             <div class="modal-body">
-                <iframe
-                    :src="helpSrc"
-                    style="width:100%; height:100%; border:none;"
-                ></iframe>
+                <iframe :src="instructionsSrc" style="width:100%; height:100%; border:none;"></iframe>
             </div>
         </div>
     </div>
 
-    <div v-if="props.role === 'P'">
+    <!-- Field-help modal (allowed values + regex) -->
+    <div v-if="showFieldHelp" class="modal-overlay" @click.self="closeFieldHelp">
+        <div class="small-modal-box">
+            <div class="modal-header">
+                <button type="button" class="btn btn-sm btn-danger" @click="closeFieldHelp">Close</button>
+            </div>
+            <div class="small-modal-body">
+                <h5 class="mb-2">Allowed input (Field [[ fieldHelpIndex+1 ]])</h5>
 
-        <div class="text-center my-4">
-            <img src="{{ player.get_image_url }}"
-                 style="max-width:100%;max-height:520px;border:1px solid #ddd;">
+                <div class="mb-2">
+                    <div class="font-weight-bold">Regular expression (validation):</div>
+                    <div class="mono">[[ currentHelpRegex || '(no regex provided)' ]]</div>
+                </div>
+
+                <div class="mb-2">
+                    <div class="font-weight-bold">Examples / allowed options:</div>
+                    <ul v-if="currentHelpValues && currentHelpValues.length">
+                        <li v-for="(v, i) in currentHelpValues" :key="'hv-'+i">[[ v ]]</li>
+                    </ul>
+                    <div v-else class="text-muted">(No list provided.)</div>
+                </div>
+
+                <div class="text-muted">
+                    Tip: You can type variants as long as they match the regex above.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= PRODUCER ================= -->
+    <div v-if="props.role === 'P'" class="producer-wrap">
+
+        <div class="img-wrap">
+            <img :src="imageUrl" alt="stimulus image">
         </div>
 
-        <div class="text-center">
-            <div v-for="(item, i) in items" :key="i" class="clean-row">
-                <div class="input-group">
-                    
-                    <div v-for="(f, j) in item.fields" :key="j" class="d-flex align-items-baseline">
-                        
-                        <select v-if="props.allowedValues[j] && props.allowedValues[j].length > 0"
-                                class="form-control input-kids"
-                                v-model="f.value">
-                            <option disabled value="">Select...</option>
-                            <option v-for="val in props.allowedValues[j]" :value="val">
-                                [[ val ]]
-                            </option>
-                        </select>
+        <div v-for="(row, rIdx) in items" :key="'row-'+rIdx" class="sentence-row">
 
-                        <input v-else
-                               class="form-control input-kids"
-                               v-model="f.value"
-                               placeholder="..."
-                               autocomplete="off">
-                        
-                        <span class="mx-2 font-weight-bold">[[ f.suffix ]]</span>
-                    </div>
-
-                    <button type="button"
-                            class="btn btn-outline-secondary ml-2"
-                            @click="addItem"
-                            :disabled="items.length>=maxItems">+</button>
-
-                    <button type="button"
-                            class="btn btn-outline-danger ml-1"
-                            @click="removeItem(i)"
-                            :disabled="items.length<=1">-</button>
+            <template v-for="(f, j) in row.fields" :key="'f-'+rIdx+'-'+j">
+                <div class="field-group">
+                    <input
+                        class="form-control input-kids"
+                        v-model="f.value"
+                        :placeholder="placeholders[j] || '...'"
+                        autocomplete="off"
+                    >
+                    <div class="field-help" title="Help" @click="openFieldHelp(j)">?</div>
                 </div>
+
+                <span class="suffix-text">[[ f.suffix ]]</span>
+            </template>
+
+            <div class="row-buttons">
+                <button type="button" class="btn btn-success" @click="addItem" :disabled="items.length>=maxItems">+</button>
+                <button type="button" class="btn btn-danger" @click="removeItem(rIdx)" :disabled="items.length<=1">-</button>
             </div>
         </div>
 
         <input type="hidden" name="producer_decision" :value="producerPayload">
+        {% if player.inner_role == 'P' %}
+            {{ formfield_errors 'producer_decision' }}
+        {% endif %}
 
     </div>
 
+    <!-- ================= INTERPRETER ================= -->
     <div v-else>
 
         <h4 class="text-center mb-3">[[ props.interpreter_title ]]</h4>
@@ -193,31 +282,26 @@ window.props = {
                 <tr v-for="(choice,i) in props.interpreter_choices" :key="'ic-'+i">
                     <td>[[ choice ]]</td>
                     <td class="text-center">
-                        <input type="radio"
-                               :name="'row_'+i"
-                               value="Yes"
-                               v-model="interpRows[i]">
+                        <input type="radio" :name="'row_'+i" value="Yes" v-model="interpRows[i]">
                     </td>
                     <td class="text-center">
-                        <input type="radio"
-                               :name="'row_'+i"
-                               value="No"
-                               v-model="interpRows[i]">
+                        <input type="radio" :name="'row_'+i" value="No" v-model="interpRows[i]">
                     </td>
                 </tr>
             </tbody>
         </table>
 
         <input type="hidden" name="interpreter_decision" :value="interpreterPayload">
-
         {% if player.inner_role == 'I' %}
             {{ formfield_errors 'interpreter_decision' }}
         {% endif %}
 
     </div>
 
+    <!-- Errors -->
     <p v-if="errorMsg" class="alert alert-danger text-center mt-3">[[ errorMsg ]]</p>
 
+    <!-- Next -->
     <div class="text-center mt-4">
         <button type="button" class="btn btn-primary btn-lg" @click="handleNext">Next</button>
     </div>
@@ -229,23 +313,40 @@ window.props = {
 const app = Vue.createApp({
     data() {
         const p = window.props || {};
-        const suffixes = Array.isArray(p.suffixes) && p.suffixes.length ? p.suffixes : ["", ""];
+        const suffixes = Array.isArray(p.suffixes) ? p.suffixes : [];
         const ic = Array.isArray(p.interpreter_choices) ? p.interpreter_choices : [];
+        const allowedRegexes = Array.isArray(p.allowedRegexes) ? p.allowedRegexes : [];
+        const allowedValues = Array.isArray(p.allowedValues) ? p.allowedValues : [];
+
+        // create N fields per row = max(1, suffixes length)
+        const nFields = Math.max(1, suffixes.length);
 
         return {
             props: p,
-            // Start with 1 row
-            items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
             maxItems: 5,
+            items: [{
+                fields: Array.from({length: nFields}, (_, j) => ({
+                    value: "",
+                    suffix: suffixes[j] || ""
+                }))
+            }],
             interpRows: Array(ic.length).fill(null),
             errorMsg: "",
-            showHelp: false,
-            helpNonce: 0
+
+            showInstructions: false,
+            instructionsNonce: 0,
+
+            showFieldHelp: false,
+            fieldHelpIndex: 0,
+
+            allowedRegexes,
+            allowedValues,
+            placeholders: Array.from({length: nFields}, (_, j) => "...")
         };
     },
     computed: {
         producerPayload() {
-            return JSON.stringify(this.items.map(i => i.fields.map(f => f.value)));
+            return JSON.stringify(this.items.map(row => row.fields.map(f => f.value)));
         },
         interpreterPayload() {
             return JSON.stringify(
@@ -255,33 +356,72 @@ const app = Vue.createApp({
                 }))
             );
         },
-        helpSrc() {
+        instructionsSrc() {
             const base = String(this.props.instructions_url || "");
             const joiner = base.includes("?") ? "&" : "?";
-            return base + joiner + "v=" + this.helpNonce;
+            return base + joiner + "v=" + this.instructionsNonce;
+        },
+        imageUrl() {
+            // keep plain server-rendered image URL (works even if Vue hasn't loaded early)
+            return "{{ player.get_image_url }}";
+        },
+        currentHelpValues() {
+            const idx = this.fieldHelpIndex;
+            const vals = this.allowedValues[idx];
+            return Array.isArray(vals) ? vals : [];
+        },
+        currentHelpRegex() {
+            const idx = this.fieldHelpIndex;
+            const rx = this.allowedRegexes[idx];
+            return typeof rx === "string" ? rx : "";
         }
     },
     methods: {
-        openHelp() {
-            this.helpNonce += 1;
-            this.showHelp = true;
+        openInstructions() {
+            this.instructionsNonce += 1;
+            this.showInstructions = true;
         },
-        closeHelp() {
-            this.showHelp = false;
+        closeInstructions() {
+            this.showInstructions = false;
         },
-        reloadHelp() {
-            this.helpNonce += 1;
+        reloadInstructions() {
+            this.instructionsNonce += 1;
         },
+
+        openFieldHelp(fieldIndex) {
+            this.fieldHelpIndex = fieldIndex;
+            this.showFieldHelp = true;
+        },
+        closeFieldHelp() {
+            this.showFieldHelp = false;
+        },
+
         addItem() {
             if (this.items.length >= this.maxItems) return;
-            // Copy suffixes structure from the first item
             const suffixes = this.items[0].fields.map(f => f.suffix);
-            this.items.push({ fields: suffixes.map(s => ({ value: "", suffix: s })) });
+            this.items.push({
+                fields: suffixes.map(s => ({ value: "", suffix: s }))
+            });
         },
-        removeItem(i) {
+        removeItem(idx) {
             if (this.items.length <= 1) return;
-            this.items.splice(i, 1);
+            this.items.splice(idx, 1);
         },
+
+        _buildRegex(pattern) {
+            if (!pattern) return null;
+            try {
+                // Use as-is; if author didn’t anchor it, we anchor it to full string match
+                // unless it already has ^ and/or $.
+                const hasStart = pattern.trim().startsWith("^");
+                const hasEnd = pattern.trim().endsWith("$");
+                const full = (hasStart ? "" : "^") + pattern + (hasEnd ? "" : "$");
+                return new RegExp(full, "i");
+            } catch (e) {
+                return null; // invalid regex -> do not block (but should be fixed in settings)
+            }
+        },
+
         handleNext() {
             this.errorMsg = "";
 
@@ -293,14 +433,34 @@ const app = Vue.createApp({
             }
 
             if (this.props.role === "P") {
-                // Check if ALL fields in existing rows are filled
-                const allFilled = this.items.every(row => 
-                    row.fields.every(f => String(f.value || "").trim() !== "")
-                );
-                
-                if (!allFilled) {
-                    this.errorMsg = "Please fill in all dropdown fields for your sentences.";
-                    return;
+                // 1) must fill all fields in all rows
+                for (let r = 0; r < this.items.length; r++) {
+                    for (let j = 0; j < this.items[r].fields.length; j++) {
+                        const val = String(this.items[r].fields[j].value || "").trim();
+                        if (!val) {
+                            this.errorMsg = "Please fill in all text fields (no blanks).";
+                            return;
+                        }
+                    }
+                }
+
+                // 2) regex validation per field index
+                for (let r = 0; r < this.items.length; r++) {
+                    for (let j = 0; j < this.items[r].fields.length; j++) {
+                        const raw = String(this.items[r].fields[j].value || "").trim();
+                        const pattern = (this.allowedRegexes && this.allowedRegexes[j]) ? String(this.allowedRegexes[j]) : "";
+                        if (!pattern) continue; // no regex => no validation
+
+                        const re = this._buildRegex(pattern);
+                        if (!re) {
+                            // invalid regex in settings: don’t block participant; log should be fixed by experimenter
+                            continue;
+                        }
+                        if (!re.test(raw)) {
+                            this.errorMsg = `Row ${r+1}, field ${j+1} is not allowed. Click the (?) next to the field to see valid options.`;
+                            return;
+                        }
+                    }
                 }
             }
 
