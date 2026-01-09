@@ -5,7 +5,6 @@ import os
 import re
 from sqlalchemy import create_engine, text
 from django.db import models as djmodels
-from .utils import get_url_for_image
 
 logger = logging.getLogger("benzapp.img_desc")
 
@@ -259,25 +258,21 @@ class Player(BasePlayer):
         return res
 
     def get_image_url(self):
-        l = getattr(self, "link", None)  # works even if link isn't set yet
+        l = self.get_linked_batch()
         if not l:
-            logger.warning(
-                f"get_image_url: link not set yet "
-                f"(p={self.participant.code if self.participant else None}, round={self.round_number})"
-            )
             return ""
-    
-        image = getattr(l, "image", None)
-        if not image:
-            logger.warning(
-                f"get_image_url: link.image missing/empty "
-                f"(p={self.participant.code if self.participant else None}, round={self.round_number})"
-            )
+        image_name = l.get("image") or ""
+        if not image_name or str(image_name).lower().startswith("na"):
             return ""
-    
-        url = get_url_for_image(self, image)
-        logger.info(f"IMAGE URL: {url}")
-        return url
+
+        ext = self.session.vars.get("extension", "png") or "png"
+        if not str(image_name).lower().endswith(f".{ext}"):
+            image_name = f"{image_name}.{ext}"
+
+        base = (self.session.vars.get("s3path_base") or "").rstrip("/")
+        if "amazonaws.com" in base:
+            base = base.replace("/practice", "")
+        return f"{base}/{image_name}"
 
     def start(self):
         session = self.session
