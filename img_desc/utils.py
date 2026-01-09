@@ -39,19 +39,22 @@ BALANCE_URL = (
 #  IMAGE URL HELPER (used by Player.get_image_url)
 # -------------------------------------------------------------------
 
-def get_url_for_image(player, img: str, extension: str | None = None) -> str:
-    """
-    Build full URL for an image, using session.vars entries that were
-    loaded from the Excel sheet in creating_session.
-    """
-    s3path = player.session.vars.get("s3path") or ""
-    ext = extension or player.session.vars.get("extension") or "png"
+def get_url_for_image(player, image_id):
+    s3path = player.session.vars.get("s3path", "").rstrip("/")
+    extension = player.session.vars.get("extension", "").lstrip(".")
 
-    # if img already has an extension, don't duplicate
-    if img and not img.lower().endswith(f".{ext}"):
-        img = f"{img}.{ext}"
+    if not image_id:
+        return ""
 
-    return f"{s3path}{img}"
+    if extension:
+        filename = f"{image_id}.{extension}"
+    else:
+        filename = image_id
+
+    if s3path:
+        return f"{s3path}/{filename}"
+
+    return filename
 
 
 # -------------------------------------------------------------------
