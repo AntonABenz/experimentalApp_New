@@ -287,4 +287,212 @@ class Player(BasePlayer):
                 b for b in all_data
                 if b["batch"] == subsession.active_batch
                 and not b["busy"]
-                and b["owner_code"]
+                and b["owner_code"] == ""
+                and int(b.get("id_in_group") or 0) != 0
+            ]
+            if not candidates:
+                self.faulty = True
+                return
+
+            candidates.sort(key=lambda b: b["id_in_group"])
+            free = candidates[0]
+            chosen_batch = free["batch"]
+            chosen_id = free["id_in_group"]
+
+            self.batch = chosen_batch
+
+            for b in all_data:
+                if b["batch"] == chosen_batch and b["id_in_group"] == chosen_id:
+                    sql_update_batch(b["id"], busy=True, owner_code=self.participant.code)
+
+            all_data = get_all_batches_sql(session.code)
+
+        my_row = None
+        for b in all_data:
+            if b["owner_code"] == self.participant.code and b["round_number"] == self.round_number:
+                my_row = b
+                break
+
+        if not my_row:
+            self.faulty = True
+            return
+
+        self.link_id = my_row["id"]
+        self.inner_role = my_row["role"]
+        self.inner_sentences = json.dumps(self.get_sentences_data())
+
+        if self.round_number == 1 and session.config.get("for_prolific"):
+            p = self.participant
+            vars_ = p.vars
+            prolific_id = vars_.get("prolific_id") or vars_.get("prolific_pid")
+            if vars_.get("prolific_session_id"):
+                p.label = vars_.get("prolific_session_id")
+
+
+def creating_session(subsession: Subsession):
+    session = subsession.session
+    if subsession.round_number != 1:
+        return
+
+    subsession.active_batch = 1
+    session.vars["active_batch"] = 1
+
+    filename = session.config.get("filename")
+    if not filename:
+        raise RuntimeError("Missing filename")
+
+    from reading_xls.get_data import get_data
+    excel_data = get_data(filename)
+    df = excel_data.get("data")
+    session.vars["user_data"] = df
+
+    max_round = int(df["group_enumeration"].max())
+    logger.info(f"img_desc: max group_enumeration in data = {max_round}")
+
+    records = df.to_dict(orient="records")
+    for r in records:
+        Batch.create(
+            session_code=session.code,
+            owner_code="",
+            batch=r.get("Exp"),
+            item_nr=r.get("Item.Nr"),
+            condition=r.get("Condition"),
+            image=r.get("Item"),
+            round_number=r.get("group_enumeration"),
+            role=r.get("role"),
+            id_in_group=r.get("id"),
+            partner_id=r.get("partner_id"),
+            sentences=r.get("sentences"),
+        )
+
+    settings = excel_data.get("settings") or {}
+
+    clean_settings = {}
+    for k, v in settings.items():
+        clean_settings[normalize_key(k)] = v
+    session.vars["user_settings"] = clean_settings
+
+    # instructions URL
+    default_url = (
+        "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
+    )
+    url_from_settings = clean_settings.get(normalize_key("instructions_url"))
+    session.vars["instructions_url"] = url_from_settings if url_from_settings else default_url
+
+    # simple scalar settings
+    for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title"]:
+        session.vars[k] = clean_settings.get(normalize_key(k))
+
+    session.vars["suffixes"] = clean_settings.get("suffixes") or []
+
+    # allowed_values_1..5
+    allowed_values = []
+    i = 1
+    while True:
+        key = f"allowed_values_{i}"
+        val = clean_settings.get(key)
+        if val:
+            allowed_values.append([x.strip() for x in str(val).split(";") if x.strip()])
+        else:
+            if i > 5:
+                break
+            allowed_values.append([])
+        i += 1
+    session.vars["allowed_values"] = allowed_values
+
+    # allowed_regex_1..5  (NEW)
+    allowed_regexes = []
+    for i in range(1, 6):
+        key = f"allowed_regex_{i}"
+        val = clean_settings.get(key)
+        allowed_regexes.append(str(val).strip() if val else "")
+    session.vars["allowed_regexes"] = allowed_regexes
+
+
+class FaultyCatcher(Page):
+    @staticmethod
+    def is_displayed(player):
+        return player.faulty
+
+    def get(self):
+        if self.player.faulty:
+            return redirect(Constants.FALLBACK_URL)
+        return super().get()
+
+
+class Q(Page):
+    instructions = True
+    form_model = "player"
+
+    @staticmethod
+    def is_displayed(player):
+        if player.faulty:
+            return False
+
+        player.start()
+
+        if player.faulty:
+            return False
+
+        return player.round_number <= Constants.num_rounds
+
+    @staticmethod
+    def get_form_fields(player):
+        role = player.field_maybe_none("inner_role")
+        if role == PRODUCER:
+            return ["producer_decision"]
+        elif role == INTERPRETER:
+            return ["interpreter_decision"]
+        return []
+
+    @staticmethod
+    def vars_for_template(player):
+        raw_choices = player.session.vars.get("interpreter_choices") or ""
+        if isinstance(raw_choices, str):
+            interpreter_choices = [x.strip() for x in raw_choices.split(";") if x.strip()]
+        elif isinstance(raw_choices, list):
+            interpreter_choices = raw_choices
+        else:
+            interpreter_choices = []
+
+        interpreter_title = player.session.vars.get("interpreter_title") or "Buy medals:"
+
+        return dict(
+            d=player.get_linked_batch(),
+            prefix=player.session.vars.get("prefix", ""),
+            allowed_values=player.session.vars.get("allowed_values", []),
+            allowed_regexes=player.session.vars.get("allowed_regexes", []),
+            suffixes=player.session.vars.get("suffixes", []),
+            interpreter_choices=interpreter_choices,
+            interpreter_title=interpreter_title,
+            instructions_url=player.session.vars.get("instructions_url"),
+        )
+
+    @staticmethod
+    def before_next_page(player, timeout_happened):
+        player.update_batch()
+        if player.round_number == Constants.num_rounds:
+            player.mark_data_processed()
+
+
+class Feedback(Page):
+    form_model = "player"
+    form_fields = ["feedback"]
+
+    def is_displayed(self):
+        return self.round_number == Constants.num_rounds
+
+
+class FinalForProlific(Page):
+    @staticmethod
+    def is_displayed(player):
+        return player.session.config.get("for_prolific") and (player.round_number == Constants.num_rounds)
+
+    def get(self):
+        url = self.player.field_maybe_none("full_return_url")
+        if url:
+            return redirect(url)
+        return redirect("https://cnn.com")
+
+
+page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
