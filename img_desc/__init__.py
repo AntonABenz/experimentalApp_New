@@ -341,9 +341,6 @@ class Player(BasePlayer):
 def creating_session(subsession: Subsession):
     session = subsession.session
 
-    # Ensure no NULL active_batch rows exist for this session
-    Subsession.objects.filter(session=session, active_batch__isnull=True).update(active_batch=1)
-
     if subsession.round_number != 1:
         return
 
