@@ -93,6 +93,24 @@ def normalize_key(key):
     return re.sub(r"[\s_]+", "_", str(key).lower().strip())
 
 
+def _to_int(x, default=0):
+    try:
+        if x is None:
+            return default
+        # handle pandas float-ish like 1.0
+        return int(float(x))
+    except Exception:
+        return default
+
+
+def _clean_str(x):
+    if x is None:
+        return ""
+    if isinstance(x, float) and (str(x) == "nan"):
+        return ""
+    return str(x).strip()
+
+
 class Subsession(BaseSubsession):
     active_batch = models.IntegerField()
     study_id = models.StringField()
@@ -102,13 +120,16 @@ class Subsession(BaseSubsession):
     @property
     def get_active_batch(self):
         all_data = get_all_batches_sql(self.session.code)
-        return [b for b in all_data if b["batch"] == self.active_batch]
+        return [b for b in all_data if _to_int(b["batch"]) == _to_int(self.active_batch)]
 
     def check_for_batch_completion(self):
         session = self.session
-        active_batch = self.active_batch
+        active_batch = _to_int(self.active_batch)
         all_data = get_all_batches_sql(session.code)
-        remaining = [b for b in all_data if b["batch"] == active_batch and not b["processed"]]
+        remaining = [
+            b for b in all_data
+            if _to_int(b["batch"]) == active_batch and not b["processed"]
+        ]
         if remaining:
             return
         session.vars["active_batch"] = active_batch + 1
@@ -146,55 +167,62 @@ class Player(BasePlayer):
             return None
         all_data = get_all_batches_sql(self.session.code)
         for b in all_data:
-            if b["id"] == self.link_id:
+            if _to_int(b["id"]) == _to_int(self.link_id):
                 return b
         return None
 
     def get_previous_batch(self):
         """
-        For interpreters:
-        - If paired with producer 0 (partner_id == 0), we use current row's predefined sentences.
-        - Otherwise, for Exp n, we need the producer sentence from Exp n-1 matching says:
-          (same producer/interpreter/condition pairing, but in previous batch).
+        Implements Anton's rule:
+        - If interpreter is paired with producer 0 => use current row sentences (predefined)
+        - Else use Exp(active_batch-1) for the matching producer row with swapped (id_in_group, partner_id)
         """
         if self.inner_role != INTERPRETER:
             return dict(sentences="[]")
 
         l = self.get_linked_batch()
-        if not l or l.get("partner_id", 0) == 0:
+        if not l:
             return dict(sentences="[]")
 
-        target_batch_idx = self.subsession.active_batch - 1
+        if _to_int(l.get("partner_id")) == 0:
+            return dict(sentences="[]")
+
+        target_batch_idx = _to_int(self.subsession.active_batch) - 1
+        if target_batch_idx < 0:
+            return dict(sentences="[]")
+
         all_data = get_all_batches_sql(self.session.code)
+
+        # robust matching with int casts
+        want_partner = _to_int(l.get("id_in_group"))
+        want_id = _to_int(l.get("partner_id"))
+        want_cond = _clean_str(l.get("condition"))
 
         for obj in all_data:
             if (
-                obj["batch"] == target_batch_idx
-                and obj["role"] == PRODUCER
-                and obj["partner_id"] == l["id_in_group"]
-                and obj["id_in_group"] == l["partner_id"]
-                and obj["condition"] == l["condition"]
+                _to_int(obj.get("batch")) == target_batch_idx
+                and _clean_str(obj.get("role")) == PRODUCER
+                and _to_int(obj.get("partner_id")) == want_partner
+                and _to_int(obj.get("id_in_group")) == want_id
+                and _clean_str(obj.get("condition")) == want_cond
             ):
                 return obj
 
         return dict(sentences="[]")
 
     def get_sentences_data(self):
-        """
-        Returns the sentence matrix (list of lists) for the interpreter page:
-        - If interpreter paired with producer 0 -> use l["sentences"] (predefined in sheet)
-        - Else -> use previous batch producer's sentences (Exp n-1)
-        """
         l = self.get_linked_batch()
         if not l:
             return []
 
         try:
-            if l.get("partner_id", 0) == 0:
-                return json.loads(l["sentences"] or "[]")
-            else:
-                prev = self.get_previous_batch()
-                return json.loads(prev.get("sentences") or "[]")
+            # If current interpreter is paired with producer 0 => use predefined sentences from THIS row
+            if _to_int(l.get("partner_id")) == 0:
+                return json.loads(l.get("sentences") or "[]")
+
+            # Else use previous-batch producer sentences
+            prev = self.get_previous_batch()
+            return json.loads(prev.get("sentences") or "[]")
         except Exception:
             return []
 
@@ -214,66 +242,50 @@ class Player(BasePlayer):
         all_data = get_all_batches_sql(self.session.code)
         my_code = self.participant.code
         for b in all_data:
-            if b["owner_code"] == my_code:
-                sql_update_batch(b["id"], processed=True)
+            if b.get("owner_code") == my_code:
+                sql_update_batch(_to_int(b["id"]), processed=True)
         self.subsession.check_for_batch_completion()
 
     def get_full_sentences(self):
-        """
-        Robust sentence reconstruction:
-        - Ignores None / "None" / "" values
-        - Adds suffixes after each non-empty field
-        """
-        prefix = self.session.vars.get("prefix", "")
+        prefix = _clean_str(self.session.vars.get("prefix", ""))
         suffixes = self.session.vars.get("suffixes") or []
         sentences = self.get_sentences_data() or []
 
-        res = []
-        for sentence in sentences:
-            if not isinstance(sentence, list):
+        # Keep only list rows and drop blanks/None
+        cleaned = []
+        for sub in sentences:
+            if not isinstance(sub, list):
                 continue
+            if any(x is None or str(x).strip() == "" for x in sub):
+                continue
+            cleaned.append([str(x) for x in sub])
 
-            tokens = []
+        res = []
+        for sentence in cleaned:
+            expansion = [str(item) for pair in zip(sentence, suffixes) for item in pair]
             if prefix:
-                tokens.append(str(prefix).strip())
-
-            for val, suf in zip(sentence, suffixes):
-                if val is None:
-                    continue
-                sval = str(val).strip()
-                if not sval or sval.lower() == "none":
-                    continue
-                tokens.append(sval)
-                if suf:
-                    tokens.append(str(suf).strip())
-
-            final = " ".join([t for t in tokens if t])
-            if final:
-                res.append(final)
-
+                expansion.insert(0, prefix)
+            res.append(" ".join(expansion))
         return res
 
     def get_image_url(self):
-        """
-        Producer image only.
-        IMPORTANT: if a real participant gets assigned producer 0 rows, image may be NA/NA_x.
-        We prevent that by excluding id_in_group==0 in start().
-        """
         l = self.get_linked_batch()
         if not l:
             return ""
-        image_name = l.get("image") or ""
-        if not image_name:
+        image_name = _clean_str(l.get("image"))
+        # never construct NA-based URLs
+        if not image_name or image_name.lower().startswith("na"):
             return ""
 
-        ext = self.session.vars.get("extension", "png")
+        ext = _clean_str(self.session.vars.get("extension", "png")) or "png"
         if not image_name.lower().endswith(f".{ext}"):
             image_name = f"{image_name}.{ext}"
 
-        base = (self.session.vars.get("s3path_base") or "").rstrip("/")
+        base = _clean_str(self.session.vars.get("s3path_base", "")).rstrip("/")
         if "amazonaws.com" in base:
             base = base.replace("/practice", "")
-
+        if not base:
+            return ""
         return f"{base}/{image_name}"
 
     def start(self):
@@ -282,34 +294,41 @@ class Player(BasePlayer):
         all_data = get_all_batches_sql(session.code)
 
         if self.round_number == 1:
-            # IMPORTANT FIX: exclude id_in_group==0 (virtual producer)
+            # IMPORTANT: exclude virtual id_in_group == 0 rows from being assigned to real participants
             candidates = [
                 b for b in all_data
-                if b["batch"] == subsession.active_batch
-                and not b["busy"]
-                and b["owner_code"] == ""
-                and int(b.get("id_in_group") or 0) != 0
+                if _to_int(b.get("batch")) == _to_int(subsession.active_batch)
+                and not b.get("busy")
+                and _clean_str(b.get("owner_code")) == ""
+                and _to_int(b.get("id_in_group")) != 0
             ]
             if not candidates:
                 self.faulty = True
                 return
 
-            candidates.sort(key=lambda b: b["id_in_group"])
+            candidates.sort(key=lambda b: _to_int(b.get("id_in_group")))
             free = candidates[0]
-            chosen_batch = free["batch"]
-            chosen_id = free["id_in_group"]
+            chosen_batch = _to_int(free["batch"])
+            chosen_id = _to_int(free["id_in_group"])
 
             self.batch = chosen_batch
 
             for b in all_data:
-                if b["batch"] == chosen_batch and b["id_in_group"] == chosen_id:
-                    sql_update_batch(b["id"], busy=True, owner_code=self.participant.code)
+                if _to_int(b.get("batch")) == chosen_batch and _to_int(b.get("id_in_group")) == chosen_id:
+                    sql_update_batch(
+                        _to_int(b["id"]),
+                        busy=True,
+                        owner_code=self.participant.code
+                    )
 
             all_data = get_all_batches_sql(session.code)
 
         my_row = None
         for b in all_data:
-            if b["owner_code"] == self.participant.code and b["round_number"] == self.round_number:
+            if (
+                _clean_str(b.get("owner_code")) == self.participant.code
+                and _to_int(b.get("round_number")) == _to_int(self.round_number)
+            ):
                 my_row = b
                 break
 
@@ -317,8 +336,8 @@ class Player(BasePlayer):
             self.faulty = True
             return
 
-        self.link_id = my_row["id"]
-        self.inner_role = my_row["role"]
+        self.link_id = _to_int(my_row["id"])
+        self.inner_role = _clean_str(my_row["role"])
         self.inner_sentences = json.dumps(self.get_sentences_data())
 
         if self.round_number == 1 and session.config.get("for_prolific"):
@@ -354,15 +373,15 @@ def creating_session(subsession: Subsession):
         Batch.create(
             session_code=session.code,
             owner_code="",
-            batch=r.get("Exp"),
-            item_nr=r.get("Item.Nr"),
-            condition=r.get("Condition"),
-            image=r.get("Item"),
-            round_number=r.get("group_enumeration"),
-            role=r.get("role"),
-            id_in_group=r.get("id"),
-            partner_id=r.get("partner_id"),
-            sentences=r.get("sentences"),
+            batch=_to_int(r.get("Exp")),
+            item_nr=_clean_str(r.get("Item.Nr")),
+            condition=_clean_str(r.get("Condition")),
+            image=_clean_str(r.get("Item")),
+            round_number=_to_int(r.get("group_enumeration")),
+            role=_clean_str(r.get("role")),
+            id_in_group=_to_int(r.get("id")),
+            partner_id=_to_int(r.get("partner_id")),
+            sentences=_clean_str(r.get("sentences") or "[]") if r.get("sentences") is not None else "[]",
         )
 
     settings = excel_data.get("settings") or {}
@@ -372,40 +391,37 @@ def creating_session(subsession: Subsession):
         clean_settings[normalize_key(k)] = v
     session.vars["user_settings"] = clean_settings
 
-    # instructions URL
-    default_url = (
-        "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
-    )
-    url_from_settings = clean_settings.get(normalize_key("instructions_url"))
-    session.vars["instructions_url"] = url_from_settings if url_from_settings else default_url
+    # Instructions URL
+    default_url = "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
+    url_from_settings = clean_settings.get("instructions_url")
+    session.vars["instructions_url"] = _clean_str(url_from_settings) if url_from_settings else default_url
 
-    # simple scalar settings
-    for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title"]:
-        session.vars[k] = clean_settings.get(normalize_key(k))
-
+    # defaults so template never crashes
+    session.vars["s3path_base"] = _clean_str(clean_settings.get("s3path_base"))
+    session.vars["extension"] = _clean_str(clean_settings.get("extension") or "png")
+    session.vars["prefix"] = _clean_str(clean_settings.get("prefix") or "")
     session.vars["suffixes"] = clean_settings.get("suffixes") or []
+    session.vars["interpreter_choices"] = clean_settings.get("interpreter_choices") or ""
+    session.vars["interpreter_title"] = _clean_str(clean_settings.get("interpreter_title") or "Buy medals:")
+    session.vars["caseflag"] = str(clean_settings.get("caseflag") or "").lower() in ["true", "1", "t", "yes", "y"]
 
-    # allowed_values_1..5
+    # allowed values & regexes: allowed_values_1..5 and allowed_regex_1..5
     allowed_values = []
-    i = 1
-    while True:
-        key = f"allowed_values_{i}"
-        val = clean_settings.get(key)
-        if val:
-            allowed_values.append([x.strip() for x in str(val).split(";") if x.strip()])
-        else:
-            if i > 5:
-                break
-            allowed_values.append([])
-        i += 1
-    session.vars["allowed_values"] = allowed_values
-
-    # allowed_regex_1..5  (NEW)
     allowed_regexes = []
     for i in range(1, 6):
-        key = f"allowed_regex_{i}"
-        val = clean_settings.get(key)
-        allowed_regexes.append(str(val).strip() if val else "")
+        vkey = f"allowed_values_{i}"
+        rkey = f"allowed_regex_{i}"
+
+        v = clean_settings.get(vkey)
+        if v:
+            allowed_values.append([x.strip() for x in str(v).split(";") if x.strip()])
+        else:
+            allowed_values.append([])
+
+        rx = clean_settings.get(rkey)
+        allowed_regexes.append(_clean_str(rx))
+
+    session.vars["allowed_values"] = allowed_values
     session.vars["allowed_regexes"] = allowed_regexes
 
 
@@ -455,16 +471,15 @@ class Q(Page):
         else:
             interpreter_choices = []
 
-        interpreter_title = player.session.vars.get("interpreter_title") or "Buy medals:"
-
         return dict(
             d=player.get_linked_batch(),
             prefix=player.session.vars.get("prefix", ""),
+            caseflag=player.session.vars.get("caseflag", False),
             allowed_values=player.session.vars.get("allowed_values", []),
             allowed_regexes=player.session.vars.get("allowed_regexes", []),
             suffixes=player.session.vars.get("suffixes", []),
             interpreter_choices=interpreter_choices,
-            interpreter_title=interpreter_title,
+            interpreter_title=player.session.vars.get("interpreter_title") or "Buy medals:",
             instructions_url=player.session.vars.get("instructions_url"),
         )
 
