@@ -341,6 +341,10 @@ class Player(BasePlayer):
 def creating_session(subsession: Subsession):
     session = subsession.session
 
+    # Ensure active_batch is never null
+    if subsession.field_maybe_none("active_batch") is None:
+        subsession.active_batch = 1
+
     if subsession.round_number != 1:
         return
 
@@ -356,9 +360,7 @@ def creating_session(subsession: Subsession):
     df = excel_data.get("data")
     session.vars["user_data"] = df
 
-    max_round = int(df["group_enumeration"].max())
-    logger.info(f"img_desc: max group_enumeration in data = {max_round}")
-
+    # --- create Batch rows as you already do ---
     records = df.to_dict(orient="records")
     for r in records:
         Batch.create(
@@ -382,44 +384,48 @@ def creating_session(subsession: Subsession):
         clean_settings[normalize_key(k)] = v
     session.vars["user_settings"] = clean_settings
 
-    # instructions url (default fallback)
-    default_url = "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
-    url_from_settings = clean_settings.get("instructions_url")
-    session.vars["instructions_url"] = url_from_settings if url_from_settings else default_url
-
-    # standard settings
+    # ---- core settings ----
     for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title"]:
         session.vars[k] = clean_settings.get(normalize_key(k))
 
     session.vars["suffixes"] = clean_settings.get("suffixes") or []
 
-    # allowed values + regex (match suffix count)
+    # ---- allowed values + allowed regexes (aligned by field index) ----
     allowed_values = []
-    allowed_regex = []
+    allowed_regexes = []
+
     i = 1
     while True:
         v_key = f"allowed_values_{i}"
         r_key = f"allowed_regex_{i}"
-        v_val = clean_settings.get(v_key)
-        r_val = clean_settings.get(r_key)
+
+        v_val = clean_settings.get(normalize_key(v_key))
+        r_val = clean_settings.get(normalize_key(r_key))
 
         if v_val or r_val:
-            allowed_values.append([x.strip() for x in str(v_val or "").split(";") if x.strip()])
-            allowed_regex.append(str(r_val or "").strip())
-        else:
-            # stop after some reasonable max
-            if i > 5:
-                break
-            allowed_values.append([])
-            allowed_regex.append("")
+            # values list (for the "help list" display)
+            if v_val:
+                allowed_values.append([x.strip() for x in str(v_val).split(";") if x.strip()])
+            else:
+                allowed_values.append([])
+
+            # regex string (for validation)
+            allowed_regexes.append(str(r_val).strip() if r_val else "")
+            i += 1
+            continue
+
+        # stop after some reasonable max to avoid infinite loop
+        if i > 10:
+            break
         i += 1
 
     session.vars["allowed_values"] = allowed_values
-    session.vars["allowed_regex"] = allowed_regex
+    session.vars["allowed_regexes"] = allowed_regexes
 
-    caseflag = clean_settings.get("caseflag")
-    session.vars["caseflag"] = str(caseflag).lower() in ("true", "1", "t", "yes", "y")
-
+    # ---- instructions url ----
+    default_url = "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
+    url_from_settings = clean_settings.get(normalize_key("instructions_url"))
+    session.vars["instructions_url"] = url_from_settings if url_from_settings else default_url
 
 class FaultyCatcher(Page):
     @staticmethod
@@ -467,16 +473,15 @@ class Q(Page):
             interpreter_choices = raw_choices
         else:
             interpreter_choices = []
-
+    
         interpreter_title = player.session.vars.get("interpreter_title") or "Buy medals:"
-
+    
         return dict(
             d=player.get_linked_batch(),
             allowed_values=player.session.vars.get("allowed_values", []),
-            allowed_regex=player.session.vars.get("allowed_regex", []),
-            caseflag=player.session.vars.get("caseflag", False),
+            allowed_regexes=player.session.vars.get("allowed_regexes", []),  # ✅ ADD THIS
             suffixes=player.session.vars.get("suffixes", []),
-            prefix=player.session.vars.get("prefix", "") or "",
+            prefix=player.session.vars.get("prefix", ""),                    # ✅ if q.html uses prefix
             interpreter_choices=interpreter_choices,
             interpreter_title=interpreter_title,
             instructions_url=player.session.vars.get("instructions_url"),
