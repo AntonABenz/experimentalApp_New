@@ -497,17 +497,20 @@ class Q(Page):
             interpreter_choices = raw_choices
         else:
             interpreter_choices = []
-
+    
         interpreter_title = player.session.vars.get("interpreter_title") or "Buy medals:"
-
+    
         return dict(
+            d=player.get_linked_batch(),
             allowed_values=player.session.vars.get("allowed_values", []),
             allowed_regexes=player.session.vars.get("allowed_regexes", []),
             suffixes=player.session.vars.get("suffixes", []),
+            prefix=player.session.vars.get("prefix", "") or "",   
             interpreter_choices=interpreter_choices,
             interpreter_title=interpreter_title,
             instructions_url=player.session.vars.get("instructions_url"),
         )
+
 
     @staticmethod
     def before_next_page(player, timeout_happened):
