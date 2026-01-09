@@ -5,6 +5,7 @@ import os
 import re
 from sqlalchemy import create_engine, text
 from django.db import models as djmodels
+from .utils import get_url_for_image
 
 logger = logging.getLogger("benzapp.img_desc")
 
