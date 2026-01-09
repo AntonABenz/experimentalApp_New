@@ -259,6 +259,8 @@ class Player(BasePlayer):
 
     def get_image_url(self):
         l = self.get_linked_batch()
+        url = get_url_for_image(self, self.link.image)
+        logger.info(f"IMAGE URL: {url}")
         if not l:
             return ""
         image_name = l.get("image") or ""
