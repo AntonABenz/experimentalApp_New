@@ -259,25 +259,25 @@ class Player(BasePlayer):
         return res
 
     def get_image_url(self):
-        l = self.get_linked_batch()
-        
+        l = getattr(self, "link", None)  # works even if link isn't set yet
         if not l:
+            logger.warning(
+                f"get_image_url: link not set yet "
+                f"(p={self.participant.code if self.participant else None}, round={self.round_number})"
+            )
             return ""
-        image_name = l.get("image") or ""
-        if not image_name or str(image_name).lower().startswith("na"):
+    
+        image = getattr(l, "image", None)
+        if not image:
+            logger.warning(
+                f"get_image_url: link.image missing/empty "
+                f"(p={self.participant.code if self.participant else None}, round={self.round_number})"
+            )
             return ""
-
-        ext = self.session.vars.get("extension", "png") or "png"
-        if not str(image_name).lower().endswith(f".{ext}"):
-            image_name = f"{image_name}.{ext}"
-
-        base = (self.session.vars.get("s3path_base") or "").rstrip("/")
-        if "amazonaws.com" in base:
-            base = base.replace("/practice", "")
-
-        url = get_url_for_image(self, self.link.image)
+    
+        url = get_url_for_image(self, image)
         logger.info(f"IMAGE URL: {url}")
-        return f"{base}/{image_name}"
+        return url
 
     def start(self):
         session = self.session
