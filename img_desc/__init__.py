@@ -8,6 +8,12 @@ from django.db import models as djmodels
 
 logger = logging.getLogger("benzapp.img_desc")
 
+def dbg(msg, **kwargs):
+    logger.error("DBG | " + msg)
+    for k, v in kwargs.items():
+        logger.error(f"    {k} = {v!r}")
+
+
 PRODUCER = "P"
 INTERPRETER = "I"
 
@@ -172,58 +178,111 @@ class Player(BasePlayer):
         return None
 
     def get_previous_batch(self):
-        """
-        Implements Anton's rule:
-        - If interpreter is paired with producer 0 => use current row sentences (predefined)
-        - Else use Exp(active_batch-1) for the matching producer row with swapped (id_in_group, partner_id)
-        """
+        dbg(
+            "get_previous_batch called",
+            participant=self.participant.code,
+            round=self.round_number,
+            active_batch=self.subsession.active_batch,
+        )
+    
         if self.inner_role != INTERPRETER:
+            dbg("Not interpreter → returning empty")
             return dict(sentences="[]")
-
+    
         l = self.get_linked_batch()
         if not l:
+            dbg("NO LINKED BATCH in get_previous_batch")
             return dict(sentences="[]")
-
-        if _to_int(l.get("partner_id")) == 0:
+    
+        if int(l.get("partner_id", -1)) == 0:
+            dbg("Partner is virtual producer → no previous batch needed")
             return dict(sentences="[]")
-
-        target_batch_idx = _to_int(self.subsession.active_batch) - 1
-        if target_batch_idx < 0:
-            return dict(sentences="[]")
-
+    
+        target_batch = int(self.subsession.active_batch) - 1
+    
+        dbg(
+            "Searching previous batch",
+            target_batch=target_batch,
+            want_partner=l.get("id_in_group"),
+            want_id=l.get("partner_id"),
+            want_condition=l.get("condition"),
+        )
+    
         all_data = get_all_batches_sql(self.session.code)
-
-        # robust matching with int casts
-        want_partner = _to_int(l.get("id_in_group"))
-        want_id = _to_int(l.get("partner_id"))
-        want_cond = _clean_str(l.get("condition"))
-
+    
+        dbg("All batches snapshot (filtered)",
+            rows=[
+                {
+                    "id": b.get("id"),
+                    "batch": b.get("batch"),
+                    "role": b.get("role"),
+                    "id_in_group": b.get("id_in_group"),
+                    "partner_id": b.get("partner_id"),
+                    "condition": b.get("condition"),
+                }
+                for b in all_data
+                if int(b.get("batch", -1)) == target_batch
+            ]
+        )
+    
         for obj in all_data:
             if (
-                _to_int(obj.get("batch")) == target_batch_idx
-                and _clean_str(obj.get("role")) == PRODUCER
-                and _to_int(obj.get("partner_id")) == want_partner
-                and _to_int(obj.get("id_in_group")) == want_id
-                and _clean_str(obj.get("condition")) == want_cond
+                int(obj.get("batch", -1)) == target_batch
+                and obj.get("role") == PRODUCER
+                and int(obj.get("partner_id", -1)) == int(l.get("id_in_group"))
+                and int(obj.get("id_in_group", -1)) == int(l.get("partner_id"))
+                and str(obj.get("condition")) == str(l.get("condition"))
             ):
+                dbg("MATCH FOUND", matched_row=obj)
                 return obj
-
+    
+        dbg("NO MATCH FOUND in previous batch")
         return dict(sentences="[]")
 
     def get_sentences_data(self):
         l = self.get_linked_batch()
+    
+        dbg(
+            "get_sentences_data called",
+            participant=self.participant.code,
+            round=self.round_number,
+            role=self.inner_role,
+            link=l,
+        )
+    
         if not l:
+            dbg("NO LINKED BATCH")
             return []
-
+    
+        partner_id = int(l.get("partner_id", -999))
+        dbg("Linked batch info",
+            batch=l.get("batch"),
+            id_in_group=l.get("id_in_group"),
+            partner_id=partner_id,
+            condition=l.get("condition"),
+            sentences=l.get("sentences"),
+        )
+    
+        # Case 1: virtual producer (id=0)
+        if partner_id == 0:
+            try:
+                s = json.loads(l.get("sentences") or "[]")
+                dbg("Using predefined sentences (partner_id == 0)", sentences=s)
+                return s
+            except Exception as e:
+                dbg("FAILED to load predefined sentences", error=str(e))
+                return []
+    
+        # Case 2: real producer → previous batch
+        prev = self.get_previous_batch()
+        dbg("Previous batch lookup result", prev=prev)
+    
         try:
-            # If current interpreter is paired with producer 0 => use predefined sentences from THIS row
-            if _to_int(l.get("partner_id")) == 0:
-                return json.loads(l.get("sentences") or "[]")
-
-            # Else use previous-batch producer sentences
-            prev = self.get_previous_batch()
-            return json.loads(prev.get("sentences") or "[]")
-        except Exception:
+            s = json.loads(prev.get("sentences") or "[]")
+            dbg("Loaded sentences from previous batch", sentences=s)
+            return s
+        except Exception as e:
+            dbg("FAILED to load previous batch sentences", error=str(e))
             return []
 
     def update_batch(self):
@@ -247,26 +306,17 @@ class Player(BasePlayer):
         self.subsession.check_for_batch_completion()
 
     def get_full_sentences(self):
-        prefix = _clean_str(self.session.vars.get("prefix", ""))
-        suffixes = self.session.vars.get("suffixes") or []
-        sentences = self.get_sentences_data() or []
-
-        # Keep only list rows and drop blanks/None
-        cleaned = []
-        for sub in sentences:
-            if not isinstance(sub, list):
-                continue
-            if any(x is None or str(x).strip() == "" for x in sub):
-                continue
-            cleaned.append([str(x) for x in sub])
-
-        res = []
-        for sentence in cleaned:
-            expansion = [str(item) for pair in zip(sentence, suffixes) for item in pair]
-            if prefix:
-                expansion.insert(0, prefix)
-            res.append(" ".join(expansion))
-        return res
+        sentences = self.get_sentences_data()
+    
+        dbg(
+            "get_full_sentences",
+            raw_sentences=sentences,
+            suffixes=self.session.vars.get("suffixes"),
+            prefix=self.session.vars.get("prefix"),
+        )
+    
+        if not sentences:
+            dbg("NO SENTENCES AFTER get_sentences_data")
 
     def get_image_url(self):
         l = self.get_linked_batch()
