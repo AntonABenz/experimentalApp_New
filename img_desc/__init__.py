@@ -328,18 +328,26 @@ def creating_session(subsession: Subsession):
     df = excel_data.get("data")
     session.vars["user_data"] = df
 
-    # Helper to clean strings
+    # --- FIX START: Modified clean_str to preserve 'None' ---
     def clean_str(val):
         if val is None:
             return ""
         s = str(val).strip()
-        if s.lower() == "nan" or s.lower() == "none":
+        # Only return empty for 'nan' (Pandas null), BUT keep "None" or "none"
+        # as these are valid sentence parts.
+        if s.lower() == "nan":
             return ""
         return s
+    # --- FIX END ---
     
     if "Condition" in df.columns: df["Condition"] = df["Condition"].apply(clean_str)
     if "Item.Nr" in df.columns: df["Item.Nr"] = df["Item.Nr"].apply(clean_str)
     if "Item" in df.columns: df["Item"] = df["Item"].apply(clean_str)
+
+    # Note: If your sentences column contains literal "None" values in Excel, 
+    # they might still be read as NaN by Pandas. If the issue persists, 
+    # try wrapping the word in quotes in Excel (e.g., "'None'") 
+    # or ensure the column is formatted as Text.
 
     records = df.to_dict(orient="records")
     for r in records:
