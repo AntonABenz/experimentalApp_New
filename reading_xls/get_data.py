@@ -57,7 +57,9 @@ def _build_practice_settings(xl: pd.ExcelFile) -> Dict[str, Dict[str, Any]]:
     pattern = re.compile(r"_(\d+)$")
 
     for sheet_name in practice_sheets:
-        df = xl.parse(sheet_name, dtype=str).fillna("")
+        # --- FIX: keep_default_na=False ensures "None" stays "None" ---
+        df = xl.parse(sheet_name, dtype=str, keep_default_na=False)
+        
         # expect columns "name" and "value" (case-insensitive)
         df.columns = [str(c).strip().lower() for c in df.columns]
         if not {"name", "value"}.issubset(df.columns):
@@ -125,7 +127,9 @@ def get_data(filename: str):
             f"Settings/Data spreadsheet should contain a worksheet named '{SETTINGS_WS}'"
         )
 
-    settings_df = xl.parse(SETTINGS_WS, header=None, dtype=str).fillna("")
+    # --- FIX: keep_default_na=False to prevent text strings from becoming NaN ---
+    settings_df = xl.parse(SETTINGS_WS, header=None, dtype=str, keep_default_na=False)
+    
     # Expect 2-column key/value; same logic as old code
     #   col0 = key, col1 = value
     settings_dict = (
@@ -169,7 +173,7 @@ def get_data(filename: str):
 
     # practice pages flags: Practice1, Practice2, ...
     settings_dict["practice_pages"] = {
-        key: bool(int(value))
+        key: bool(int(value)) if str(value).isdigit() else False
         for key, value in settings_dict.items()
         if re.fullmatch(r"Practice\d+", str(key))
     }
@@ -180,7 +184,8 @@ def get_data(filename: str):
             f"Settings/Data spreadsheet should contain a worksheet named '{DATA_WS}'"
         )
 
-    df = xl.parse(DATA_WS, dtype={"Condition": str})
+    # --- FIX: keep_default_na=False ensures "None" is read as string, not NaN ---
+    df = xl.parse(DATA_WS, dtype={"Condition": str}, keep_default_na=False)
     conv_data = convert(df)
 
     # ----- PRACTICE -----
@@ -202,6 +207,8 @@ def long_data(filename: str):
     ALT_DATA_WS = "alt_data"
     if ALT_DATA_WS not in xl.sheet_names:
         raise Exception(f"No sheet named '{ALT_DATA_WS}' in {xlsx_path}")
-    df = xl.parse(ALT_DATA_WS, dtype={"Condition": str})
+    
+    # --- FIX: keep_default_na=False here as well ---
+    df = xl.parse(ALT_DATA_WS, dtype={"Condition": str}, keep_default_na=False)
     conv_data = convert(df)
     return conv_data
