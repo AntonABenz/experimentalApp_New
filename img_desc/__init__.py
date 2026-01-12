@@ -346,7 +346,6 @@ class Player(BasePlayer):
             if vars_.get("prolific_session_id"):
                 p.label = vars_.get("prolific_session_id")
 
-
 def creating_session(subsession: Subsession):
     session = subsession.session
 
@@ -369,21 +368,26 @@ def creating_session(subsession: Subsession):
     df = excel_data.get("data")
     session.vars["user_data"] = df
 
-    # --- create Batch rows as you already do ---
+    # --- create Batch rows ---
     records = df.to_dict(orient="records")
     for r in records:
+        sent_raw = r.get("sentences")
+        sentences = _force_str(sent_raw, default="[]")
+        if sentences.strip().lower() in ["nan", "none", ""]:
+            sentences = "[]"
+
         Batch.create(
             session_code=session.code,
             owner_code="",
             batch=int(r.get("Exp") or 0),
             item_nr=_force_str(r.get("Item.Nr")),
             condition=_force_str(r.get("Condition")),
-            image=_force_str(r.get("Item")),  # ensures "None" remains "None" if it exists as text
+            image=_force_str(r.get("Item")),   # keeps "None" as a string if it is text
             round_number=int(r.get("group_enumeration") or 0),
             role=_force_str(r.get("role")),
             id_in_group=int(r.get("id") or 0),
             partner_id=int(r.get("partner_id") or 0),
-            sentences=_force_str(r.get("sentences") or "[]"),
+            sentences=sentences,
         )
 
     settings = excel_data.get("settings") or {}
@@ -395,46 +399,38 @@ def creating_session(subsession: Subsession):
 
     # ---- core settings ----
     for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title"]:
-        session.vars[k] = clean_settings.get(normalize_key(k))
+        session.vars[k] = clean_settings.get(k)
 
     session.vars["suffixes"] = clean_settings.get("suffixes") or []
 
-    # ---- allowed values + allowed regexes (aligned by field index) ----
+    # ---- allowed values + allowed regexes ----
     allowed_values = []
     allowed_regexes = []
 
-    i = 1
-    while True:
+    for i in range(1, 11):
         v_key = f"allowed_values_{i}"
         r_key = f"allowed_regex_{i}"
 
-        v_val = clean_settings.get(normalize_key(v_key))
-        r_val = clean_settings.get(normalize_key(r_key))
+        v_val = clean_settings.get(v_key)
+        r_val = clean_settings.get(r_key)
 
-        if v_val or r_val:
-            # values list (for the "help list" display)
-            if v_val:
-                allowed_values.append([x.strip() for x in str(v_val).split(";") if x.strip()])
-            else:
-                allowed_values.append([])
-
-            # regex string (for validation)
-            allowed_regexes.append(str(r_val).strip() if r_val else "")
-            i += 1
+        if not v_val and not r_val:
             continue
 
-        # stop after some reasonable max to avoid infinite loop
-        if i > 10:
-            break
-        i += 1
+        allowed_values.append([x.strip() for x in str(v_val).split(";") if x.strip()] if v_val else [])
+        allowed_regexes.append(str(r_val).strip() if r_val else "")
 
     session.vars["allowed_values"] = allowed_values
     session.vars["allowed_regexes"] = allowed_regexes
 
+    caseflag_raw = clean_settings.get("caseflag", "")
+    session.vars["caseflag"] = str(caseflag_raw).strip().lower() in ["true", "1", "t", "yes", "y"]
+
     # ---- instructions url ----
     default_url = "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
-    url_from_settings = clean_settings.get(normalize_key("instructions_url"))
+    url_from_settings = clean_settings.get("instructions_url")
     session.vars["instructions_url"] = url_from_settings if url_from_settings else default_url
+
 
 class FaultyCatcher(Page):
     @staticmethod
@@ -488,13 +484,14 @@ class Q(Page):
         return dict(
             d=player.get_linked_batch(),
             allowed_values=player.session.vars.get("allowed_values", []),
-            allowed_regexes=player.session.vars.get("allowed_regexes", []),  # ✅ ADD THIS
+            allowed_regexes=player.session.vars.get("allowed_regexes", []),
             suffixes=player.session.vars.get("suffixes", []),
-            prefix=player.session.vars.get("prefix", ""),                    # ✅ if q.html uses prefix
             interpreter_choices=interpreter_choices,
             interpreter_title=interpreter_title,
             instructions_url=player.session.vars.get("instructions_url"),
+            caseflag=player.session.vars.get("caseflag", False),
         )
+
 
     @staticmethod
     def before_next_page(player, timeout_happened):
