@@ -9,23 +9,33 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
 <style>
     [v-cloak] { display: none; }
 
-    /* Top-right Instructions button */
-    .help-fab {
+    /* Instructions button (top-right) */
+    .instructions-btn {
         position: fixed;
         top: 14px;
         right: 14px;
-        border-radius: 999px;
-        border: 1px solid #999;
-        background: #ffffff;
-        font-weight: 700;
-        font-size: 14px;
-        padding: 8px 12px;
-        cursor: pointer;
-        z-index: 3000;
+        z-index: 3500;
         box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-        user-select: none;
     }
-    .help-fab:hover { background: #f6f6f6; }
+
+    /* Inline help icon next to each field */
+    .field-help {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 1px solid #888;
+        background: #fff;
+        font-weight: 800;
+        font-size: 12px;
+        margin-left: 8px;
+        cursor: pointer;
+        user-select: none;
+        flex: 0 0 auto;
+    }
+    .field-help:hover { background: #f6f6f6; }
 
     /* Modal overlay */
     .modal-overlay {
@@ -35,9 +45,10 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         display: flex;
         align-items: center;
         justify-content: center;
-        z-index: 4000;
+        z-index: 5000;
         padding: 12px;
     }
+
     .modal-box {
         background: white;
         width: 96%;
@@ -48,6 +59,7 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         display: flex;
         flex-direction: column;
     }
+
     .modal-header {
         padding: 10px 12px;
         border-bottom: 1px solid #e5e5e5;
@@ -56,39 +68,30 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         align-items: center;
         gap: 8px;
     }
-    .modal-body { flex: 1; }
 
-    /* Producer */
-    .input-group { max-width: 980px; margin: 0 auto; }
-    .clean-row { margin-bottom: 14px; }
+    .modal-body { flex: 1; overflow: auto; padding: 14px; }
 
-    .field-row {
-        display: flex;
-        align-items: baseline;
-        gap: 8px;
-        margin-bottom: 10px;
-        flex-wrap: wrap;
-    }
-    .input-kids {
-        min-width: 260px;
-        max-width: 420px;
+    /* Producer layout */
+    .input-group { max-width: 900px; margin: 0 auto; }
+    .input-kids { min-width: 260px; }
+    .clean-row { margin-bottom: 16px; }
+
+    .field-wrap {
+        display: inline-flex;
+        align-items: center;
+        margin-right: 14px;
+        margin-bottom: 8px;
     }
 
-    /* little help icon after input */
-    .field-help {
-        width: 28px;
-        height: 28px;
-        border-radius: 50%;
-        border: 1px solid #999;
-        background: #fff;
-        font-weight: 800;
-        line-height: 26px;
-        text-align: center;
-        cursor: pointer;
-        user-select: none;
-        flex: 0 0 auto;
+    .suffix {
+        margin-left: 10px;
+        font-weight: 700;
     }
-    .field-help:hover { background: #f6f6f6; }
+
+    .invalid {
+        border-color: #dc3545 !important;
+        box-shadow: 0 0 0 0.15rem rgba(220,53,69,.25);
+    }
 
     /* Interpreter */
     .sentence-card {
@@ -100,6 +103,7 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         font-size: 1.15rem;
         text-align: center;
     }
+
     table.buy-table {
         max-width: 900px;
         margin: 0 auto;
@@ -109,63 +113,66 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
 <script>
 window.props = {
     role: "{{ player.inner_role }}",
-    suffixes: {{ suffixes|json }},
     prefix: {{ prefix|json }},
+    allowedValues: {{ allowed_values|json }},
+    allowedRegexes: {{ allowed_regexes|json }},
+    suffixes: {{ suffixes|json }},
     full_sentences: {{ player.get_full_sentences|json }},
     interpreter_choices: {{ interpreter_choices|json }},
     interpreter_title: {{ interpreter_title|json }},
-    instructions_url: {{ instructions_url|json }},
-    allowed_values: {{ allowed_values|json }},
-    allowed_regexes: {{ allowed_regexes|json }},
-    caseflag: {{ caseflag|json }},
-    server_image_url: "{{ player.get_image_url }}"
+    instructions_url: {{ instructions_url|json }}
 };
 </script>
 
 <div id="app" v-cloak>
 
-    <!-- Top-right instructions -->
-    <div class="help-fab" title="Instructions" @click="openInstructions">
+    <!-- TOP RIGHT: Instructions -->
+    <button type="button"
+            class="btn btn-success instructions-btn"
+            @click="openInstructions">
         Instructions
-    </div>
+    </button>
 
-    <!-- Instructions modal -->
+    <!-- Instructions Modal -->
     <div v-if="showInstructions" class="modal-overlay" @click.self="closeInstructions">
         <div class="modal-box">
             <div class="modal-header">
                 <div style="font-weight:700;">Instructions</div>
-                <div style="display:flex; gap:8px;">
+                <div>
                     <button type="button" class="btn btn-sm btn-secondary" @click="reloadInstructions">Reload</button>
                     <button type="button" class="btn btn-sm btn-danger" @click="closeInstructions">Close</button>
                 </div>
             </div>
-            <div class="modal-body">
+            <div class="modal-body" style="padding:0;">
                 <iframe :src="instructionsSrc" style="width:100%; height:100%; border:none;"></iframe>
             </div>
         </div>
     </div>
 
-    <!-- Per-field options modal -->
-    <div v-if="showFieldHelp" class="modal-overlay" @click.self="closeFieldHelp">
-        <div class="modal-box" style="max-width:760px; height:auto; max-height:86%;">
+    <!-- Field options Modal -->
+    <div v-if="showOptions" class="modal-overlay" @click.self="closeOptions">
+        <div class="modal-box" style="max-width:900px; height:auto; max-height:90%;">
             <div class="modal-header">
-                <div style="font-weight:700;">
-                    Options for field [[ optionsFieldNumber ]]
-                </div>
-                <div style="display:flex; gap:8px;">
-                    <button type="button" class="btn btn-sm btn-danger" @click="closeFieldHelp">Close</button>
+                <div style="font-weight:700;">Allowed options — Field [[ optionsFieldNumber ]]</div>
+                <div>
+                    <button type="button" class="btn btn-sm btn-danger" @click="closeOptions">Close</button>
                 </div>
             </div>
-            <div class="modal-body" style="padding:14px; overflow:auto;">
-                <div v-if="optionsList.length === 0" class="alert alert-warning">
-                    No option list provided for this field.
+            <div class="modal-body">
+                <div v-if="optionsList.length">
+                    <ul>
+                        <li v-for="(v,idx) in optionsList" :key="'opt-'+idx">[[ v ]]</li>
+                    </ul>
                 </div>
-                <ul v-else style="margin:0; padding-left: 20px;">
-                    <li v-for="(opt, idx) in optionsList" :key="'opt-'+idx">[[ opt ]]</li>
-                </ul>
-                <div v-if="currentRegex" style="margin-top:12px; font-size: 0.9rem; color:#444;">
-                    <div><b>Validation pattern:</b></div>
-                    <div style="font-family: monospace; white-space: pre-wrap;">[[ currentRegex ]]</div>
+                <div v-else class="text-muted">
+                    No list provided for this field.
+                </div>
+
+                <hr>
+
+                <div>
+                    <div style="font-weight:700; margin-bottom:6px;">Regex:</div>
+                    <pre style="white-space:pre-wrap; word-break:break-word; background:#f7f7f7; padding:10px; border-radius:6px;">[[ optionsRegex || "(no regex provided)" ]]</pre>
                 </div>
             </div>
         </div>
@@ -175,42 +182,35 @@ window.props = {
     <div v-if="props.role === 'P'">
 
         <div class="text-center my-4">
-            <img v-if="props.server_image_url"
-                 :src="props.server_image_url"
-                 style="max-width:100%; max-height:520px; border:1px solid #ddd;"
-                 @error="imageError=true">
-            <div v-else class="alert alert-warning" style="max-width:900px; margin:0 auto;">
-                Image unavailable for this round.
-            </div>
-            <div v-if="imageError" class="alert alert-danger" style="max-width:900px; margin:12px auto 0;">
-                The image failed to load. Please continue and report the round number to the experimenter.
+            <img :src="imageUrl"
+                 @error="onImageError"
+                 style="max-width:100%;max-height:520px;border:1px solid #ddd;">
+            <div v-if="imageBroken" class="alert alert-warning mt-2" style="max-width:900px;margin:12px auto;">
+                Image could not be loaded. Please contact the experimenter.
             </div>
         </div>
 
         <div class="text-center">
-            <div v-for="(item, i) in items" :key="'row-'+i" class="clean-row">
+            <div v-for="(item, i) in items" :key="i" class="clean-row">
                 <div class="input-group">
 
-                    <div v-for="(f, j) in item.fields" :key="'f-'+i+'-'+j" class="field-row">
+                    <div v-for="(f, j) in item.fields" :key="j" class="field-wrap">
 
-                        <!-- TEXT input with regex validation -->
-                        <input class="form-control input-kids"
-                               v-model="f.value"
-                               :placeholder="'Type here...'"
-                               autocomplete="off"
-                               :data-field-index="j"
-                               @blur="validateField(i,j)"
+                        <input
+                            class="form-control input-kids"
+                            :class="{ invalid: fieldInvalid(i,j) }"
+                            v-model="f.value"
+                            :placeholder="'Field ' + (j+1)"
+                            autocomplete="off"
                         >
 
-                        <!-- HELP icon at end of input -->
                         <div class="field-help"
-                             title="Show options"
-                             @click="openFieldHelp(j)">
+                             :title="'Show allowed options for Field ' + (j+1)"
+                             @click="openOptions(j)">
                             ?
                         </div>
 
-                        <span class="mx-2 font-weight-bold">[[ f.suffix ]]</span>
-
+                        <span v-if="f.suffix" class="suffix">[[ f.suffix ]]</span>
                     </div>
 
                     <button type="button"
@@ -257,10 +257,16 @@ window.props = {
                 <tr v-for="(choice,i) in props.interpreter_choices" :key="'ic-'+i">
                     <td>[[ choice ]]</td>
                     <td class="text-center">
-                        <input type="radio" :name="'row_'+i" value="Yes" v-model="interpRows[i]">
+                        <input type="radio"
+                               :name="'row_'+i"
+                               value="Yes"
+                               v-model="interpRows[i]">
                     </td>
                     <td class="text-center">
-                        <input type="radio" :name="'row_'+i" value="No" v-model="interpRows[i]">
+                        <input type="radio"
+                               :name="'row_'+i"
+                               value="No"
+                               v-model="interpRows[i]">
                     </td>
                 </tr>
             </tbody>
@@ -271,6 +277,7 @@ window.props = {
         {% if player.inner_role == 'I' %}
             {{ formfield_errors 'interpreter_decision' }}
         {% endif %}
+
     </div>
 
     <p v-if="errorMsg" class="alert alert-danger text-center mt-3">[[ errorMsg ]]</p>
@@ -295,18 +302,19 @@ const app = Vue.createApp({
             maxItems: 5,
             interpRows: Array(ic.length).fill(null),
             errorMsg: "",
-            showInstructions: false,
-            instrNonce: 0,
 
-            showFieldHelp: false,
+            showInstructions: false,
+            instructionsNonce: 0,
+
+            showOptions: false,
             optionsFieldIndex: 0,
 
-            imageError: false,
+            imageBroken: false
         };
     },
     computed: {
         producerPayload() {
-            return JSON.stringify(this.items.map(i => i.fields.map(f => (f.value ?? ""))));
+            return JSON.stringify(this.items.map(i => i.fields.map(f => f.value)));
         },
         interpreterPayload() {
             return JSON.stringify(
@@ -318,33 +326,48 @@ const app = Vue.createApp({
         },
         instructionsSrc() {
             const base = String(this.props.instructions_url || "");
+            if (!base) return "";
             const joiner = base.includes("?") ? "&" : "?";
-            return base + joiner + "v=" + this.instrNonce;
+            return base + joiner + "v=" + this.instructionsNonce;
         },
-        optionsList() {
-            const av = Array.isArray(this.props.allowed_values) ? this.props.allowed_values : [];
-            const vals = av[this.optionsFieldIndex] || [];
-            return (vals || []).map(x => String(x));
-        },
-        currentRegex() {
-            const ar = Array.isArray(this.props.allowed_regexes) ? this.props.allowed_regexes : [];
-            return ar[this.optionsFieldIndex] ? String(ar[this.optionsFieldIndex]) : "";
+        imageUrl() {
+            // image url is server-rendered in the <img> tag in older versions;
+            // now we keep it simple by using the server computed URL via a hidden variable if you want.
+            // For compatibility, we re-use the original img src by reading it directly is hard; easiest is to pass it via template.
+            // We'll set it below using a data-attribute fallback approach.
+            const el = document.querySelector("img[data-server-image-url]");
+            return el ? el.getAttribute("data-server-image-url") : "{{ player.get_image_url }}";
         },
         optionsFieldNumber() {
             return this.optionsFieldIndex + 1;
+        },
+        optionsList() {
+            const av = Array.isArray(this.props.allowedValues) ? this.props.allowedValues : [];
+            return av[this.optionsFieldIndex] || [];
+        },
+        optionsRegex() {
+            const ar = Array.isArray(this.props.allowedRegexes) ? this.props.allowedRegexes : [];
+            return ar[this.optionsFieldIndex] || "";
         }
     },
     methods: {
-        openInstructions() { this.instrNonce += 1; this.showInstructions = true; },
-        closeInstructions() { this.showInstructions = false; },
-        reloadInstructions() { this.instrNonce += 1; },
-
-        openFieldHelp(fieldIndex) {
-            this.optionsFieldIndex = fieldIndex;
-            this.showFieldHelp = true;
+        openInstructions() {
+            this.instructionsNonce += 1;
+            this.showInstructions = true;
         },
-        closeFieldHelp() {
-            this.showFieldHelp = false;
+        closeInstructions() {
+            this.showInstructions = false;
+        },
+        reloadInstructions() {
+            this.instructionsNonce += 1;
+        },
+
+        openOptions(fieldIndex) {
+            this.optionsFieldIndex = fieldIndex;
+            this.showOptions = true;
+        },
+        closeOptions() {
+            this.showOptions = false;
         },
 
         addItem() {
@@ -357,24 +380,22 @@ const app = Vue.createApp({
             this.items.splice(i, 1);
         },
 
-        // regex validation per field
-        validateField(i, j) {
-            const raw = String(this.items[i].fields[j].value ?? "").trim();
-            const patt = (Array.isArray(this.props.allowed_regexes) ? this.props.allowed_regexes[j] : "") || "";
-            if (!patt) return true; // no regex supplied -> allow
+        onImageError() {
+            this.imageBroken = true;
+        },
 
+        fieldInvalid(rowIdx, fieldIdx) {
+            if (this.props.role !== "P") return false;
+            const val = String(this.items[rowIdx].fields[fieldIdx].value || "").trim();
+            if (!val) return false; // empty handled on submit
+            const regexStr = (this.props.allowedRegexes || [])[fieldIdx];
+            if (!regexStr) return false;
             try {
-                const flags = this.props.caseflag ? "i" : "";
-                const re = new RegExp("^" + patt + "$", flags);
-                const ok = re.test(raw);
-                if (!ok) {
-                    this.errorMsg = `Field ${j+1} is not in the allowed format. Click the ? icon for examples.`;
-                }
-                return ok;
+                const re = new RegExp("^" + regexStr + "$", "i");
+                return !re.test(val);
             } catch (e) {
-                // if regex itself is malformed, don't block participants
-                console.warn("Bad regex:", patt, e);
-                return true;
+                // if regex is invalid, do not block user; backend should fix
+                return false;
             }
         },
 
@@ -389,25 +410,28 @@ const app = Vue.createApp({
             }
 
             if (this.props.role === "P") {
-                // all fields filled?
-                const allFilled = this.items.every(row =>
-                    row.fields.every(f => String(f.value || "").trim() !== "")
-                );
-                if (!allFilled) {
-                    this.errorMsg = "Please fill in all fields.";
-                    return;
-                }
-
-                // all fields match regex?
-                for (let i=0; i<this.items.length; i++) {
-                    for (let j=0; j<this.items[i].fields.length; j++) {
-                        if (!this.validateField(i,j)) return;
+                // all fields filled + match regex if provided
+                for (let r = 0; r < this.items.length; r++) {
+                    for (let c = 0; c < this.items[r].fields.length; c++) {
+                        const val = String(this.items[r].fields[c].value || "").trim();
+                        if (!val) {
+                            this.errorMsg = "Please fill in all fields.";
+                            return;
+                        }
+                        const regexStr = (this.props.allowedRegexes || [])[c];
+                        if (regexStr) {
+                            try {
+                                const re = new RegExp("^" + regexStr + "$", "i");
+                                if (!re.test(val)) {
+                                    this.errorMsg = `Field ${c+1} does not match the allowed format. Click the ? next to the field to see options.`;
+                                    return;
+                                }
+                            } catch (e) {
+                                // ignore regex compile errors client-side
+                            }
+                        }
                     }
                 }
-
-                // confirm submit (Anton’s point #1)
-                const ok = window.confirm("Submit your description now? You cannot edit after continuing.");
-                if (!ok) return;
             }
 
             const outerForm = document.querySelector("form");
