@@ -3,9 +3,8 @@ import json
 import logging
 import os
 import re
+import time  # Used for timing instead of datetime
 from sqlalchemy import create_engine, text
-from django.db import models as djmodels
-from datetime import datetime, timezone #
 
 logger = logging.getLogger("benzapp.img_desc")
 
@@ -130,9 +129,10 @@ class Player(BasePlayer):
     producer_decision = models.LongStringField()
     interpreter_decision = models.LongStringField()
 
-    start_decision_time = djmodels.DateTimeField(null=True)
-    end_decision_time = djmodels.DateTimeField(null=True)
-    decision_seconds = models.FloatField()
+    # --- UPDATED: Use FloatField for timestamps to avoid TypeError ---
+    start_decision_time = models.FloatField(initial=0)
+    end_decision_time = models.FloatField(initial=0)
+    decision_seconds = models.FloatField(initial=0)
 
     link_id = models.IntegerField(initial=0)
 
@@ -177,14 +177,12 @@ class Player(BasePlayer):
         if not l:
             return []
         
-        # PRODUCER: always its own row
         if self.inner_role == PRODUCER:
             try:
                 return json.loads(l.get("sentences") or "[]")
             except Exception:
                 return []
 
-        # INTERPRETER logic
         try:
             if l.get("partner_id") in (0, "0", None):
                 return json.loads(l.get("sentences") or "[]")
@@ -232,7 +230,6 @@ class Player(BasePlayer):
         if not l:
             return ""
         
-        # Ensure image is treated as a string and handle "None"
         image_name = str(l.get("image") or "").strip()
         if not image_name or image_name.lower() == "none" or image_name.lower() == "nan":
             return ""
@@ -250,7 +247,6 @@ class Player(BasePlayer):
         session = self.session
         subsession = self.subsession
 
-        # Ensure active_batch never null
         if subsession.field_maybe_none("active_batch") is None:
             Subsession.objects.filter(session=session, active_batch__isnull=True).update(active_batch=1)
             subsession.active_batch = 1
@@ -331,8 +327,6 @@ def creating_session(subsession: Subsession):
     df = excel_data.get("data")
     session.vars["user_data"] = df
 
-    # --- STRING CLEANING HELPER ---
-    # Fixes the issue where "None" or numbers are not treated as strings
     def clean_str(val):
         if val is None:
             return ""
@@ -341,8 +335,6 @@ def creating_session(subsession: Subsession):
             return ""
         return s
     
-    # Pre-process dataframe to ensure strings
-    # "Condition", "Item.Nr", "Item", and sentences need to be strings
     if "Condition" in df.columns: df["Condition"] = df["Condition"].apply(clean_str)
     if "Item.Nr" in df.columns: df["Item.Nr"] = df["Item.Nr"].apply(clean_str)
     if "Item" in df.columns: df["Item"] = df["Item"].apply(clean_str)
@@ -421,10 +413,9 @@ class Q(Page):
             return False
         
         # --- TIMING: START ---
-        # Record when the page is displayed.
-        # We check if it's already set to prevent overwriting on page refresh.
-        if not player.start_decision_time:
-            player.start_decision_time = datetime.now(timezone.utc)
+        # Initialize start time if it's 0 (default)
+        if player.start_decision_time == 0:
+            player.start_decision_time = time.time()
         
         player.start()
         if player.faulty:
@@ -466,9 +457,9 @@ class Q(Page):
     @staticmethod
     def before_next_page(player, timeout_happened):
         # --- TIMING: END ---
-        player.end_decision_time = datetime.now(timezone.utc)
-        if player.start_decision_time:
-            player.decision_seconds = (player.end_decision_time - player.start_decision_time).total_seconds()
+        player.end_decision_time = time.time()
+        if player.start_decision_time > 0:
+            player.decision_seconds = player.end_decision_time - player.start_decision_time
         
         player.update_batch()
         if player.round_number == Constants.num_rounds:
@@ -494,16 +485,34 @@ class FinalForProlific(Page):
             return redirect(url)
         return redirect("https://cnn.com")
 
-# --- CUSTOM EXPORT FUNCTION ---
-# This will appear in the "Data" tab of oTree admin
 def custom_export(players):
     # Header
     yield ['session', 'participant_code', 'round', 'role', 'condition', 'item_nr', 'image', 'producer_sentences', 'interpreter_rewards', 'decision_seconds']
     
-    # We query the Batch table directly because it contains the linked data
+    # We query the Batch table directly
     all_batches = Batch.objects.order_by('session_code', 'batch', 'id_in_group')
     
+    # Pre-fetch decision seconds from players to avoid N+1 queries ideally,
+    # but for simplicity we map via participant code and round.
+    # Actually, we can just iterate players since that's what custom_export passes usually,
+    # BUT Batch has the core data. Let's do a join logic in python.
+    
+    # Create a map of (session, owner_code, round) -> decision_seconds
+    # NOTE: 'players' passed to this function is a QuerySet of all players in this app
+    player_timing = {}
+    for p in players:
+        # p.participant.code might require extra query, so use p.participant_id if possible
+        # but owner_code in Batch stores participant.code.
+        player_timing[(p.session.code, p.participant.code, p.round_number)] = p.decision_seconds
+
     for b in all_batches:
+        # Only export batches relevant to the sessions in 'players' (optimization optional)
+        
+        # Get decision seconds if an owner exists
+        ds = ""
+        if b.owner_code:
+             ds = player_timing.get((b.session_code, b.owner_code, b.round_number), "")
+
         yield [
             b.session_code,
             b.owner_code,
@@ -512,10 +521,9 @@ def custom_export(players):
             b.condition,
             b.item_nr,
             b.image,
-            b.sentences, # Producer output
-            b.rewards,   # Interpreter output
-            # To get decision_seconds, we have to find the matching Player object
-            # This is slightly inefficient but works for export
+            b.sentences,
+            b.rewards,
+            ds
         ]
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
