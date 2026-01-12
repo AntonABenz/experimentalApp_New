@@ -43,7 +43,7 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
     .modal-body { flex: 1; overflow: auto; padding: 14px; }
 
     /* Confirm Modal specific style */
-    .confirm-box { max-width: 500px; height: auto; }
+    .confirm-box { max-width: 400px; height: auto; }
 
     .input-group { max-width: 900px; margin: 0 auto; }
     .input-kids { min-width: 260px; }
@@ -113,15 +113,14 @@ window.props = {
     <div v-if="showConfirmModal" class="modal-overlay" @click.self="showConfirmModal = false">
         <div class="modal-box confirm-box">
             <div class="modal-header">
-                <div style="font-weight:700;">Submit Confirmation</div>
-                <button type="button" class="btn btn-sm btn-danger" @click="showConfirmModal = false">Cancel</button>
+                <div style="font-weight:700;">Confirm</div>
+                <button type="button" class="close" @click="showConfirmModal = false">&times;</button>
             </div>
             <div class="modal-body text-center">
-                <p class="lead">Are you sure you want to submit your description?</p>
-                <p>You cannot change it afterwards.</p>
-                <div class="mt-4">
-                    <button type="button" class="btn btn-secondary mr-2" @click="showConfirmModal = false">Return</button>
-                    <button type="button" class="btn btn-primary" @click="confirmSubmit">Yes, Submit</button>
+                <p class="lead font-weight-bold" style="margin-top: 10px;">Do you want to submit?</p>
+                <div class="d-flex justify-content-around mt-4 mb-2">
+                    <button type="button" class="btn btn-danger btn-lg" style="min-width: 100px;" @click="showConfirmModal = false">No</button>
+                    <button type="button" class="btn btn-success btn-lg" style="min-width: 100px;" @click="confirmSubmit">Yes</button>
                 </div>
             </div>
         </div>
@@ -129,7 +128,10 @@ window.props = {
 
     <div v-if="props.role === 'P'">
         <div class="text-center my-4">
-            <img :src="imageUrl" @error="onImageError" style="max-width:100%;max-height:520px;border:1px solid #ddd;">
+            <img v-if="imageUrl"
+                 :src="imageUrl"
+                 @error="onImageError"
+                 style="max-width:100%;max-height:520px;border:1px solid #ddd;">
             <div v-if="imageBroken" class="alert alert-warning mt-2" style="max-width:900px;margin:12px auto;">
                 Image could not be loaded. Please contact the experimenter.
             </div>
@@ -209,7 +211,7 @@ const app = Vue.createApp({
             showOptions: false,
             optionsFieldIndex: 0,
             imageBroken: false,
-            showConfirmModal: false // For Producer confirmation
+            showConfirmModal: false
         };
     },
     computed: {
@@ -272,7 +274,6 @@ const app = Vue.createApp({
                     this.errorMsg = "Please answer Yes/No for every row.";
                     return;
                 }
-                // Interpreters submit immediately
                 this.submitForm();
             }
 
@@ -296,7 +297,6 @@ const app = Vue.createApp({
                         }
                     }
                 }
-                // Producers show confirmation modal
                 this.showConfirmModal = true;
             }
         },
