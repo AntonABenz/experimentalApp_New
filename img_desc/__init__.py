@@ -5,6 +5,7 @@ import os
 import re
 from sqlalchemy import create_engine, text
 from django.db import models as djmodels
+from datetime import datetime, timezone #
 
 logger = logging.getLogger("benzapp.img_desc")
 
@@ -12,7 +13,6 @@ PRODUCER = "P"
 INTERPRETER = "I"
 
 STUBURL = "https://app.prolific.co/submissions/complete?cc="
-
 
 class Constants(BaseConstants):
     name_in_url = "img_desc"
@@ -26,7 +26,6 @@ class Constants(BaseConstants):
     API_ERR_URL = STUBURL + API_ERR
     INTERPRETER = INTERPRETER
     PRODUCER = PRODUCER
-
 
 class Batch(ExtraModel):
     session_code = models.StringField()
@@ -44,9 +43,7 @@ class Batch(ExtraModel):
     busy = models.BooleanField(initial=False)
     processed = models.BooleanField(initial=False)
 
-
 _custom_engine = None
-
 
 def get_engine():
     global _custom_engine
@@ -61,14 +58,12 @@ def get_engine():
     _custom_engine = create_engine(db_url)
     return _custom_engine
 
-
 def get_all_batches_sql(session_code):
     engine = get_engine()
     sql = text("SELECT * FROM img_desc_batch WHERE session_code = :session_code")
     with engine.connect() as conn:
         result = conn.execute(sql, {"session_code": session_code})
         return [dict(zip(result.keys(), row)) for row in result]
-
 
 def sql_update_batch(batch_id, **kwargs):
     if not kwargs:
@@ -86,17 +81,13 @@ def sql_update_batch(batch_id, **kwargs):
         if hasattr(conn, "commit"):
             conn.commit()
 
-
 def normalize_key(key):
     if not key:
         return ""
     return re.sub(r"[\s_]+", "_", str(key).lower().strip())
 
-
 class Subsession(BaseSubsession):
-    # IMPORTANT: never allow NULL
     active_batch = models.IntegerField(initial=1)
-
     study_id = models.StringField()
     completion_code = models.StringField()
     full_return_url = models.StringField()
@@ -119,10 +110,8 @@ class Subsession(BaseSubsession):
         session.vars["active_batch"] = active_batch + 1
         Subsession.objects.filter(session=session).update(active_batch=active_batch + 1)
 
-
 class Group(BaseGroup):
     pass
-
 
 class Player(BasePlayer):
     inner_role = models.StringField()
@@ -160,30 +149,18 @@ class Player(BasePlayer):
         return None
 
     def get_previous_batch(self):
-        """
-        Interpreter only:
-        - If partner_id == 0 => use current row sentences (already handled elsewhere)
-        - Else:
-            Exp n: look up producer sentences in Exp n-1 with same pairing + condition, but role=PRODUCER
-        """
         if self.inner_role != INTERPRETER:
             return dict(sentences="[]")
-
         l = self.get_linked_batch()
         if not l or l.get("partner_id") in (0, "0", None):
             return dict(sentences="[]")
-
-        # Safe active_batch
+        
         active_batch = self.subsession.field_maybe_none("active_batch") or 1
         target_batch_idx = active_batch - 1
-
         if target_batch_idx < 0:
             return dict(sentences="[]")
 
         all_data = get_all_batches_sql(self.session.code)
-
-        # Find the producer row in previous Exp (target_batch_idx) that matches this pairing and condition
-        # Important: producer row should be role=PRODUCER and have swapped ids like Anton described.
         for obj in all_data:
             if (
                 obj["batch"] == target_batch_idx
@@ -193,20 +170,13 @@ class Player(BasePlayer):
                 and obj["condition"] == l["condition"]
             ):
                 return obj
-
         return dict(sentences="[]")
 
     def get_sentences_data(self):
-        """
-        PRODUCER: always load from its own row (sheet starter or []), never from previous exp.
-        INTERPRETER:
-          - if partner_id==0: use current row's sentences (sheet-defined baseline)
-          - else: use previous exp producer sentences
-        """
         l = self.get_linked_batch()
         if not l:
             return []
-
+        
         # PRODUCER: always its own row
         if self.inner_role == PRODUCER:
             try:
@@ -261,12 +231,14 @@ class Player(BasePlayer):
         l = self.get_linked_batch()
         if not l:
             return ""
-        image_name = l.get("image") or ""
-        if not image_name or str(image_name).lower().startswith("na"):
+        
+        # Ensure image is treated as a string and handle "None"
+        image_name = str(l.get("image") or "").strip()
+        if not image_name or image_name.lower() == "none" or image_name.lower() == "nan":
             return ""
 
         ext = self.session.vars.get("extension", "png") or "png"
-        if not str(image_name).lower().endswith(f".{ext}"):
+        if not image_name.lower().endswith(f".{ext}"):
             image_name = f"{image_name}.{ext}"
 
         base = (self.session.vars.get("s3path_base") or "").rstrip("/")
@@ -341,7 +313,6 @@ class Player(BasePlayer):
 def creating_session(subsession: Subsession):
     session = subsession.session
 
-    # Ensure active_batch is never null
     if subsession.field_maybe_none("active_batch") is None:
         subsession.active_batch = 1
 
@@ -360,7 +331,22 @@ def creating_session(subsession: Subsession):
     df = excel_data.get("data")
     session.vars["user_data"] = df
 
-    # --- create Batch rows as you already do ---
+    # --- STRING CLEANING HELPER ---
+    # Fixes the issue where "None" or numbers are not treated as strings
+    def clean_str(val):
+        if val is None:
+            return ""
+        s = str(val).strip()
+        if s.lower() == "nan" or s.lower() == "none":
+            return ""
+        return s
+    
+    # Pre-process dataframe to ensure strings
+    # "Condition", "Item.Nr", "Item", and sentences need to be strings
+    if "Condition" in df.columns: df["Condition"] = df["Condition"].apply(clean_str)
+    if "Item.Nr" in df.columns: df["Item.Nr"] = df["Item.Nr"].apply(clean_str)
+    if "Item" in df.columns: df["Item"] = df["Item"].apply(clean_str)
+
     records = df.to_dict(orient="records")
     for r in records:
         Batch.create(
@@ -378,43 +364,32 @@ def creating_session(subsession: Subsession):
         )
 
     settings = excel_data.get("settings") or {}
-
     clean_settings = {}
     for k, v in settings.items():
         clean_settings[normalize_key(k)] = v
     session.vars["user_settings"] = clean_settings
 
-    # ---- core settings ----
     for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title"]:
         session.vars[k] = clean_settings.get(normalize_key(k))
 
     session.vars["suffixes"] = clean_settings.get("suffixes") or []
 
-    # ---- allowed values + allowed regexes (aligned by field index) ----
     allowed_values = []
     allowed_regexes = []
-
     i = 1
     while True:
         v_key = f"allowed_values_{i}"
         r_key = f"allowed_regex_{i}"
-
         v_val = clean_settings.get(normalize_key(v_key))
         r_val = clean_settings.get(normalize_key(r_key))
-
         if v_val or r_val:
-            # values list (for the "help list" display)
             if v_val:
                 allowed_values.append([x.strip() for x in str(v_val).split(";") if x.strip()])
             else:
                 allowed_values.append([])
-
-            # regex string (for validation)
             allowed_regexes.append(str(r_val).strip() if r_val else "")
             i += 1
             continue
-
-        # stop after some reasonable max to avoid infinite loop
         if i > 10:
             break
         i += 1
@@ -422,7 +397,6 @@ def creating_session(subsession: Subsession):
     session.vars["allowed_values"] = allowed_values
     session.vars["allowed_regexes"] = allowed_regexes
 
-    # ---- instructions url ----
     default_url = "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
     url_from_settings = clean_settings.get(normalize_key("instructions_url"))
     session.vars["instructions_url"] = url_from_settings if url_from_settings else default_url
@@ -437,7 +411,6 @@ class FaultyCatcher(Page):
             return redirect(Constants.FALLBACK_URL)
         return super().get()
 
-
 class Q(Page):
     instructions = True
     form_model = "player"
@@ -446,18 +419,21 @@ class Q(Page):
     def is_displayed(player):
         if player.faulty:
             return False
-
+        
+        # --- TIMING: START ---
+        # Record when the page is displayed.
+        # We check if it's already set to prevent overwriting on page refresh.
+        if not player.start_decision_time:
+            player.start_decision_time = datetime.now(timezone.utc)
+        
         player.start()
-
         if player.faulty:
             return False
-
         return player.round_number <= Constants.num_rounds
 
     @staticmethod
     def get_form_fields(player):
         role = player.field_maybe_none("inner_role")
-
         if role == PRODUCER:
             return ["producer_decision"]
         elif role == INTERPRETER:
@@ -479,9 +455,9 @@ class Q(Page):
         return dict(
             d=player.get_linked_batch(),
             allowed_values=player.session.vars.get("allowed_values", []),
-            allowed_regexes=player.session.vars.get("allowed_regexes", []),  # ✅ ADD THIS
+            allowed_regexes=player.session.vars.get("allowed_regexes", []),
             suffixes=player.session.vars.get("suffixes", []),
-            prefix=player.session.vars.get("prefix", ""),                    # ✅ if q.html uses prefix
+            prefix=player.session.vars.get("prefix", ""),
             interpreter_choices=interpreter_choices,
             interpreter_title=interpreter_title,
             instructions_url=player.session.vars.get("instructions_url"),
@@ -489,6 +465,11 @@ class Q(Page):
 
     @staticmethod
     def before_next_page(player, timeout_happened):
+        # --- TIMING: END ---
+        player.end_decision_time = datetime.now(timezone.utc)
+        if player.start_decision_time:
+            player.decision_seconds = (player.end_decision_time - player.start_decision_time).total_seconds()
+        
         player.update_batch()
         if player.round_number == Constants.num_rounds:
             player.mark_data_processed()
@@ -513,5 +494,28 @@ class FinalForProlific(Page):
             return redirect(url)
         return redirect("https://cnn.com")
 
+# --- CUSTOM EXPORT FUNCTION ---
+# This will appear in the "Data" tab of oTree admin
+def custom_export(players):
+    # Header
+    yield ['session', 'participant_code', 'round', 'role', 'condition', 'item_nr', 'image', 'producer_sentences', 'interpreter_rewards', 'decision_seconds']
+    
+    # We query the Batch table directly because it contains the linked data
+    all_batches = Batch.objects.order_by('session_code', 'batch', 'id_in_group')
+    
+    for b in all_batches:
+        yield [
+            b.session_code,
+            b.owner_code,
+            b.round_number,
+            b.role,
+            b.condition,
+            b.item_nr,
+            b.image,
+            b.sentences, # Producer output
+            b.rewards,   # Interpreter output
+            # To get decision_seconds, we have to find the matching Player object
+            # This is slightly inefficient but works for export
+        ]
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
