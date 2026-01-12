@@ -236,7 +236,6 @@ class Player(BasePlayer):
             return ""
 
         ext = self.session.vars.get("extension", "png") or "png"
-        
         if not image_name.lower().endswith(f".{ext}"):
             image_name = f"{image_name}.{ext}"
 
@@ -486,18 +485,41 @@ class FinalForProlific(Page):
         return redirect("https://cnn.com")
 
 def custom_export(players):
+    # Header
     yield ['session', 'participant_code', 'round', 'role', 'condition', 'item_nr', 'image', 'producer_sentences', 'interpreter_rewards', 'decision_seconds']
-    
-    all_batches = Batch.objects.order_by('session_code', 'batch', 'id_in_group')
-    
-    player_timing = {}
-    for p in players:
-        player_timing[(p.session.code, p.participant.code, p.round_number)] = p.decision_seconds
 
-    for b in all_batches:
+    # OPTIMIZATION:
+    # 1. Fetch only relevant session codes (faster than iterating players)
+    # Check if players is a queryset
+    if hasattr(players, 'values_list'):
+        session_codes = set(players.values_list('session__code', flat=True))
+        # Fetch timing data in one go to avoid N+1 queries
+        timing_data = players.values('session__code', 'participant__code', 'round_number', 'decision_seconds')
+    else:
+        session_codes = set(p.session.code for p in players)
+        timing_data = []
+        for p in players:
+            timing_data.append({
+                'session__code': p.session.code,
+                'participant__code': p.participant.code,
+                'round_number': p.round_number,
+                'decision_seconds': p.decision_seconds
+            })
+
+    # Build lookup map
+    timing_map = {}
+    for t in timing_data:
+        k = (t['session__code'], t['participant__code'], t['round_number'])
+        timing_map[k] = t['decision_seconds']
+
+    # 2. Filter batches by session and use iterator() to stream results
+    # iterator() prevents loading all objects into memory at once
+    batches = Batch.objects.filter(session_code__in=session_codes).order_by('session_code', 'batch', 'id_in_group').iterator()
+
+    for b in batches:
         ds = ""
         if b.owner_code:
-             ds = player_timing.get((b.session_code, b.owner_code, b.round_number), "")
+            ds = timing_map.get((b.session_code, b.owner_code, b.round_number), "")
 
         yield [
             b.session_code,
