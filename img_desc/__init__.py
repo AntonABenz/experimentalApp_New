@@ -372,19 +372,19 @@ def creating_session(subsession: Subsession):
     # --- create Batch rows as you already do ---
     records = df.to_dict(orient="records")
     for r in records:
-    Batch.create(
-        session_code=session.code,
-        owner_code="",
-        batch=int(r.get("Exp") or 0),
-        item_nr=_force_str(r.get("Item.Nr")),
-        condition=_force_str(r.get("Condition")),
-        image=_force_str(r.get("Item")),  # ensures "None" remains "None" if it exists as text
-        round_number=int(r.get("group_enumeration") or 0),
-        role=_force_str(r.get("role")),
-        id_in_group=int(r.get("id") or 0),
-        partner_id=int(r.get("partner_id") or 0),
-        sentences=_force_str(r.get("sentences") or "[]"),
-    )
+        Batch.create(
+            session_code=session.code,
+            owner_code="",
+            batch=int(r.get("Exp") or 0),
+            item_nr=_force_str(r.get("Item.Nr")),
+            condition=_force_str(r.get("Condition")),
+            image=_force_str(r.get("Item")),  # ensures "None" remains "None" if it exists as text
+            round_number=int(r.get("group_enumeration") or 0),
+            role=_force_str(r.get("role")),
+            id_in_group=int(r.get("id") or 0),
+            partner_id=int(r.get("partner_id") or 0),
+            sentences=_force_str(r.get("sentences") or "[]"),
+        )
 
     settings = excel_data.get("settings") or {}
 
