@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import re
-import time  # Used for timing instead of datetime
+import time
 from sqlalchemy import create_engine, text
 
 logger = logging.getLogger("benzapp.img_desc")
@@ -129,7 +129,6 @@ class Player(BasePlayer):
     producer_decision = models.LongStringField()
     interpreter_decision = models.LongStringField()
 
-    # --- UPDATED: Use FloatField for timestamps to avoid TypeError ---
     start_decision_time = models.FloatField(initial=0)
     end_decision_time = models.FloatField(initial=0)
     decision_seconds = models.FloatField(initial=0)
@@ -231,10 +230,13 @@ class Player(BasePlayer):
             return ""
         
         image_name = str(l.get("image") or "").strip()
-        if not image_name or image_name.lower() == "none" or image_name.lower() == "nan":
+        
+        # --- FIX: Explicitly ignore "NA", "NA_x", "nan", etc. ---
+        if not image_name or image_name.lower() in ["none", "nan", "na", "na_x", "x"]:
             return ""
 
         ext = self.session.vars.get("extension", "png") or "png"
+        
         if not image_name.lower().endswith(f".{ext}"):
             image_name = f"{image_name}.{ext}"
 
@@ -327,6 +329,7 @@ def creating_session(subsession: Subsession):
     df = excel_data.get("data")
     session.vars["user_data"] = df
 
+    # Helper to clean strings
     def clean_str(val):
         if val is None:
             return ""
@@ -412,8 +415,6 @@ class Q(Page):
         if player.faulty:
             return False
         
-        # --- TIMING: START ---
-        # Initialize start time if it's 0 (default)
         if player.start_decision_time == 0:
             player.start_decision_time = time.time()
         
@@ -456,7 +457,6 @@ class Q(Page):
 
     @staticmethod
     def before_next_page(player, timeout_happened):
-        # --- TIMING: END ---
         player.end_decision_time = time.time()
         if player.start_decision_time > 0:
             player.decision_seconds = player.end_decision_time - player.start_decision_time
@@ -486,29 +486,15 @@ class FinalForProlific(Page):
         return redirect("https://cnn.com")
 
 def custom_export(players):
-    # Header
     yield ['session', 'participant_code', 'round', 'role', 'condition', 'item_nr', 'image', 'producer_sentences', 'interpreter_rewards', 'decision_seconds']
     
-    # We query the Batch table directly
     all_batches = Batch.objects.order_by('session_code', 'batch', 'id_in_group')
     
-    # Pre-fetch decision seconds from players to avoid N+1 queries ideally,
-    # but for simplicity we map via participant code and round.
-    # Actually, we can just iterate players since that's what custom_export passes usually,
-    # BUT Batch has the core data. Let's do a join logic in python.
-    
-    # Create a map of (session, owner_code, round) -> decision_seconds
-    # NOTE: 'players' passed to this function is a QuerySet of all players in this app
     player_timing = {}
     for p in players:
-        # p.participant.code might require extra query, so use p.participant_id if possible
-        # but owner_code in Batch stores participant.code.
         player_timing[(p.session.code, p.participant.code, p.round_number)] = p.decision_seconds
 
     for b in all_batches:
-        # Only export batches relevant to the sessions in 'players' (optimization optional)
-        
-        # Get decision seconds if an owner exists
         ds = ""
         if b.owner_code:
              ds = player_timing.get((b.session_code, b.owner_code, b.round_number), "")
