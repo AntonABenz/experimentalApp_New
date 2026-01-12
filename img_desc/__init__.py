@@ -92,21 +92,6 @@ def normalize_key(key):
         return ""
     return re.sub(r"[\s_]+", "_", str(key).lower().strip())
 
-def _force_str(x):
-    """
-    Make sure values like None/NaN become a literal string,
-    so they never disappear in JSON / template rendering.
-    """
-    try:
-        if x is None:
-            return ""
-        s = str(x)
-        # common NaN representations
-        if s.lower() in {"nan", "na", "<na>"}:
-            return ""
-        return s
-    except Exception:
-        return ""
 
 class Subsession(BaseSubsession):
     # IMPORTANT: never allow NULL
@@ -176,33 +161,39 @@ class Player(BasePlayer):
 
     def get_previous_batch(self):
         """
-        For INTERPRETER only:
-        - If partner_id == 0: interpreter reads the sentence from the same row (predefined) -> no previous batch.
-        - If active_batch == 1: interpreter must look up producer sentence in Exp 0 (spreadsheet-defined).
-        - If active_batch >= 2: interpreter must look up producer sentence in Exp (active_batch - 1) from DB.
+        Interpreter only:
+        - If partner_id == 0 => use current row sentences (already handled elsewhere)
+        - Else:
+            Exp n: look up producer sentences in Exp n-1 with same pairing + condition, but role=PRODUCER
         """
         if self.inner_role != INTERPRETER:
             return dict(sentences="[]")
-    
+
         l = self.get_linked_batch()
-        if not l or int(l.get("partner_id") or 0) == 0:
+        if not l or l.get("partner_id") in (0, "0", None):
             return dict(sentences="[]")
-    
+
+        # Safe active_batch
+        active_batch = self.subsession.field_maybe_none("active_batch") or 1
+        target_batch_idx = active_batch - 1
+
+        if target_batch_idx < 0:
+            return dict(sentences="[]")
+
         all_data = get_all_batches_sql(self.session.code)
-    
-        # active_batch == 1 => look in Exp 0 (Anton rule)
-        target_batch_idx = 0 if (self.subsession.active_batch == 1) else (self.subsession.active_batch - 1)
-    
+
+        # Find the producer row in previous Exp (target_batch_idx) that matches this pairing and condition
+        # Important: producer row should be role=PRODUCER and have swapped ids like Anton described.
         for obj in all_data:
             if (
-                int(obj.get("batch") or -1) == int(target_batch_idx)
-                and obj.get("role") == PRODUCER
-                and int(obj.get("partner_id") or -1) == int(l.get("id_in_group") or -2)
-                and int(obj.get("id_in_group") or -1) == int(l.get("partner_id") or -2)
-                and str(obj.get("condition") or "") == str(l.get("condition") or "")
+                obj["batch"] == target_batch_idx
+                and obj["role"] == PRODUCER
+                and obj["partner_id"] == l["id_in_group"]
+                and obj["id_in_group"] == l["partner_id"]
+                and obj["condition"] == l["condition"]
             ):
                 return obj
-    
+
         return dict(sentences="[]")
 
     def get_sentences_data(self):
@@ -346,6 +337,7 @@ class Player(BasePlayer):
             if vars_.get("prolific_session_id"):
                 p.label = vars_.get("prolific_session_id")
 
+
 def creating_session(subsession: Subsession):
     session = subsession.session
 
@@ -368,26 +360,21 @@ def creating_session(subsession: Subsession):
     df = excel_data.get("data")
     session.vars["user_data"] = df
 
-    # --- create Batch rows ---
+    # --- create Batch rows as you already do ---
     records = df.to_dict(orient="records")
     for r in records:
-        sent_raw = r.get("sentences")
-        sentences = _force_str(sent_raw, default="[]")
-        if sentences.strip().lower() in ["nan", "none", ""]:
-            sentences = "[]"
-
         Batch.create(
             session_code=session.code,
             owner_code="",
-            batch=int(r.get("Exp") or 0),
-            item_nr=_force_str(r.get("Item.Nr")),
-            condition=_force_str(r.get("Condition")),
-            image=_force_str(r.get("Item")),   # keeps "None" as a string if it is text
-            round_number=int(r.get("group_enumeration") or 0),
-            role=_force_str(r.get("role")),
-            id_in_group=int(r.get("id") or 0),
-            partner_id=int(r.get("partner_id") or 0),
-            sentences=sentences,
+            batch=r.get("Exp"),
+            item_nr=r.get("Item.Nr"),
+            condition=r.get("Condition"),
+            image=r.get("Item"),
+            round_number=r.get("group_enumeration"),
+            role=r.get("role"),
+            id_in_group=r.get("id"),
+            partner_id=r.get("partner_id"),
+            sentences=r.get("sentences"),
         )
 
     settings = excel_data.get("settings") or {}
@@ -399,38 +386,46 @@ def creating_session(subsession: Subsession):
 
     # ---- core settings ----
     for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title"]:
-        session.vars[k] = clean_settings.get(k)
+        session.vars[k] = clean_settings.get(normalize_key(k))
 
     session.vars["suffixes"] = clean_settings.get("suffixes") or []
 
-    # ---- allowed values + allowed regexes ----
+    # ---- allowed values + allowed regexes (aligned by field index) ----
     allowed_values = []
     allowed_regexes = []
 
-    for i in range(1, 11):
+    i = 1
+    while True:
         v_key = f"allowed_values_{i}"
         r_key = f"allowed_regex_{i}"
 
-        v_val = clean_settings.get(v_key)
-        r_val = clean_settings.get(r_key)
+        v_val = clean_settings.get(normalize_key(v_key))
+        r_val = clean_settings.get(normalize_key(r_key))
 
-        if not v_val and not r_val:
+        if v_val or r_val:
+            # values list (for the "help list" display)
+            if v_val:
+                allowed_values.append([x.strip() for x in str(v_val).split(";") if x.strip()])
+            else:
+                allowed_values.append([])
+
+            # regex string (for validation)
+            allowed_regexes.append(str(r_val).strip() if r_val else "")
+            i += 1
             continue
 
-        allowed_values.append([x.strip() for x in str(v_val).split(";") if x.strip()] if v_val else [])
-        allowed_regexes.append(str(r_val).strip() if r_val else "")
+        # stop after some reasonable max to avoid infinite loop
+        if i > 10:
+            break
+        i += 1
 
     session.vars["allowed_values"] = allowed_values
     session.vars["allowed_regexes"] = allowed_regexes
 
-    caseflag_raw = clean_settings.get("caseflag", "")
-    session.vars["caseflag"] = str(caseflag_raw).strip().lower() in ["true", "1", "t", "yes", "y"]
-
     # ---- instructions url ----
     default_url = "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
-    url_from_settings = clean_settings.get("instructions_url")
+    url_from_settings = clean_settings.get(normalize_key("instructions_url"))
     session.vars["instructions_url"] = url_from_settings if url_from_settings else default_url
-
 
 class FaultyCatcher(Page):
     @staticmethod
@@ -484,14 +479,13 @@ class Q(Page):
         return dict(
             d=player.get_linked_batch(),
             allowed_values=player.session.vars.get("allowed_values", []),
-            allowed_regexes=player.session.vars.get("allowed_regexes", []),
+            allowed_regexes=player.session.vars.get("allowed_regexes", []),  # ✅ ADD THIS
             suffixes=player.session.vars.get("suffixes", []),
+            prefix=player.session.vars.get("prefix", ""),                    # ✅ if q.html uses prefix
             interpreter_choices=interpreter_choices,
             interpreter_title=interpreter_title,
             instructions_url=player.session.vars.get("instructions_url"),
-            caseflag=player.session.vars.get("caseflag", False),
         )
-
 
     @staticmethod
     def before_next_page(player, timeout_happened):
