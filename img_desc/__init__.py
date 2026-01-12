@@ -92,6 +92,21 @@ def normalize_key(key):
         return ""
     return re.sub(r"[\s_]+", "_", str(key).lower().strip())
 
+def _force_str(x):
+    """
+    Make sure values like None/NaN become a literal string,
+    so they never disappear in JSON / template rendering.
+    """
+    try:
+        if x is None:
+            return ""
+        s = str(x)
+        # common NaN representations
+        if s.lower() in {"nan", "na", "<na>"}:
+            return ""
+        return s
+    except Exception:
+        return ""
 
 class Subsession(BaseSubsession):
     # IMPORTANT: never allow NULL
@@ -161,39 +176,33 @@ class Player(BasePlayer):
 
     def get_previous_batch(self):
         """
-        Interpreter only:
-        - If partner_id == 0 => use current row sentences (already handled elsewhere)
-        - Else:
-            Exp n: look up producer sentences in Exp n-1 with same pairing + condition, but role=PRODUCER
+        For INTERPRETER only:
+        - If partner_id == 0: interpreter reads the sentence from the same row (predefined) -> no previous batch.
+        - If active_batch == 1: interpreter must look up producer sentence in Exp 0 (spreadsheet-defined).
+        - If active_batch >= 2: interpreter must look up producer sentence in Exp (active_batch - 1) from DB.
         """
         if self.inner_role != INTERPRETER:
             return dict(sentences="[]")
-
+    
         l = self.get_linked_batch()
-        if not l or l.get("partner_id") in (0, "0", None):
+        if not l or int(l.get("partner_id") or 0) == 0:
             return dict(sentences="[]")
-
-        # Safe active_batch
-        active_batch = self.subsession.field_maybe_none("active_batch") or 1
-        target_batch_idx = active_batch - 1
-
-        if target_batch_idx < 0:
-            return dict(sentences="[]")
-
+    
         all_data = get_all_batches_sql(self.session.code)
-
-        # Find the producer row in previous Exp (target_batch_idx) that matches this pairing and condition
-        # Important: producer row should be role=PRODUCER and have swapped ids like Anton described.
+    
+        # active_batch == 1 => look in Exp 0 (Anton rule)
+        target_batch_idx = 0 if (self.subsession.active_batch == 1) else (self.subsession.active_batch - 1)
+    
         for obj in all_data:
             if (
-                obj["batch"] == target_batch_idx
-                and obj["role"] == PRODUCER
-                and obj["partner_id"] == l["id_in_group"]
-                and obj["id_in_group"] == l["partner_id"]
-                and obj["condition"] == l["condition"]
+                int(obj.get("batch") or -1) == int(target_batch_idx)
+                and obj.get("role") == PRODUCER
+                and int(obj.get("partner_id") or -1) == int(l.get("id_in_group") or -2)
+                and int(obj.get("id_in_group") or -1) == int(l.get("partner_id") or -2)
+                and str(obj.get("condition") or "") == str(l.get("condition") or "")
             ):
                 return obj
-
+    
         return dict(sentences="[]")
 
     def get_sentences_data(self):
@@ -363,19 +372,19 @@ def creating_session(subsession: Subsession):
     # --- create Batch rows as you already do ---
     records = df.to_dict(orient="records")
     for r in records:
-        Batch.create(
-            session_code=session.code,
-            owner_code="",
-            batch=r.get("Exp"),
-            item_nr=r.get("Item.Nr"),
-            condition=r.get("Condition"),
-            image=r.get("Item"),
-            round_number=r.get("group_enumeration"),
-            role=r.get("role"),
-            id_in_group=r.get("id"),
-            partner_id=r.get("partner_id"),
-            sentences=r.get("sentences"),
-        )
+    Batch.create(
+        session_code=session.code,
+        owner_code="",
+        batch=int(r.get("Exp") or 0),
+        item_nr=_force_str(r.get("Item.Nr")),
+        condition=_force_str(r.get("Condition")),
+        image=_force_str(r.get("Item")),  # ensures "None" remains "None" if it exists as text
+        round_number=int(r.get("group_enumeration") or 0),
+        role=_force_str(r.get("role")),
+        id_in_group=int(r.get("id") or 0),
+        partner_id=int(r.get("partner_id") or 0),
+        sentences=_force_str(r.get("sentences") or "[]"),
+    )
 
     settings = excel_data.get("settings") or {}
 
