@@ -229,19 +229,32 @@ class Player(BasePlayer):
         if not l:
             return ""
         
+        # 1. Get the raw filename from Excel
         image_name = str(l.get("image") or "").strip()
         
-        # --- FIX: Explicitly ignore "NA", "NA_x", "nan", etc. ---
-        if not image_name or image_name.lower() in ["none", "nan", "na", "na_x", "x"]:
+        # --- FIX: Fallback Logic for NA_x ---
+        # If the Excel says "NA_x", force it to use the valid fallback image.
+        if image_name == "NA_x":
+            image_name = "d-A-B-BC-3"  # <--- The "legit" image you want to show
+
+        # 2. Safety check: if it's still empty or just "None", return nothing
+        if not image_name or image_name.lower() in ["none", "nan", "na", "x"]:
             return ""
 
+        # 3. Clean up the filename (Replace spaces with underscores if needed)
+        # This protects against "d- - -BC-2" style errors
+        image_name = image_name.replace(" ", "_")
+
+        # 4. Add extension if missing
         ext = self.session.vars.get("extension", "png") or "png"
         if not image_name.lower().endswith(f".{ext}"):
             image_name = f"{image_name}.{ext}"
 
+        # 5. Build the full S3 URL
         base = (self.session.vars.get("s3path_base") or "").rstrip("/")
         if "amazonaws.com" in base:
             base = base.replace("/practice", "")
+            
         return f"{base}/{image_name}"
 
     def start(self):
