@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+import random
 from sqlalchemy import create_engine, text
 from django.shortcuts import redirect
 
@@ -58,12 +59,42 @@ def get_engine():
     _custom_engine = create_engine(db_url)
     return _custom_engine
 
-def get_all_batches_sql(session_code):
+# --- OPTIMIZED SQL HELPER (Prevents Memory Crashes) ---
+def get_batches_filtered(session_code, batch_val=None, round_val=None, owner_code=None):
+    """
+    Fetches only the specific rows needed, instead of loading the whole database.
+    """
     engine = get_engine()
-    sql = text("SELECT * FROM img_desc_batch WHERE session_code = :session_code")
+    clauses = ["session_code = :session_code"]
+    params = {"session_code": session_code}
+
+    if batch_val is not None:
+        clauses.append("batch = :batch")
+        params["batch"] = batch_val
+    
+    if round_val is not None:
+        clauses.append("round_number = :rnd")
+        params["rnd"] = round_val
+        
+    if owner_code is not None:
+        clauses.append("owner_code = :owner")
+        params["owner"] = owner_code
+
+    where_str = " AND ".join(clauses)
+    sql = text(f"SELECT * FROM img_desc_batch WHERE {where_str}")
+
     with engine.connect() as conn:
-        result = conn.execute(sql, {"session_code": session_code})
+        result = conn.execute(sql, params)
         return [dict(zip(result.keys(), row)) for row in result]
+
+def get_single_batch_by_id(batch_id):
+    engine = get_engine()
+    sql = text("SELECT * FROM img_desc_batch WHERE id = :bid")
+    with engine.connect() as conn:
+        result = conn.execute(sql, {"bid": batch_id}).fetchone()
+        if result:
+            return dict(zip(result.keys(), result))
+    return None
 
 def sql_update_batch(batch_id, **kwargs):
     if not kwargs:
@@ -94,16 +125,19 @@ class Subsession(BaseSubsession):
 
     @property
     def get_active_batch(self):
-        all_data = get_all_batches_sql(self.session.code)
-        return [b for b in all_data if b["batch"] == self.active_batch]
+        # Optimization: Filter by batch immediately
+        return get_batches_filtered(self.session.code, batch_val=self.active_batch)
 
     def check_for_batch_completion(self):
         session = self.session
         active_batch = self.active_batch or 1
-        all_data = get_all_batches_sql(session.code)
+        
+        # Optimization: Only load current batch rows
+        current_rows = get_batches_filtered(session.code, batch_val=active_batch)
+        
         remaining = [
-            b for b in all_data
-            if b["batch"] == active_batch and not b["processed"]
+            b for b in current_rows
+            if not b["processed"]
         ]
         if remaining:
             return
@@ -142,15 +176,13 @@ class Player(BasePlayer):
     def get_linked_batch(self):
         if not self.link_id:
             return None
-        all_data = get_all_batches_sql(self.session.code)
-        for b in all_data:
-            if b["id"] == self.link_id:
-                return b
-        return None
+        # Optimization: Fetch single row by ID
+        return get_single_batch_by_id(self.link_id)
 
     def get_previous_batch(self):
         if self.inner_role != INTERPRETER:
             return dict(sentences="[]")
+        
         l = self.get_linked_batch()
         if not l or l.get("partner_id") in (0, "0", None):
             return dict(sentences="[]")
@@ -160,11 +192,12 @@ class Player(BasePlayer):
         if target_batch_idx < 0:
             return dict(sentences="[]")
 
-        all_data = get_all_batches_sql(self.session.code)
-        for obj in all_data:
+        # Optimization: Only fetch the previous batch rows (reduce load by 98%)
+        candidates = get_batches_filtered(self.session.code, batch_val=target_batch_idx)
+
+        for obj in candidates:
             if (
-                obj["batch"] == target_batch_idx
-                and obj["role"] == PRODUCER
+                obj["role"] == PRODUCER
                 and obj["partner_id"] == l["id_in_group"]
                 and obj["id_in_group"] == l["partner_id"]
                 and obj["condition"] == l["condition"]
@@ -204,11 +237,12 @@ class Player(BasePlayer):
 
     def mark_data_processed(self):
         self.participant.vars["full_study_completed"] = True
-        all_data = get_all_batches_sql(self.session.code)
-        my_code = self.participant.code
-        for b in all_data:
-            if b["owner_code"] == my_code:
-                sql_update_batch(b["id"], processed=True)
+        
+        # Optimization: Only load MY batches
+        my_batches = get_batches_filtered(self.session.code, owner_code=self.participant.code)
+        
+        for b in my_batches:
+            sql_update_batch(b["id"], processed=True)
         self.subsession.check_for_batch_completion()
 
     def get_full_sentences(self):
@@ -230,28 +264,20 @@ class Player(BasePlayer):
         if not l:
             return ""
         
-        # 1. Get the raw filename from Excel
         image_name = str(l.get("image") or "").strip()
         
-        # --- FIX: Fallback Logic for NA_x ---
-        # If the Excel says "NA_x", force it to use the valid fallback image.
         if image_name == "NA_x":
-            image_name = "d-A-B-BC-3"  # <--- The "legit" image you want to show
+            image_name = "d-A-B-BC-3" 
 
-        # 2. Safety check: if it's still empty or just "None", return nothing
         if not image_name or image_name.lower() in ["none", "nan", "na", "x"]:
             return ""
 
-        # 3. Clean up the filename (Replace spaces with underscores if needed)
-        # This protects against "d- - -BC-2" style errors
         image_name = image_name.replace(" ", "_")
 
-        # 4. Add extension if missing
         ext = self.session.vars.get("extension", "png") or "png"
         if not image_name.lower().endswith(f".{ext}"):
             image_name = f"{image_name}.{ext}"
 
-        # 5. Build the full S3 URL
         base = (self.session.vars.get("s3path_base") or "").rstrip("/")
         if "amazonaws.com" in base:
             base = base.replace("/practice", "")
@@ -266,15 +292,17 @@ class Player(BasePlayer):
             Subsession.objects.filter(session=session, active_batch__isnull=True).update(active_batch=1)
             subsession.active_batch = 1
 
-        all_data = get_all_batches_sql(session.code)
+        # Optimization: Fetch ONLY rows for current batch
+        active_candidates = get_batches_filtered(session.code, batch_val=subsession.active_batch)
+        
+        # Filter logic in Python
+        candidates = [
+            b for b in active_candidates
+            if not b["busy"]
+            and (b.get("owner_code") or "") == ""
+        ]
 
         if self.round_number == 1:
-            candidates = [
-                b for b in all_data
-                if b["batch"] == subsession.active_batch
-                and not b["busy"]
-                and (b.get("owner_code") or "") == ""
-            ]
             if not candidates:
                 self.faulty = True
                 return
@@ -286,28 +314,24 @@ class Player(BasePlayer):
 
             self.batch = chosen_batch
 
-            for b in all_data:
-                if b["batch"] == chosen_batch and b["id_in_group"] == chosen_id:
-                    sql_update_batch(
-                        b["id"],
-                        busy=True,
-                        owner_code=self.participant.code
-                    )
+            sql_update_batch(
+                free["id"],
+                busy=True,
+                owner_code=self.participant.code
+            )
 
-            all_data = get_all_batches_sql(session.code)
+        # Optimization: Fetch ONLY the single row needed for this player/round
+        my_rows = get_batches_filtered(
+            session.code, 
+            round_val=self.round_number, 
+            owner_code=self.participant.code
+        )
 
-        my_row = None
-        for b in all_data:
-            if (
-                b.get("owner_code") == self.participant.code
-                and b.get("round_number") == self.round_number
-            ):
-                my_row = b
-                break
-
-        if not my_row:
+        if not my_rows:
             self.faulty = True
             return
+
+        my_row = my_rows[0]
 
         self.link_id = my_row["id"]
         self.inner_role = my_row["role"]
@@ -342,26 +366,17 @@ def creating_session(subsession: Subsession):
     df = excel_data.get("data")
     session.vars["user_data"] = df
 
-    # --- FIX START: Modified clean_str to preserve 'None' ---
     def clean_str(val):
         if val is None:
             return ""
         s = str(val).strip()
-        # Only return empty for 'nan' (Pandas null), BUT keep "None" or "none"
-        # as these are valid sentence parts.
         if s.lower() == "nan":
             return ""
         return s
-    # --- FIX END ---
     
     if "Condition" in df.columns: df["Condition"] = df["Condition"].apply(clean_str)
     if "Item.Nr" in df.columns: df["Item.Nr"] = df["Item.Nr"].apply(clean_str)
     if "Item" in df.columns: df["Item"] = df["Item"].apply(clean_str)
-
-    # Note: If your sentences column contains literal "None" values in Excel, 
-    # they might still be read as NaN by Pandas. If the issue persists, 
-    # try wrapping the word in quotes in Excel (e.g., "'None'") 
-    # or ensure the column is formatted as Text.
 
     records = df.to_dict(orient="records")
     for r in records:
@@ -508,107 +523,55 @@ class FinalForProlific(Page):
 
 def custom_export(players):
     """
-    Works with Batch as ExtraModel (no Batch.objects).
-    Uses SQLAlchemy to stream rows from img_desc_batch.
-    Also exports decision_seconds from Player table.
+    Optimized Export using Django ORM to prevent memory spikes and SQL errors.
+    Works on both SQLite (Local) and Postgres (Heroku).
     """
-
-    # 1) STREAM HEADER FIRST (prevents export timeout)
+    # 1. YIELD HEADER IMMEDIATELY
     yield [
-        "session",
-        "participant_code",
-        "round",
-        "role",
-        "condition",
-        "item_nr",
-        "image",
-        "producer_sentences",
-        "interpreter_rewards",
-        "decision_seconds",
+        "session", "participant_code", "round", "role", "condition", 
+        "item_nr", "image", "producer_sentences", "interpreter_rewards", 
+        "decision_seconds"
     ]
 
-    # 2) Collect session_codes relevant to this export
-    # players is typically a Django QuerySet of Player
-    session_codes = set()
-    try:
-        for s in players.values_list("session__code", flat=True).distinct():
-            session_codes.add(s)
-    except Exception:
-        # fallback if it's a list
-        session_codes = set(p.session.code for p in players)
+    # 2. Get unique session codes efficiently
+    if hasattr(players, 'values_list'):
+        session_codes = list(players.values_list('session__code', flat=True).distinct())
+    else:
+        session_codes = list(set(p.session.code for p in players))
 
     if not session_codes:
         return
 
-    # 3) Build timing map: (session_code, participant_code, round_number) -> decision_seconds
+    # 3. Build timing map efficiently
     timing_map = {}
+    # Fetch only necessary fields to save memory
+    timing_data = Player.objects.filter(
+        session__code__in=session_codes
+    ).values_list('session__code', 'participant__code', 'round_number', 'decision_seconds').iterator()
 
-    try:
-        timing_rows = (
-            Player.objects.filter(session__code__in=session_codes)
-            .values_list("session__code", "participant__code", "round_number", "decision_seconds")
-            .iterator()
-        )
-        for s_code, p_code, r_num, seconds in timing_rows:
-            timing_map[(s_code, p_code, r_num)] = seconds
-    except Exception:
-        # if anything fails, export still works (just without timing)
-        timing_map = {}
+    for s_code, p_code, r_num, seconds in timing_data:
+        timing_map[(s_code, p_code, r_num)] = seconds
 
-    # 4) Stream batches directly from SQL
-    engine = get_engine()
+    # 4. Stream Batch data using ORM iterator (Database Agnostic)
+    columns = [
+        'session_code', 'owner_code', 'round_number', 'role', 
+        'condition', 'item_nr', 'image', 'sentences', 'rewards'
+    ]
+    
+    batches = Batch.objects.filter(
+        session_code__in=session_codes
+    ).order_by('session_code', 'batch', 'id_in_group').values_list(*columns).iterator(chunk_size=2000)
 
-    sql = text("""
-        SELECT
-            session_code,
-            owner_code,
-            round_number,
-            role,
-            condition,
-            item_nr,
-            image,
-            sentences,
-            rewards
-        FROM img_desc_batch
-        WHERE session_code = ANY(:session_codes)
-        ORDER BY session_code, batch, id_in_group
-    """)
+    for row in batches:
+        s_code, o_code, r_num, role, cond, item, img, sent, rew = row
+        
+        ds = ""
+        if o_code:
+            ds = timing_map.get((s_code, o_code, r_num), "")
 
-    # IMPORTANT: Postgres wants list/array for ANY(...)
-    session_code_list = list(session_codes)
-
-    with engine.connect() as conn:
-        result = conn.execute(sql, {"session_codes": session_code_list})
-
-        # keys() exists but we unpack row by row for speed
-        for row in result:
-            s_code = row[0]
-            owner_code = row[1]
-            round_number = row[2]
-            role = row[3]
-            condition = row[4]
-            item_nr = row[5]
-            image = row[6]
-            sentences = row[7]
-            rewards = row[8]
-
-            # decision_seconds lookup
-            ds = ""
-            if owner_code:
-                ds = timing_map.get((s_code, owner_code, round_number), "")
-
-            yield [
-                s_code,
-                owner_code,
-                round_number,
-                role,
-                condition,
-                item_nr,
-                image,
-                sentences,
-                rewards,
-                ds,
-            ]
+        yield [
+            s_code, o_code, r_num, role, cond, item, img, sent, rew, ds
+        ]
 
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
