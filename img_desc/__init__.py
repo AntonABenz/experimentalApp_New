@@ -506,53 +506,51 @@ class FinalForProlific(Page):
         return redirect("https://cnn.com")
 
 def custom_export(players):
-    # Header
+    # 1. YIELD HEADER IMMEDIATELY
+    # This prevents the "Timeout" error by telling the browser the download has started.
     yield ['session', 'participant_code', 'round', 'role', 'condition', 'item_nr', 'image', 'producer_sentences', 'interpreter_rewards', 'decision_seconds']
 
-    # OPTIMIZATION:
-    # 1. Fetch only relevant session codes (faster than iterating players)
-    # Check if players is a queryset
+    # 2. Get relevant Session Codes efficiently
+    # We use a set to avoid duplicates and database overhead
     if hasattr(players, 'values_list'):
-        session_codes = set(players.values_list('session__code', flat=True))
-        # Fetch timing data in one go to avoid N+1 queries
-        timing_data = players.values('session__code', 'participant__code', 'round_number', 'decision_seconds')
+        session_codes = list(players.values_list('session__code', flat=True).distinct())
     else:
-        session_codes = set(p.session.code for p in players)
-        timing_data = []
-        for p in players:
-            timing_data.append({
-                'session__code': p.session.code,
-                'participant__code': p.participant.code,
-                'round_number': p.round_number,
-                'decision_seconds': p.decision_seconds
-            })
+        # Fallback if a list is passed instead of a QuerySet
+        session_codes = list(set(p.session.code for p in players))
 
-    # Build lookup map
+    # 3. Build Timing Map (Optimized)
+    # We fetch only the 4 columns we need. 
     timing_map = {}
-    for t in timing_data:
-        k = (t['session__code'], t['participant__code'], t['round_number'])
-        timing_map[k] = t['decision_seconds']
+    
+    # We filter Player objects by the relevant sessions to keep the map small
+    timing_query = Player.objects.filter(session__code__in=session_codes).values_list(
+        'session__code', 'participant__code', 'round_number', 'decision_seconds'
+    )
+    
+    # Construct dict: (session, participant, round) -> seconds
+    for s_code, p_code, r_num, seconds in timing_query.iterator():
+        timing_map[(s_code, p_code, r_num)] = seconds
 
-    # 2. Filter batches by session and use iterator() to stream results
-    # iterator() prevents loading all objects into memory at once
-    batches = Batch.objects.filter(session_code__in=session_codes).order_by('session_code', 'batch', 'id_in_group').iterator()
+    # 4. Stream the Batch Data
+    # We use iterator(chunk_size=2000) to load data in small blocks so RAM doesn't spike.
+    columns = [
+        'session_code', 'owner_code', 'round_number', 'role', 
+        'condition', 'item_nr', 'image', 'sentences', 'rewards'
+    ]
 
-    for b in batches:
+    # Filter for our sessions and order them logically
+    batch_query = Batch.objects.filter(session_code__in=session_codes).order_by('session_code', 'batch', 'id_in_group')
+
+    # 'iterator' is the key here. It fetches rows from the DB one by one (or in chunks)
+    # rather than loading 100,000 rows into memory at once.
+    for row in batch_query.values_list(*columns).iterator(chunk_size=2000):
+        s_code, o_code, r_num, role, cond, item, img, sent, rew = row
+        
+        # Calculate timing
         ds = ""
-        if b.owner_code:
-            ds = timing_map.get((b.session_code, b.owner_code, b.round_number), "")
+        if o_code:
+            ds = timing_map.get((s_code, o_code, r_num), "")
 
-        yield [
-            b.session_code,
-            b.owner_code,
-            b.round_number,
-            b.role,
-            b.condition,
-            b.item_nr,
-            b.image,
-            b.sentences,
-            b.rewards,
-            ds
-        ]
+        yield [s_code, o_code, r_num, role, cond, item, img, sent, rew, ds]
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
