@@ -46,7 +46,6 @@ def _build_practice_settings(xl: pd.ExcelFile) -> Dict[str, Dict[str, Any]]:
     For each sheet whose name matches 'practice_\\d+',
     read it as a 2-column (name, value) table and group
     keys with suffix '_<number>' into lists.
-    (Same logic as in the old Google Sheets version.)
     """
     practice_sheets = [
         s for s in xl.sheet_names if re.match(f"{PRACTICE_WS_PREFIX}\\d+", s, re.IGNORECASE)
@@ -57,7 +56,7 @@ def _build_practice_settings(xl: pd.ExcelFile) -> Dict[str, Dict[str, Any]]:
     pattern = re.compile(r"_(\d+)$")
 
     for sheet_name in practice_sheets:
-        # --- FIX: keep_default_na=False ensures "None" stays "None" ---
+        # FIX: keep_default_na=False ensures "None" stays "None"
         df = xl.parse(sheet_name, dtype=str, keep_default_na=False)
         
         # expect columns "name" and "value" (case-insensitive)
@@ -127,11 +126,10 @@ def get_data(filename: str):
             f"Settings/Data spreadsheet should contain a worksheet named '{SETTINGS_WS}'"
         )
 
-    # --- FIX: keep_default_na=False to prevent text strings from becoming NaN ---
+    # FIX: keep_default_na=False to prevent text strings from becoming NaN
     settings_df = xl.parse(SETTINGS_WS, header=None, dtype=str, keep_default_na=False)
     
-    # Expect 2-column key/value; same logic as old code
-    #   col0 = key, col1 = value
+    # Expect 2-column key/value
     settings_dict = (
         settings_df.set_index(settings_df.columns[0])
         .to_dict()
@@ -184,8 +182,15 @@ def get_data(filename: str):
             f"Settings/Data spreadsheet should contain a worksheet named '{DATA_WS}'"
         )
 
-    # --- FIX: keep_default_na=False ensures "None" is read as string, not NaN ---
+    # FIX 1: keep_default_na=False ensures "None" is read as string, not NaN
     df = xl.parse(DATA_WS, dtype={"Condition": str}, keep_default_na=False)
+
+    # FIX 2: Drop rows where Producer is 0 or "0"
+    # This removes the rows causing image errors (NA_x, D_5_4_4, etc.)
+    if "Producer" in df.columns:
+        df = df[df["Producer"] != 0]
+        df = df[df["Producer"] != "0"]
+
     conv_data = convert(df)
 
     # ----- PRACTICE -----
@@ -208,7 +213,13 @@ def long_data(filename: str):
     if ALT_DATA_WS not in xl.sheet_names:
         raise Exception(f"No sheet named '{ALT_DATA_WS}' in {xlsx_path}")
     
-    # --- FIX: keep_default_na=False here as well ---
+    # FIX: keep_default_na=False here as well
     df = xl.parse(ALT_DATA_WS, dtype={"Condition": str}, keep_default_na=False)
+    
+    # Apply the same Producer filter here if this sheet is used similarly
+    if "Producer" in df.columns:
+        df = df[df["Producer"] != 0]
+        df = df[df["Producer"] != "0"]
+
     conv_data = convert(df)
     return conv_data
