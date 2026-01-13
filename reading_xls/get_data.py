@@ -1,6 +1,7 @@
 import json
 import re
-import random  # <--- Added for random selection
+import random
+import numpy as np
 from pathlib import Path
 from typing import Dict, Any
 
@@ -137,42 +138,41 @@ def get_data(filename: str):
     if DATA_WS not in xl.sheet_names:
         raise Exception(f"Worksheet '{DATA_WS}' not found")
 
+    # 1. Load Data (preserving "None" as text)
     df = xl.parse(DATA_WS, dtype={"Condition": str}, keep_default_na=False)
 
-    # --- FIX START: Randomly repair broken items ---
+    # 2. Fix empty strings -> NaN (CRITICAL for sentences to load correctly)
+    df.replace("", np.nan, inplace=True)
+
+    # 3. Repair Images (Randomly swap bad items or Producer 0 items)
     if "Item" in df.columns:
-        # 1. Collect all "valid" images (starting with 'd-' and not 'NA')
-        # We assume any item starting with 'd-' is a legit image file.
+        # Create pool of valid images (starting with d-)
         valid_pool = [
-            str(x).strip() for x in df["Item"].unique() 
+            str(x).strip() for x in df["Item"].dropna().unique() 
             if str(x).startswith("d-") and "NA" not in str(x)
         ]
-        
-        # Fallback if the pool is somehow empty
-        if not valid_pool:
-            valid_pool = ["d-A-B-BC-3"] 
+        if not valid_pool: valid_pool = ["d-A-B-BC-3"]
 
-        def repair_randomly(row):
-            item = str(row.get("Item", "")).strip()
-            prod = str(row.get("Producer", ""))
-            
-            # Identify broken rows
-            is_broken = (
+        def repair_images(row):
+            item = str(row.get("Item", "") if pd.notna(row.get("Item")) else "").strip()
+            prod = str(row.get("Producer", "") if pd.notna(row.get("Producer")) else "")
+
+            # Logic: If it's Producer 0 OR the filename is broken (NA_x, D_...), swap it.
+            is_producer_zero = (prod == "0" or prod == "0.0")
+            is_broken_file = (
                 item == "NA_x" or 
                 item.startswith("D_") or 
-                prod == "0" or 
-                prod == "0.0"
+                item == "nan" or 
+                item == ""
             )
-            
-            if is_broken:
-                # Pick a random VALID image from the pool
+
+            if is_producer_zero or is_broken_file:
+                # Give the Interpreter a valid image to look at
                 return random.choice(valid_pool)
-            
+
             return item
 
-        # Apply the random repair
-        df["Item"] = df.apply(repair_randomly, axis=1)
-    # --- FIX END ---
+        df["Item"] = df.apply(repair_images, axis=1)
 
     conv_data = convert(df)
 
@@ -194,24 +194,25 @@ def long_data(filename: str):
         raise Exception(f"No sheet named '{ALT_DATA_WS}' in {xlsx_path}")
     
     df = xl.parse(ALT_DATA_WS, dtype={"Condition": str}, keep_default_na=False)
+    df.replace("", np.nan, inplace=True)
     
-    # Apply same random repair logic here if needed
     if "Item" in df.columns:
         valid_pool = [
-            str(x).strip() for x in df["Item"].unique() 
+            str(x).strip() for x in df["Item"].dropna().unique() 
             if str(x).startswith("d-") and "NA" not in str(x)
         ]
         if not valid_pool: valid_pool = ["d-A-B-BC-3"]
 
-        def repair_randomly(row):
-            item = str(row.get("Item", "")).strip()
-            prod = str(row.get("Producer", ""))
-            is_broken = (item == "NA_x" or item.startswith("D_") or prod == "0" or prod == "0.0")
-            if is_broken:
+        def repair_images(row):
+            item = str(row.get("Item", "") if pd.notna(row.get("Item")) else "").strip()
+            prod = str(row.get("Producer", "") if pd.notna(row.get("Producer")) else "")
+            is_producer_zero = (prod == "0" or prod == "0.0")
+            is_broken_file = (item == "NA_x" or item.startswith("D_") or item == "nan" or item == "")
+            if is_producer_zero or is_broken_file:
                 return random.choice(valid_pool)
             return item
 
-        df["Item"] = df.apply(repair_randomly, axis=1)
+        df["Item"] = df.apply(repair_images, axis=1)
 
     conv_data = convert(df)
     return conv_data
