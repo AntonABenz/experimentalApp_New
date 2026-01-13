@@ -5,6 +5,7 @@ import os
 import re
 import time
 from sqlalchemy import create_engine, text
+from django.shortcuts import redirect
 
 logger = logging.getLogger("benzapp.img_desc")
 
@@ -506,51 +507,108 @@ class FinalForProlific(Page):
         return redirect("https://cnn.com")
 
 def custom_export(players):
-    # 1. YIELD HEADER IMMEDIATELY
-    # This prevents the "Timeout" error by telling the browser the download has started.
-    yield ['session', 'participant_code', 'round', 'role', 'condition', 'item_nr', 'image', 'producer_sentences', 'interpreter_rewards', 'decision_seconds']
+    """
+    Works with Batch as ExtraModel (no Batch.objects).
+    Uses SQLAlchemy to stream rows from img_desc_batch.
+    Also exports decision_seconds from Player table.
+    """
 
-    # 2. Get relevant Session Codes efficiently
-    # We use a set to avoid duplicates and database overhead
-    if hasattr(players, 'values_list'):
-        session_codes = list(players.values_list('session__code', flat=True).distinct())
-    else:
-        # Fallback if a list is passed instead of a QuerySet
-        session_codes = list(set(p.session.code for p in players))
-
-    # 3. Build Timing Map (Optimized)
-    # We fetch only the 4 columns we need. 
-    timing_map = {}
-    
-    # We filter Player objects by the relevant sessions to keep the map small
-    timing_query = Player.objects.filter(session__code__in=session_codes).values_list(
-        'session__code', 'participant__code', 'round_number', 'decision_seconds'
-    )
-    
-    # Construct dict: (session, participant, round) -> seconds
-    for s_code, p_code, r_num, seconds in timing_query.iterator():
-        timing_map[(s_code, p_code, r_num)] = seconds
-
-    # 4. Stream the Batch Data
-    # We use iterator(chunk_size=2000) to load data in small blocks so RAM doesn't spike.
-    columns = [
-        'session_code', 'owner_code', 'round_number', 'role', 
-        'condition', 'item_nr', 'image', 'sentences', 'rewards'
+    # 1) STREAM HEADER FIRST (prevents export timeout)
+    yield [
+        "session",
+        "participant_code",
+        "round",
+        "role",
+        "condition",
+        "item_nr",
+        "image",
+        "producer_sentences",
+        "interpreter_rewards",
+        "decision_seconds",
     ]
 
-    # Filter for our sessions and order them logically
-    batch_query = Batch.objects.filter(session_code__in=session_codes).order_by('session_code', 'batch', 'id_in_group')
+    # 2) Collect session_codes relevant to this export
+    # players is typically a Django QuerySet of Player
+    session_codes = set()
+    try:
+        for s in players.values_list("session__code", flat=True).distinct():
+            session_codes.add(s)
+    except Exception:
+        # fallback if it's a list
+        session_codes = set(p.session.code for p in players)
 
-    # 'iterator' is the key here. It fetches rows from the DB one by one (or in chunks)
-    # rather than loading 100,000 rows into memory at once.
-    for row in batch_query.values_list(*columns).iterator(chunk_size=2000):
-        s_code, o_code, r_num, role, cond, item, img, sent, rew = row
-        
-        # Calculate timing
-        ds = ""
-        if o_code:
-            ds = timing_map.get((s_code, o_code, r_num), "")
+    if not session_codes:
+        return
 
-        yield [s_code, o_code, r_num, role, cond, item, img, sent, rew, ds]
+    # 3) Build timing map: (session_code, participant_code, round_number) -> decision_seconds
+    timing_map = {}
+
+    try:
+        timing_rows = (
+            Player.objects.filter(session__code__in=session_codes)
+            .values_list("session__code", "participant__code", "round_number", "decision_seconds")
+            .iterator()
+        )
+        for s_code, p_code, r_num, seconds in timing_rows:
+            timing_map[(s_code, p_code, r_num)] = seconds
+    except Exception:
+        # if anything fails, export still works (just without timing)
+        timing_map = {}
+
+    # 4) Stream batches directly from SQL
+    engine = get_engine()
+
+    sql = text("""
+        SELECT
+            session_code,
+            owner_code,
+            round_number,
+            role,
+            condition,
+            item_nr,
+            image,
+            sentences,
+            rewards
+        FROM img_desc_batch
+        WHERE session_code = ANY(:session_codes)
+        ORDER BY session_code, batch, id_in_group
+    """)
+
+    # IMPORTANT: Postgres wants list/array for ANY(...)
+    session_code_list = list(session_codes)
+
+    with engine.connect() as conn:
+        result = conn.execute(sql, {"session_codes": session_code_list})
+
+        # keys() exists but we unpack row by row for speed
+        for row in result:
+            s_code = row[0]
+            owner_code = row[1]
+            round_number = row[2]
+            role = row[3]
+            condition = row[4]
+            item_nr = row[5]
+            image = row[6]
+            sentences = row[7]
+            rewards = row[8]
+
+            # decision_seconds lookup
+            ds = ""
+            if owner_code:
+                ds = timing_map.get((s_code, owner_code, round_number), "")
+
+            yield [
+                s_code,
+                owner_code,
+                round_number,
+                role,
+                condition,
+                item_nr,
+                image,
+                sentences,
+                rewards,
+                ds,
+            ]
+
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
