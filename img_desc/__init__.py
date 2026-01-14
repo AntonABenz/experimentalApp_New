@@ -396,23 +396,40 @@ def _collect_indexed(settings: dict, prefix: str, max_n: int = 20):
             out.append(vv)
     return out
 
+# Add this import at the top of your file, or inside the function
+from django.forms.models import model_to_dict
+
 def get_all_batches_sql(session_code):
     """
     Retrieves all Batch rows for the given session_code.
-    Returns a list of dictionaries (ValuesQuerySet) so you can access
-    fields like b['batch'] or b['busy'].
+    Converts oTree object instances into a list of dictionaries 
+    so existing code (like b['batch']) continues to work.
     """
-    return list(Batch.objects.filter(session_code=session_code).values())
+    # 1. Fetch instances using .filter() (returns a list of objects)
+    batches = Batch.filter(session_code=session_code)
+    
+    # 2. Convert objects to dicts, manually ensuring 'id' is included
+    # (model_to_dict usually excludes the ID field by default)
+    data = []
+    for b in batches:
+        d = model_to_dict(b)
+        d['id'] = b.id  # Critical: Put the ID back in
+        data.append(d)
+        
+    return data
 
 
 def sql_update_batch(batch_id, busy=None, owner_code=None):
     """
     Updates a specific Batch row identified by its ID.
+    Uses oTree's .filter() instead of .objects.filter().
     """
-    # We use Batch.objects.filter to get a QuerySet
-    rows = Batch.objects.filter(id=batch_id)
-    if rows.exists():
-        b = rows.first()
+    # 1. Fetch list of matches
+    rows = Batch.filter(id=batch_id)
+    
+    # 2. Update the first match if it exists
+    if rows:
+        b = rows[0]
         if busy is not None:
             b.busy = busy
         if owner_code is not None:
