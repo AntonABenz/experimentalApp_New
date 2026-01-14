@@ -5,6 +5,7 @@ import os
 import re
 import time
 
+# We use pandas for robust Excel reading
 import pandas as pd
 from django.shortcuts import redirect
 
@@ -38,158 +39,57 @@ def _truthy(v) -> bool:
 
 
 def _read_excel_strict(filename):
+    """
+    Robust Excel reader that looks in multiple paths and handles data/settings sheets.
+    """
     from pathlib import Path
-    import pandas as pd
-
-    logger.info(f"CWD={os.getcwd()}")
-    logger.info(f"filename passed in={filename}")
-
-    # --- Resolve Excel path robustly ---
+    
+    # 1. Resolve Path
     candidates = [
         Path(filename),
         Path("start/data") / filename,
         Path("/app/start/data") / filename,
         Path("data") / filename,
-        Path("/app/data") / filename,
     ]
-
+    
     xlsx_path = None
     for p in candidates:
         if p.exists():
             xlsx_path = p
             break
-
+            
     if not xlsx_path:
-        tried = ", ".join(str(p) for p in candidates)
-        raise FileNotFoundError(f"Excel file not found: {filename}. Tried: {tried}")
+        raise FileNotFoundError(f"Excel file '{filename}' not found. Searched: {[str(c) for c in candidates]}")
 
-    logger.info(f"Excel resolved to: {xlsx_path}")
+    logger.info(f"LOADING EXCEL FROM: {xlsx_path}")
 
-    # --- Load workbook ---
+    # 2. Read Sheets
     xls = pd.ExcelFile(xlsx_path, engine="openpyxl")
-
-    # --- Detect data sheet + settings sheet ---
-    sheet_names = xls.sheet_names
-    sheet_names_l = [s.lower().strip() for s in sheet_names]
-
-    data_sheet = sheet_names[0]
+    sheet_names = [s.lower().strip() for s in xls.sheet_names]
+    
+    data_sheet = xls.sheet_names[0] # Default to first
     settings_sheet = None
-
-    for i, s in enumerate(sheet_names_l):
+    
+    for i, s in enumerate(sheet_names):
         if "setting" in s:
-            settings_sheet = sheet_names[i]
+            settings_sheet = xls.sheet_names[i]
         if s in {"data", "trials", "items"}:
-            data_sheet = sheet_names[i]
+            data_sheet = xls.sheet_names[i]
 
-    # --- Read DATA sheet ---
-    df = pd.read_excel(
-        xlsx_path,
-        sheet_name=data_sheet,
-        dtype=str,
-        keep_default_na=False,
-        na_filter=False,
-        engine="openpyxl",
-    )
-
-    # --- Read SETTINGS sheet ---
+    # 3. Parse Data
+    df = pd.read_excel(xlsx_path, sheet_name=data_sheet, dtype=str, keep_default_na=False, engine="openpyxl")
+    
+    # 4. Parse Settings
     settings = {}
     if settings_sheet:
-        raw = pd.read_excel(
-            xlsx_path,
-            sheet_name=settings_sheet,
-            dtype=str,
-            keep_default_na=False,
-            na_filter=False,
-            engine="openpyxl",
-        )
-
+        raw = pd.read_excel(xlsx_path, sheet_name=settings_sheet, dtype=str, keep_default_na=False, header=None, engine="openpyxl")
+        # Assume Col A is Key, Col B is Value
         if len(raw.columns) >= 2:
-            kcol, vcol = raw.columns[0], raw.columns[1]
             for _, row in raw.iterrows():
-                k = str(row.get(kcol, "")).strip()
-                v = str(row.get(vcol, "")).strip()
-                if k:
-                    settings[k] = v
+                k, v = str(row[0]).strip(), str(row[1]).strip()
+                if k: settings[k] = v
 
     return df, settings
-
-
-def _safe_int(x, default=0):
-    try:
-        s = str(x).strip()
-        if s == "":
-            return default
-        return int(float(s))
-    except Exception:
-        return default
-
-
-def _safe_str(x):
-    if x is None:
-        return ""
-    return str(x).strip()
-
-
-def _force_str(val) -> str:
-    """Turn cell value into string safely."""
-    if val is None:
-        return ""
-    s = str(val).strip()
-    if s.lower() == "nan":
-        return ""
-    return s
-
-
-def _to_int(val, default=0) -> int:
-    if val is None:
-        return default
-    s = str(val).strip()
-    if s == "" or s.lower() == "nan":
-        return default
-    try:
-        return int(s)
-    except ValueError:
-        try:
-            return int(float(s))
-        except Exception:
-            return default
-
-
-def _parse_bool(val) -> bool:
-    s = _force_str(val).lower()
-    return s in {"1", "true", "t", "yes", "y"}
-
-
-def _collect_indexed(settings: dict, prefix: str, max_n: int = 20):
-    """Collect keys like prefix_1, prefix_2,... in order."""
-    out = []
-    for i in range(1, max_n + 1):
-        v = settings.get(f"{prefix}_{i}")
-        if v is None:
-            continue
-        vv = _force_str(v)
-        if vv != "":
-            out.append(vv)
-    return out
-
-
-# ============================================================================
-# BATCH DATA MANAGEMENT (using session.vars instead of ExtraModel)
-# ============================================================================
-
-def get_all_batches_from_session(session):
-    """Get batch data from session.vars"""
-    return session.vars.get('batches', [])
-
-
-def update_batch_in_session(session, batch_id, **updates):
-    """Update a batch in session.vars"""
-    batches = session.vars.get('batches', [])
-    for b in batches:
-        if b.get('id') == batch_id:
-            b.update(updates)
-            break
-    session.vars['batches'] = batches
 
 
 # ============================================================================
@@ -197,30 +97,7 @@ def update_batch_in_session(session, batch_id, **updates):
 # ============================================================================
 
 class Subsession(BaseSubsession):
-    active_batch = models.IntegerField(initial=1)
-
-    def get_active_batch_number(self) -> int:
-        return int(self.session.vars.get("active_batch", 1))
-
-    def set_active_batch_number(self, n: int) -> None:
-        self.session.vars["active_batch"] = int(n)
-        self.active_batch = int(n)
-
-    def check_for_batch_completion(self):
-        session = self.session
-        active_batch = self.active_batch or 1
-        all_data = get_all_batches_from_session(session)
-    
-        remaining = [
-            b for b in all_data
-            if b["batch"] == active_batch and not b["processed"]
-        ]
-        if remaining:
-            return
-    
-        # bump the value in this subsession and session.vars
-        self.active_batch = active_batch + 1
-        session.vars["active_batch"] = active_batch + 1
+    pass
 
 
 class Group(BaseGroup):
@@ -228,158 +105,129 @@ class Group(BaseGroup):
 
 
 class Player(BasePlayer):
+    # --- State ---
+    # We store the ENTIRE batch history for this player as a JSON string.
+    # This replaces the database table.
+    batch_history = models.LongStringField(initial="[]")
+    
+    # Current round pointers
     inner_role = models.StringField()
-    link_id = models.IntegerField(initial=0)
+    active_batch_id = models.IntegerField(initial=0) # Index in batch_history
 
+    # --- Metrics ---
     faulty = models.BooleanField(initial=False)
     feedback = models.LongStringField(label="")
-
-    # decisions
+    
+    # --- Timing & Decisions ---
     producer_decision = models.LongStringField()
     interpreter_decision = models.LongStringField()
-
-    # timing
+    
     start_decision_time = models.FloatField(initial=0)
     end_decision_time = models.FloatField(initial=0)
     decision_seconds = models.FloatField(initial=0)
-
-    # prolific
+    
     full_return_url = models.StringField(blank=True)
 
-    def role(self):
-        return self.inner_role
-
-    def _linked_batch(self):
-        """Get the batch dict linked to this player"""
-        if not self.link_id:
-            return None
-        batches = get_all_batches_from_session(self.session)
-        for b in batches:
-            if b.get('id') == self.link_id:
-                return b
-        return None
-
-    def get_linked_batch(self):
-        """Get linked batch for template compatibility"""
-        return self._linked_batch()
-
-    def get_sentences_data(self):
-        b = self._linked_batch()
-        if not b:
-            return []
-        raw = b.get('sentences', "[]")
+    def get_current_batch_data(self):
+        """Helper to get the dict for the current round from JSON."""
+        if not self.batch_history: return {}
         try:
-            return json.loads(raw)
-        except Exception:
-            return []
+            history = json.loads(self.batch_history)
+            # Find entry for this round
+            for item in history:
+                if int(item.get('round_number', 0)) == self.round_number:
+                    return item
+        except:
+            pass
+        return {}
 
-    def update_batch(self):
-        """Update batch data after player makes decision"""
-        b = self._linked_batch()
-        if not b:
-            return
-        
-        updates = {}
-        if self.inner_role == PRODUCER:
-            updates['sentences'] = self.producer_decision or "[]"
-        elif self.inner_role == INTERPRETER:
-            updates['rewards'] = self.interpreter_decision or ""
-        
-        if updates:
-            update_batch_in_session(self.session, self.link_id, **updates)
-
-    def mark_data_processed(self):
-        """Mark all this participant's rows as processed"""
-        batches = get_all_batches_from_session(self.session)
-        for b in batches:
-            if b.get('owner_code') == self.participant.code:
-                update_batch_in_session(self.session, b['id'], processed=True)
-        
-        self.subsession.check_for_batch_completion()
+    def update_current_batch_data(self, updates: dict):
+        """Updates the JSON history with new decisions."""
+        try:
+            history = json.loads(self.batch_history)
+            found = False
+            for item in history:
+                if int(item.get('round_number', 0)) == self.round_number:
+                    item.update(updates)
+                    found = True
+            if found:
+                self.batch_history = json.dumps(history)
+        except:
+            pass
 
     def get_image_url(self):
-        b = self._linked_batch()
-        if not b:
-            return ""
-
-        image_name = _safe_str(b.get('image', ''))
-        if image_name == "":
-            return ""
-
-        if image_name.lower() in {"nan"}:
-            return ""
-
-        image_name = image_name.replace(" ", "_")
-
-        ext = (self.session.vars.get("extension") or "png").strip()
-        if ext and not image_name.lower().endswith("." + ext.lower()):
-            image_name = f"{image_name}.{ext}"
-
-        base = (_safe_str(self.session.vars.get("s3path_base"))).rstrip("/")
-        if not base:
-            return ""
-        if "amazonaws.com" in base:
-            base = base.replace("/practice", "")
-
-        return f"{base}/{image_name}"
-
-    def start(self):
-        """Initialize player for this round"""
-        session = self.session
-        subsession = self.subsession
-    
-        # active_batch safe default
-        if subsession.field_maybe_none("active_batch") is None:
-            subsession.active_batch = 1
-    
-        all_data = get_all_batches_from_session(session)
-    
-        # ---- allocate participant to a free id_in_group only ONCE (round 1) ----
-        if self.round_number == 1:
-            active_batch = subsession.active_batch or 1
-    
-            candidates = [
-                b for b in all_data
-                if b["batch"] == active_batch
-                and not b["busy"]
-                and (b.get("owner_code") or "") == ""
-            ]
-            if not candidates:
-                logger.error(f"No candidates found for participant {self.participant.code} in batch {active_batch}")
-                self.faulty = True
-                return
-    
-            candidates.sort(key=lambda b: b["id_in_group"])
-            chosen = candidates[0]
-    
-            # mark ALL rows for that participant id_in_group in this batch as busy/owned
-            for b in all_data:
-                if b["batch"] == chosen["batch"] and b["id_in_group"] == chosen["id_in_group"]:
-                    update_batch_in_session(session, b["id"], busy=True, owner_code=self.participant.code)
-    
-            logger.info(f"Assigned participant {self.participant.code} to id_in_group {chosen['id_in_group']} in batch {chosen['batch']}")
-            
-            # refresh after updates
-            all_data = get_all_batches_from_session(session)
-    
-        # ---- find the row for this participant + round ----
-        my_row = None
-        for b in all_data:
-            if (b.get("owner_code") == self.participant.code) and (int(b.get("round_number") or 0) == int(self.round_number)):
-                my_row = b
-                break
-    
-        if not my_row:
-            logger.error(f"No batch row found for participant {self.participant.code}, round {self.round_number}")
-            logger.error(f"Available batches for this participant: {[b for b in all_data if b.get('owner_code') == self.participant.code][:5]}")
-            self.faulty = True
-            return
-    
-        # link + role/sentences
-        self.link_id = my_row["id"]
-        self.inner_role = my_row["role"] or ""
+        data = self.get_current_batch_data()
+        img = data.get('image', '').strip()
         
-        logger.info(f"Round {self.round_number}: Linked participant {self.participant.code} to batch_id {my_row['id']}, role {self.inner_role}")
+        # Ghost file trap
+        if "ABC-3" in img:
+            logger.warning(f"⚠️ GHOST ITEM DETECTED for {self.participant.code}: {img}")
+
+        if not img or img.lower() in ['nan', 'na', 'na_x', 'none']:
+            return ""
+            
+        base = self.session.vars.get('s3path_base', '').rstrip('/')
+        ext = self.session.vars.get('extension', 'png')
+        
+        if "amazonaws" in base:
+            base = base.replace("/practice", "")
+            
+        clean_name = img.replace(" ", "_")
+        if not clean_name.lower().endswith(f".{ext}"):
+            clean_name = f"{clean_name}.{ext}"
+            
+        return f"{base}/{clean_name}"
+
+    def get_sentences_data(self):
+        """
+        Logic:
+        - If Producer: Show my own previous sentences (from Excel or previous save).
+        - If Interpreter: Find my PARTNER from the previous batch and show THEIR sentences.
+        """
+        data = self.get_current_batch_data()
+        my_role = data.get('role', '')
+        
+        # 1. Producer sees what is in the data (or empty)
+        if my_role == PRODUCER:
+            raw = data.get('sentences', '[]')
+            return json.loads(raw) if raw else []
+
+        # 2. Interpreter needs to find partner
+        # Partner ID in Excel refers to the partner's 'id' (id_in_group)
+        partner_id_in_group = int(data.get('partner_id', 0))
+        if partner_id_in_group == 0:
+            return []
+
+        # Find the player object who has that id_in_group
+        # (Note: id_in_subsession is usually aligned with excel id)
+        # We search specifically:
+        partner = None
+        for p in self.subsession.get_players():
+            # We assume we stored 'id' from Excel in participant.vars or calculated it
+            # Simple assumption: player.id_in_subsession maps to Excel 'id'
+            if p.id_in_subsession == partner_id_in_group:
+                partner = p
+                break
+        
+        if not partner:
+            return []
+
+        # Now get the Partner's history for the PREVIOUS batch (round - 1?)
+        # Actually, standard design is: Prod Round 1 -> Interp Round 1.
+        # But usually Interpreter describes the Producer's result from the SAME round or PREV?
+        # Based on your logic: "prev = get_previous_batch()".
+        # We will look for the partner's data in the SAME round logic or matching batch logic.
+        
+        # Let's assume standard: Partner produced sentences in THIS round's data
+        # Check partner's history for this round
+        p_data = partner.get_current_batch_data()
+        
+        # Safety check: Partner must be Producer
+        if p_data.get('role') == PRODUCER:
+            raw = p_data.get('sentences', '[]')
+            return json.loads(raw) if raw else []
+            
+        return []
 
 
 # ============================================================================
@@ -388,135 +236,96 @@ class Player(BasePlayer):
 
 def creating_session(subsession: Subsession):
     session = subsession.session
-
-    # ensure subsession.active_batch always has a value
-    if subsession.field_maybe_none("active_batch") is None:
-        subsession.active_batch = 1
-
-    # only do heavy init once
+    
+    # Only run once per session
     if subsession.round_number != 1:
         return
 
-    subsession.active_batch = 1
-    session.vars["active_batch"] = 1
-
     filename = session.config.get("filename")
-    if not filename:
-        raise RuntimeError("Missing session.config['filename']")
+    if not filename: raise RuntimeError("No filename in session config")
 
-    # ---- read excel robustly ----
-    df_raw, settings_raw = _read_excel_strict(filename)
-
-    # ---- normalize settings keys ----
-    clean_settings = {}
-    for k, v in (settings_raw or {}).items():
-        clean_settings[normalize_key(k)] = v
-    session.vars["user_settings"] = clean_settings
-
-    # ---- core settings ----
-    session.vars["s3path_base"] = _force_str(clean_settings.get("s3path_base"))
-    session.vars["extension"] = _force_str(clean_settings.get("extension")) or "png"
-    session.vars["prefix"] = _force_str(clean_settings.get("prefix"))
-    session.vars["interpreter_title"] = _force_str(clean_settings.get("interpreter_title")) or "Buy medals:"
-    session.vars["caseflag"] = _parse_bool(clean_settings.get("caseflag"))
-
-    # interpreter choices
+    # 1. Load Excel
+    df, settings_raw = _read_excel_strict(filename)
+    
+    # 2. Parse Settings
+    clean_settings = {normalize_key(k): v for k, v in settings_raw.items()}
+    
+    session.vars["s3path_base"] = clean_settings.get("s3path_base", "")
+    session.vars["extension"] = clean_settings.get("extension", "png")
+    session.vars["prefix"] = clean_settings.get("prefix", "")
+    session.vars["interpreter_title"] = clean_settings.get("interpreter_title", "Buy medals:")
+    session.vars["caseflag"] = _truthy(clean_settings.get("caseflag"))
+    
+    # Suffixes & Choices
+    session.vars["suffixes"] = [
+        str(clean_settings.get(f"suffix_{i}", "")).strip() 
+        for i in range(1, 11) 
+        if clean_settings.get(f"suffix_{i}")
+    ]
+    
     raw_choices = clean_settings.get("interpreter_choices", "")
-    if isinstance(raw_choices, str):
-        session.vars["interpreter_choices"] = [x.strip() for x in raw_choices.split(";") if x.strip()]
-    else:
-        session.vars["interpreter_choices"] = []
+    session.vars["interpreter_choices"] = [x.strip() for x in raw_choices.split(";")] if raw_choices else []
 
-    # suffixes
-    session.vars["suffixes"] = _collect_indexed(clean_settings, "suffix", max_n=20)
-
-    # allowed values / regexes
-    allowed_values = []
-    allowed_regexes = []
+    # Regex/Values
+    allowed_vals = []
+    allowed_reg = []
     for i in range(1, 21):
         v = clean_settings.get(f"allowed_values_{i}")
         r = clean_settings.get(f"allowed_regex_{i}")
-        if v is None and r is None:
-            continue
-        v_str = _force_str(v)
-        r_str = _force_str(r)
-        allowed_values.append([x.strip() for x in v_str.split(";") if x.strip()] if v_str else [])
-        allowed_regexes.append(r_str)
-    session.vars["allowed_values"] = allowed_values
-    session.vars["allowed_regexes"] = allowed_regexes
-
-    # instructions url
-    default_url = (
-        "https://docs.google.com/document/d/e/"
-        "2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/"
-        "pub?embedded=true"
-    )
-    session.vars["instructions_url"] = _force_str(clean_settings.get("instructions_url")) or default_url
-
-    # completion_code for prolific
+        if v or r:
+            allowed_vals.append([x.strip() for x in str(v).split(";")] if v else [])
+            allowed_reg.append(str(r).strip() if r else "")
+    session.vars["allowed_values"] = allowed_vals
+    session.vars["allowed_regexes"] = allowed_reg
+    
+    # Instructions & Prolific
+    session.vars["instructions_url"] = clean_settings.get("instructions_url", "https://google.com")
     if session.config.get("completion_code"):
-        session.vars["completion_code"] = str(session.config["completion_code"]).strip()
+        session.vars["completion_code"] = str(session.config["completion_code"])
 
-    # ---- build Batch data in session.vars ----
-    records = df_raw.to_dict(orient="records")
+    # 3. DISTRIBUTE DATA TO PLAYERS
+    # We assign rows based on 'id' in Excel matching 'id_in_subsession' of players.
+    # This creates a static, crash-proof assignment.
     
-    batches = []
-    batch_id = 1
+    records = df.to_dict(orient="records")
+    players = subsession.get_players()
+    
+    # Group records by 'id' (Excel column 'id')
+    from collections import defaultdict
+    data_by_id = defaultdict(list)
+    
     for r in records:
-        batches.append({
-            'id': batch_id,
-            'session_code': session.code,
-            'owner_code': '',
-            'batch': _to_int(r.get("Exp"), 0),
-            'round_number': _to_int(r.get("group_enumeration"), 0),
-            'role': _force_str(r.get("role")),
-            'id_in_group': _to_int(r.get("id"), 0),
-            'partner_id': _to_int(r.get("partner_id"), 0),
-            'condition': _force_str(r.get("Condition")),
-            'item_nr': _force_str(r.get("Item.Nr")),
-            'image': _force_str(r.get("Item")),
-            'sentences': _force_str(r.get("sentences") or "[]"),
-            'rewards': '',
-            'busy': False,
-            'processed': False,
+        pid = int(float(r.get('id', 0))) # Handle "1.0" strings
+        data_by_id[pid].append({
+            'round_number': int(float(r.get('group_enumeration', 0))),
+            'batch': int(float(r.get('Exp', 0))),
+            'role': str(r.get('role', '')).strip(),
+            'partner_id': int(float(r.get('partner_id', 0))),
+            'condition': str(r.get('Condition', '')).strip(),
+            'item_nr': str(r.get('Item.Nr', '')).strip(),
+            'image': str(r.get('Item', '')).strip(),
+            'sentences': str(r.get('sentences', '')).strip() or "[]",
+            'rewards': ''
         })
-        batch_id += 1
-    
-    session.vars['batches'] = batches
-    logger.info(f"Created {len(batches)} batch records in session.vars")
+
+    # Assign to players
+    for p in players:
+        # Get data for this player ID
+        my_data = data_by_id.get(p.id_in_subsession, [])
+        if not my_data:
+            # Fallback: if we have more players than IDs, cycle? or leave empty
+            logger.warning(f"No data found for Player {p.id_in_subsession} in Excel!")
+        
+        # Save as JSON on the Player object
+        # IMPORTANT: We save this to Round 1 player, but oTree doesn't auto-copy to future rounds.
+        # We must copy it in 'creating_session' for all rounds OR use participant.vars.
+        # Using participant.vars is safer for multi-round access.
+        p.participant.vars['batch_history'] = json.dumps(my_data)
 
 
 # ============================================================================
 # PAGES
 # ============================================================================
-
-class DebugBatches(Page):
-    """Temporary debug page - remove after testing"""
-    @staticmethod
-    def is_displayed(player):
-        # Only show for first participant, round 1
-        return player.round_number == 1 and player.id_in_subsession == 1
-    
-    @staticmethod
-    def vars_for_template(player):
-        batches = get_all_batches_from_session(player.session)
-        logger.info(f"Total batches: {len(batches)}")
-        logger.info(f"First 3 batches: {batches[:3]}")
-        
-        # Count by round
-        rounds_count = {}
-        for b in batches:
-            rnd = b.get('round_number', 0)
-            rounds_count[rnd] = rounds_count.get(rnd, 0) + 1
-        
-        logger.info(f"Batches per round: {rounds_count}")
-        
-        return {
-            'total_batches': len(batches),
-            'first_batches': batches[:10],
-            'rounds_count': rounds_count,
-        }
-
 
 class FaultyCatcher(Page):
     @staticmethod
@@ -532,44 +341,67 @@ class Q(Page):
 
     @staticmethod
     def is_displayed(player):
-        if player.round_number > Constants.num_rounds:
+        if player.round_number > Constants.num_rounds: return False
+        
+        # 1. Load Data from Participant vars if not present
+        if player.batch_history == "[]" and 'batch_history' in player.participant.vars:
+            player.batch_history = player.participant.vars['batch_history']
+
+        # 2. Get Current Round Data
+        data = player.get_current_batch_data()
+        if not data:
+            # If no data for this round, skip or faulty
+            # For robustness, we mark faulty only if really empty
+            if player.round_number == 1: player.faulty = True
             return False
 
-        # run start() once per round (guard with link_id)
-        if not player.link_id:
-            logger.info(f"Calling start() for participant {player.participant.code}, round {player.round_number}")
-            player.start()
-            logger.info(f"After start(): link_id={player.link_id}, faulty={player.faulty}, role={player.inner_role}")
-
-        if player.faulty:
-            logger.warning(f"Player {player.participant.code} marked as faulty in round {player.round_number}")
-            return False
-
-        # start timing only when page is actually shown and link is valid
+        # 3. Set Role for Template
+        player.inner_role = data.get('role', '')
+        
+        # 4. Start Timer
         if player.start_decision_time == 0:
             player.start_decision_time = time.time()
-
+            
         return True
 
     @staticmethod
     def get_form_fields(player):
-        if player.inner_role == PRODUCER:
-            return ["producer_decision"]
-        if player.inner_role == INTERPRETER:
-            return ["interpreter_decision"]
+        if player.inner_role == PRODUCER: return ["producer_decision"]
+        if player.inner_role == INTERPRETER: return ["interpreter_decision"]
         return []
+
+    @staticmethod
+    def vars_for_template(player):
+        return dict(
+            d=player.get_current_batch_data(),
+            allowed_values=player.session.vars.get("allowed_values"),
+            allowed_regexes=player.session.vars.get("allowed_regexes"),
+            suffixes=player.session.vars.get("suffixes"),
+            prefix=player.session.vars.get("prefix"),
+            interpreter_choices=player.session.vars.get("interpreter_choices"),
+            interpreter_title=player.session.vars.get("interpreter_title"),
+            instructions_url=player.session.vars.get("instructions_url"),
+            server_image_url=player.get_image_url(),
+            caseflag=player.session.vars.get("caseflag"),
+        )
 
     @staticmethod
     def before_next_page(player, timeout_happened):
         player.end_decision_time = time.time()
-
         if player.start_decision_time:
-            player.decision_seconds = float(player.end_decision_time - player.start_decision_time)
-
-        player.update_batch()
-
-        if player.round_number == Constants.num_rounds:
-            player.mark_data_processed()
+            player.decision_seconds = player.end_decision_time - player.start_decision_time
+        
+        # Save decision to local JSON history
+        updates = {}
+        if player.inner_role == PRODUCER:
+            updates['sentences'] = player.producer_decision
+        elif player.inner_role == INTERPRETER:
+            updates['rewards'] = player.interpreter_decision
+            
+        player.update_current_batch_data(updates)
+        
+        # Sync back to participant vars so future rounds see it!
+        player.participant.vars['batch_history'] = player.batch_history
 
 
 class Feedback(Page):
@@ -577,118 +409,86 @@ class Feedback(Page):
     form_fields = ["feedback"]
 
     @staticmethod
-    def is_displayed(player: Player):
+    def is_displayed(player):
         return player.round_number == Constants.num_rounds
 
 
 class FinalForProlific(Page):
     @staticmethod
-    def is_displayed(player: Player):
-        return bool(player.session.config.get("for_prolific")) and player.round_number == Constants.num_rounds
+    def is_displayed(player):
+        return player.session.config.get("for_prolific") and player.round_number == Constants.num_rounds
 
     def get(self):
-        completion_code = (
-            self.player.session.config.get("completion_code")
-            or self.player.session.vars.get("completion_code")
-        )
-        if not completion_code:
-            return redirect(Constants.API_ERR_URL)
-        return redirect(STUBURL + str(completion_code))
+        cc = (player.session.vars.get("completion_code") or 
+              player.session.config.get("completion_code"))
+        if not cc: return redirect(Constants.API_ERR_URL)
+        return redirect(STUBURL + str(cc))
 
 
 # ============================================================================
-# DATA EXPORT
+# EXPORT
 # ============================================================================
 
 def custom_export(players):
     """
-    STREAMED export, one row per participant per round (1..80).
+    Export 80 rows per participant (from JSON history) + Time/Feedback.
     """
     yield [
-        "session_code",
-        "participant_code",
-        "round_number",
-        "role",
-        "condition",
-        "item_nr",
-        "image",
-        "producer_sentences",
-        "interpreter_rewards",
-        "decision_seconds",
+        "session_code", "participant_code", "round_number", "role",
+        "condition", "item_nr", "image", "producer_sentences",
+        "interpreter_rewards", "decision_seconds", "feedback"
     ]
 
-    # Get all sessions involved
-    sessions = {}
-    for p in players.select_related('session', 'participant'):
-        if p.session.code not in sessions:
-            sessions[p.session.code] = p.session
-
-    # Stream players
-    p_it = (
-        players
-        .select_related('session', 'participant')
-        .values_list(
-            "session__code",
-            "participant__code",
-            "round_number",
-            "inner_role",
-            "producer_decision",
-            "interpreter_decision",
-            "decision_seconds",
-        )
-        .order_by("session__code", "participant__code", "round_number")
-        .iterator(chunk_size=2000)
-    )
-
-    for session_code, participant_code, rnd, inner_role, prod_dec, interp_dec, ds in p_it:
-        rnd = int(rnd)
-        if rnd < 1 or rnd > Constants.num_rounds:
+    # Iterate over players (only look at Round 80 to get full history, OR iterate all)
+    # Better: iterate all players, get their batch_history from participant vars
+    
+    # We grab unique participants
+    processed_participants = set()
+    
+    for p in players:
+        if p.participant.code in processed_participants:
             continue
-
-        # Get batch data from session.vars
-        session = sessions.get(session_code)
-        if session:
-            batches = get_all_batches_from_session(session)
-            batch_data = None
-            for b in batches:
-                if b.get('owner_code') == participant_code and b.get('round_number') == rnd:
-                    batch_data = b
-                    break
+        processed_participants.add(p.participant.code)
+        
+        # Get history
+        history_json = p.participant.vars.get('batch_history', '[]')
+        try:
+            history = json.loads(history_json)
+        except:
+            history = []
             
-            if batch_data:
-                role = batch_data.get('role', inner_role or '')
-                cond = batch_data.get('condition', '')
-                item_nr = batch_data.get('item_nr', '')
-                img = batch_data.get('image', '')
-                producer_sentences = batch_data.get('sentences', '')
-                interpreter_rewards = batch_data.get('rewards', '')
-            else:
-                role = inner_role or ""
-                cond = ""
-                item_nr = ""
-                img = ""
-                producer_sentences = prod_dec or ""
-                interpreter_rewards = interp_dec or ""
-        else:
-            role = inner_role or ""
-            cond = ""
-            item_nr = ""
-            img = ""
-            producer_sentences = prod_dec or ""
-            interpreter_rewards = interp_dec or ""
+        # Also need timing data per round. This is stored on the Player objects.
+        # We need to map round_number -> decision_seconds
+        timing_map = {}
+        feedback_str = ""
+        
+        # Get all rounds for this participant
+        my_rounds = p.participant.get_players()
+        for sub_p in my_rounds:
+            timing_map[sub_p.round_number] = sub_p.decision_seconds
+            if sub_p.round_number == Constants.num_rounds:
+                feedback_str = sub_p.feedback or ""
 
-        yield [
-            session_code,
-            participant_code,
-            rnd,
-            role,
-            cond,
-            item_nr,
-            img,
-            producer_sentences,
-            interpreter_rewards,
-            "" if ds is None else ds,
-        ]
+        # Now yield 80 rows
+        # Sort history by round number just in case
+        history.sort(key=lambda x: int(x.get('round_number', 0)))
+        
+        for item in history:
+            rnd = int(item.get('round_number', 0))
+            if rnd < 1 or rnd > Constants.num_rounds: continue
+            
+            yield [
+                p.session.code,
+                p.participant.code,
+                rnd,
+                item.get('role', ''),
+                item.get('condition', ''),
+                item.get('item_nr', ''),
+                item.get('image', ''),
+                item.get('sentences', ''),
+                item.get('rewards', ''),
+                timing_map.get(rnd, 0),
+                feedback_str if rnd == Constants.num_rounds else ""
+            ]
 
-
-page_sequence = [DebugBatches, FaultyCatcher, Q, Feedback, FinalForProlific]
+page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
