@@ -27,28 +27,6 @@ class Constants(BaseConstants):
     API_ERR_URL = STUBURL + API_ERR
 
 
-class Batch(ExtraModel):
-    session_code = models.StringField()
-    owner_code = models.StringField(blank=True)
-
-    # payload from Excel:
-    batch = models.IntegerField()
-    round_number = models.IntegerField()
-    role = models.StringField()
-    id_in_group = models.IntegerField()
-    partner_id = models.IntegerField()
-
-    condition = models.StringField()
-    item_nr = models.StringField()
-    image = models.StringField()
-
-    sentences = models.LongStringField()
-    rewards = models.LongStringField(blank=True)
-
-    busy = models.BooleanField(initial=False)
-    processed = models.BooleanField(initial=False)
-
-
 def normalize_key(key):
     if not key:
         return ""
@@ -60,7 +38,6 @@ def _truthy(v) -> bool:
 
 
 def _read_excel_strict(filename):
-    import os
     from pathlib import Path
     import pandas as pd
 
@@ -69,11 +46,11 @@ def _read_excel_strict(filename):
 
     # --- Resolve Excel path robustly ---
     candidates = [
-        Path(filename),                               # absolute or relative
-        Path("start/data") / filename,                # /app/start/data/<file>
-        Path("/app/start/data") / filename,           # explicit for Heroku
-        Path("data") / filename,                      # optional fallback
-        Path("/app/data") / filename,                 # optional fallback
+        Path(filename),
+        Path("start/data") / filename,
+        Path("/app/start/data") / filename,
+        Path("data") / filename,
+        Path("/app/data") / filename,
     ]
 
     xlsx_path = None
@@ -104,17 +81,17 @@ def _read_excel_strict(filename):
         if s in {"data", "trials", "items"}:
             data_sheet = sheet_names[i]
 
-    # --- Read DATA sheet (CRITICAL: preserve "None" as string) ---
+    # --- Read DATA sheet ---
     df = pd.read_excel(
         xlsx_path,
         sheet_name=data_sheet,
         dtype=str,
-        keep_default_na=False,  # do NOT convert "None", "NA", etc.
-        na_filter=False,        # do NOT auto-detect NA values
+        keep_default_na=False,
+        na_filter=False,
         engine="openpyxl",
     )
 
-    # --- Read SETTINGS sheet (if present) ---
+    # --- Read SETTINGS sheet ---
     settings = {}
     if settings_sheet:
         raw = pd.read_excel(
@@ -136,6 +113,7 @@ def _read_excel_strict(filename):
 
     return df, settings
 
+
 def _safe_int(x, default=0):
     try:
         s = str(x).strip()
@@ -147,15 +125,78 @@ def _safe_int(x, default=0):
 
 
 def _safe_str(x):
-    # DO NOT collapse "None" -> "", that is your main bug.
     if x is None:
         return ""
     return str(x).strip()
 
 
+def _force_str(val) -> str:
+    """Turn cell value into string safely."""
+    if val is None:
+        return ""
+    s = str(val).strip()
+    if s.lower() == "nan":
+        return ""
+    return s
+
+
+def _to_int(val, default=0) -> int:
+    if val is None:
+        return default
+    s = str(val).strip()
+    if s == "" or s.lower() == "nan":
+        return default
+    try:
+        return int(s)
+    except ValueError:
+        try:
+            return int(float(s))
+        except Exception:
+            return default
+
+
+def _parse_bool(val) -> bool:
+    s = _force_str(val).lower()
+    return s in {"1", "true", "t", "yes", "y"}
+
+
+def _collect_indexed(settings: dict, prefix: str, max_n: int = 20):
+    """Collect keys like prefix_1, prefix_2,... in order."""
+    out = []
+    for i in range(1, max_n + 1):
+        v = settings.get(f"{prefix}_{i}")
+        if v is None:
+            continue
+        vv = _force_str(v)
+        if vv != "":
+            out.append(vv)
+    return out
+
+
+# ============================================================================
+# BATCH DATA MANAGEMENT (using session.vars instead of ExtraModel)
+# ============================================================================
+
+def get_all_batches_from_session(session):
+    """Get batch data from session.vars"""
+    return session.vars.get('batches', [])
+
+
+def update_batch_in_session(session, batch_id, **updates):
+    """Update a batch in session.vars"""
+    batches = session.vars.get('batches', [])
+    for b in batches:
+        if b.get('id') == batch_id:
+            b.update(updates)
+            break
+    session.vars['batches'] = batches
+
+
+# ============================================================================
+# OTREE MODELS
+# ============================================================================
+
 class Subsession(BaseSubsession):
-    # Keep it simple: persist the active batch in session.vars,
-    # not via Subsession.objects updates.
     active_batch = models.IntegerField(initial=1)
 
     def get_active_batch_number(self) -> int:
@@ -168,7 +209,7 @@ class Subsession(BaseSubsession):
     def check_for_batch_completion(self):
         session = self.session
         active_batch = self.active_batch or 1
-        all_data = get_all_batches_sql(session.code)
+        all_data = get_all_batches_from_session(session)
     
         remaining = [
             b for b in all_data
@@ -177,9 +218,10 @@ class Subsession(BaseSubsession):
         if remaining:
             return
     
-        # just bump the value in this subsession and session.vars
+        # bump the value in this subsession and session.vars
         self.active_batch = active_batch + 1
         session.vars["active_batch"] = active_batch + 1
+
 
 class Group(BaseGroup):
     pass
@@ -208,60 +250,51 @@ class Player(BasePlayer):
         return self.inner_role
 
     def _linked_batch(self):
+        """Get the batch dict linked to this player"""
         if not self.link_id:
             return None
-        rows = Batch.filter(id=self.link_id)
-        return rows[0] if rows else None
+        batches = get_all_batches_from_session(self.session)
+        for b in batches:
+            if b.get('id') == self.link_id:
+                return b
+        return None
 
     def get_linked_batch(self):
-        b = self._linked_batch()
-        if not b:
-            return None
-        # keep template compatibility: return dict-like
-        return dict(
-            id=b.id,
-            session_code=b.session_code,
-            owner_code=b.owner_code,
-            sentences=b.sentences,
-            rewards=b.rewards,
-            condition=b.condition,
-            item_nr=b.item_nr,
-            image=b.image,
-            round_number=b.round_number,
-            role=b.role,
-            batch=b.batch,
-            id_in_group=b.id_in_group,
-            partner_id=b.partner_id,
-            busy=b.busy,
-            processed=b.processed,
-        )
+        """Get linked batch for template compatibility"""
+        return self._linked_batch()
 
     def get_sentences_data(self):
         b = self._linked_batch()
         if not b:
             return []
-        raw = b.sentences or "[]"
+        raw = b.get('sentences', "[]")
         try:
             return json.loads(raw)
         except Exception:
             return []
 
     def update_batch(self):
+        """Update batch data after player makes decision"""
         b = self._linked_batch()
         if not b:
             return
+        
+        updates = {}
         if self.inner_role == PRODUCER:
-            b.sentences = self.producer_decision or "[]"
+            updates['sentences'] = self.producer_decision or "[]"
         elif self.inner_role == INTERPRETER:
-            b.rewards = self.interpreter_decision or ""
-        b.save()
+            updates['rewards'] = self.interpreter_decision or ""
+        
+        if updates:
+            update_batch_in_session(self.session, self.link_id, **updates)
 
     def mark_data_processed(self):
-        # mark all this participant's rows as processed
-        rows = Batch.filter(session_code=self.session.code, owner_code=self.participant.code)
-        for r in rows:
-            r.processed = True
-            r.save()
+        """Mark all this participant's rows as processed"""
+        batches = get_all_batches_from_session(self.session)
+        for b in batches:
+            if b.get('owner_code') == self.participant.code:
+                update_batch_in_session(self.session, b['id'], processed=True)
+        
         self.subsession.check_for_batch_completion()
 
     def get_image_url(self):
@@ -269,12 +302,10 @@ class Player(BasePlayer):
         if not b:
             return ""
 
-        image_name = _safe_str(b.image)
+        image_name = _safe_str(b.get('image', ''))
         if image_name == "":
             return ""
 
-        # Do NOT treat "None" as missing unless you truly want no image:
-        # If "None" is a valid image name in your design, remove this block.
         if image_name.lower() in {"nan"}:
             return ""
 
@@ -293,6 +324,7 @@ class Player(BasePlayer):
         return f"{base}/{image_name}"
 
     def start(self):
+        """Initialize player for this round"""
         session = self.session
         subsession = self.subsession
     
@@ -300,7 +332,7 @@ class Player(BasePlayer):
         if subsession.field_maybe_none("active_batch") is None:
             subsession.active_batch = 1
     
-        all_data = get_all_batches_sql(session.code)
+        all_data = get_all_batches_from_session(session)
     
         # ---- allocate participant to a free id_in_group only ONCE (round 1) ----
         if self.round_number == 1:
@@ -319,15 +351,13 @@ class Player(BasePlayer):
             candidates.sort(key=lambda b: b["id_in_group"])
             chosen = candidates[0]
     
-            # REMOVED: self.batch = chosen["batch"]  # This line caused the error
-    
             # mark ALL rows for that participant id_in_group in this batch as busy/owned
             for b in all_data:
                 if b["batch"] == chosen["batch"] and b["id_in_group"] == chosen["id_in_group"]:
-                    sql_update_batch(b["id"], busy=True, owner_code=self.participant.code)
+                    update_batch_in_session(session, b["id"], busy=True, owner_code=self.participant.code)
     
             # refresh after updates
-            all_data = get_all_batches_sql(session.code)
+            all_data = get_all_batches_from_session(session)
     
         # ---- find the row for this participant + round ----
         my_row = None
@@ -343,106 +373,12 @@ class Player(BasePlayer):
         # link + role/sentences
         self.link_id = my_row["id"]
         self.inner_role = my_row["role"] or ""
-        self.inner_sentences = json.dumps(self.get_sentences_data())
-
-def _force_str(val) -> str:
-    """
-    Turn cell value into string safely.
-    - Keep literal 'None' as 'None'
-    - Convert real None -> ''
-    - Convert pandas-ish nan -> ''
-    """
-    if val is None:
-        return ""
-    s = str(val).strip()
-    if s.lower() == "nan":
-        return ""
-    return s
 
 
-def _to_int(val, default=0) -> int:
-    if val is None:
-        return default
-    s = str(val).strip()
-    if s == "" or s.lower() == "nan":
-        return default
-    try:
-        return int(s)
-    except ValueError:
-        # handles "3.0" etc.
-        try:
-            return int(float(s))
-        except Exception:
-            return default
+# ============================================================================
+# SESSION CREATION
+# ============================================================================
 
-
-def _parse_bool(val) -> bool:
-    s = _force_str(val).lower()
-    return s in {"1", "true", "t", "yes", "y"}
-
-
-def _collect_indexed(settings: dict, prefix: str, max_n: int = 20):
-    """
-    Collect keys like prefix_1, prefix_2,... in order.
-    Returns a list of strings.
-    """
-    out = []
-    for i in range(1, max_n + 1):
-        v = settings.get(f"{prefix}_{i}")
-        if v is None:
-            continue
-        vv = _force_str(v)
-        if vv != "":
-            out.append(vv)
-    return out
-
-# Add this import at the top of your file, or inside the function
-def get_all_batches_sql(session_code):
-    """
-    Retrieves all Batch rows for the given session_code.
-    Works around oTree 5's filter() restrictions.
-    """
-    # Get ALL batches and filter in Python
-    all_batches = Batch.filter()  # Gets all batches
-    
-    result = []
-    for b in all_batches:
-        if b.session_code == session_code:
-            result.append({
-                'id': b.id,
-                'session_code': b.session_code,
-                'owner_code': b.owner_code,
-                'batch': b.batch,
-                'round_number': b.round_number,
-                'role': b.role,
-                'id_in_group': b.id_in_group,
-                'partner_id': b.partner_id,
-                'condition': b.condition,
-                'item_nr': b.item_nr,
-                'image': b.image,
-                'sentences': b.sentences,
-                'rewards': b.rewards,
-                'busy': b.busy,
-                'processed': b.processed,
-            })
-    return result
-
-
-def sql_update_batch(batch_id, busy=None, owner_code=None):
-    """
-    Updates a specific Batch row identified by its ID.
-    """
-    # Get all and find by id
-    all_batches = Batch.filter()
-    for b in all_batches:
-        if b.id == batch_id:
-            if busy is not None:
-                b.busy = busy
-            if owner_code is not None:
-                b.owner_code = owner_code
-            b.save()
-            break
-        
 def creating_session(subsession: Subsession):
     session = subsession.session
 
@@ -461,7 +397,7 @@ def creating_session(subsession: Subsession):
     if not filename:
         raise RuntimeError("Missing session.config['filename']")
 
-    # ---- read excel robustly (uses /app/start/data fallback) ----
+    # ---- read excel robustly ----
     df_raw, settings_raw = _read_excel_strict(filename)
 
     # ---- normalize settings keys ----
@@ -477,24 +413,23 @@ def creating_session(subsession: Subsession):
     session.vars["interpreter_title"] = _force_str(clean_settings.get("interpreter_title")) or "Buy medals:"
     session.vars["caseflag"] = _parse_bool(clean_settings.get("caseflag"))
 
-    # interpreter choices can be either "a;b;c" or already list-like text
+    # interpreter choices
     raw_choices = clean_settings.get("interpreter_choices", "")
     if isinstance(raw_choices, str):
         session.vars["interpreter_choices"] = [x.strip() for x in raw_choices.split(";") if x.strip()]
     else:
         session.vars["interpreter_choices"] = []
 
-    # suffixes are stored as suffix_1, suffix_2, ...
+    # suffixes
     session.vars["suffixes"] = _collect_indexed(clean_settings, "suffix", max_n=20)
 
-    # allowed values / regexes aligned by field index
+    # allowed values / regexes
     allowed_values = []
     allowed_regexes = []
     for i in range(1, 21):
         v = clean_settings.get(f"allowed_values_{i}")
         r = clean_settings.get(f"allowed_regex_{i}")
         if v is None and r is None:
-            # if both missing, continue (don’t early-break because sheets sometimes skip indices)
             continue
         v_str = _force_str(v)
         r_str = _force_str(r)
@@ -511,28 +446,42 @@ def creating_session(subsession: Subsession):
     )
     session.vars["instructions_url"] = _force_str(clean_settings.get("instructions_url")) or default_url
 
-    # optional: completion_code for prolific
+    # completion_code for prolific
     if session.config.get("completion_code"):
         session.vars["completion_code"] = str(session.config["completion_code"]).strip()
 
-    # ---- build Batch rows ----
-    # IMPORTANT: DO NOT store df in session.vars (memory)
+    # ---- build Batch data in session.vars ----
     records = df_raw.to_dict(orient="records")
-
+    
+    batches = []
+    batch_id = 1
     for r in records:
-        Batch.create(
-            session_code=session.code,
-            owner_code="",
-            batch=_to_int(r.get("Exp"), 0),
-            item_nr=_force_str(r.get("Item.Nr")),
-            condition=_force_str(r.get("Condition")),
-            image=_force_str(r.get("Item")),          # keeps literal "None"
-            round_number=_to_int(r.get("group_enumeration"), 0),
-            role=_force_str(r.get("role")),
-            id_in_group=_to_int(r.get("id"), 0),
-            partner_id=_to_int(r.get("partner_id"), 0),
-            sentences=_force_str(r.get("sentences") or "[]"),
-        )
+        batches.append({
+            'id': batch_id,
+            'session_code': session.code,
+            'owner_code': '',
+            'batch': _to_int(r.get("Exp"), 0),
+            'round_number': _to_int(r.get("group_enumeration"), 0),
+            'role': _force_str(r.get("role")),
+            'id_in_group': _to_int(r.get("id"), 0),
+            'partner_id': _to_int(r.get("partner_id"), 0),
+            'condition': _force_str(r.get("Condition")),
+            'item_nr': _force_str(r.get("Item.Nr")),
+            'image': _force_str(r.get("Item")),
+            'sentences': _force_str(r.get("sentences") or "[]"),
+            'rewards': '',
+            'busy': False,
+            'processed': False,
+        })
+        batch_id += 1
+    
+    session.vars['batches'] = batches
+    logger.info(f"Created {len(batches)} batch records in session.vars")
+
+
+# ============================================================================
+# PAGES
+# ============================================================================
 
 class FaultyCatcher(Page):
     @staticmethod
@@ -609,10 +558,13 @@ class FinalForProlific(Page):
         return redirect(STUBURL + str(completion_code))
 
 
+# ============================================================================
+# DATA EXPORT
+# ============================================================================
+
 def custom_export(players):
     """
     STREAMED export, one row per participant per round (1..80).
-    No huge in-memory maps. Safe on Heroku.
     """
     yield [
         "session_code",
@@ -627,9 +579,16 @@ def custom_export(players):
         "decision_seconds",
     ]
 
-    # Stream players (minimal fields)
+    # Get all sessions involved
+    sessions = {}
+    for p in players.select_related('session', 'participant'):
+        if p.session.code not in sessions:
+            sessions[p.session.code] = p.session
+
+    # Stream players
     p_it = (
         players
+        .select_related('session', 'participant')
         .values_list(
             "session__code",
             "participant__code",
@@ -648,17 +607,30 @@ def custom_export(players):
         if rnd < 1 or rnd > Constants.num_rounds:
             continue
 
-        b = (
-            Batch.objects
-            .filter(session_code=session_code, owner_code=participant_code, round_number=rnd)
-            .values_list("role", "condition", "item_nr", "image", "sentences", "rewards")
-            .first()
-        )
-
-        if b:
-            role, cond, item_nr, img, sent, rew = b
-            producer_sentences = sent or ""
-            interpreter_rewards = rew or ""
+        # Get batch data from session.vars
+        session = sessions.get(session_code)
+        if session:
+            batches = get_all_batches_from_session(session)
+            batch_data = None
+            for b in batches:
+                if b.get('owner_code') == participant_code and b.get('round_number') == rnd:
+                    batch_data = b
+                    break
+            
+            if batch_data:
+                role = batch_data.get('role', inner_role or '')
+                cond = batch_data.get('condition', '')
+                item_nr = batch_data.get('item_nr', '')
+                img = batch_data.get('image', '')
+                producer_sentences = batch_data.get('sentences', '')
+                interpreter_rewards = batch_data.get('rewards', '')
+            else:
+                role = inner_role or ""
+                cond = ""
+                item_nr = ""
+                img = ""
+                producer_sentences = prod_dec or ""
+                interpreter_rewards = interp_dec or ""
         else:
             role = inner_role or ""
             cond = ""
