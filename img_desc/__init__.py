@@ -613,7 +613,6 @@ def custom_export(players):
     def keyfunc(row):
         return (row[0], row[1])
 
-    # Since Batch uses Standard Django Models now, we can use objects.filter safely
     for (session_code, participant_code), rows in groupby(pq, key=keyfunc):
         bq = (
             Batch.objects
