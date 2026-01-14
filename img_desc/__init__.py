@@ -521,11 +521,11 @@ class FinalForProlific(Page):
 
 def custom_export(players):
     """
-    One row per *Player round* (so each participant has exactly 80 rows if they finished 80 rounds).
-    Includes the participant's decision time (decision_seconds) and the linked Batch fields.
+    One row per Player-round (1..Constants.num_rounds),
+    with decision_seconds and the linked Batch row (same participant/round).
+    Uses values_list() everywhere to keep memory low on Heroku.
     """
 
-    # 1) stream header immediately
     yield [
         "session_code",
         "participant_code",
@@ -539,61 +539,64 @@ def custom_export(players):
         "decision_seconds",
     ]
 
-    # 2) make sure we iterate in a stable order for grouping
-    qs = (
-        players
-        .select_related("session", "participant")
-        .order_by("session__code", "participant__code", "round_number")
-        .iterator()
-    )
-
     from itertools import groupby
 
-    def keyfunc(p):
-        return (p.session.code, p.participant.code)
+    # Stream minimal player fields only
+    # (session_code, participant_code, round_number, inner_role, producer_decision, interpreter_decision, decision_seconds)
+    pq = (
+        players
+        .values_list(
+            "session__code",
+            "participant__code",
+            "round_number",
+            "inner_role",
+            "producer_decision",
+            "interpreter_decision",
+            "decision_seconds",
+        )
+        .order_by("session__code", "participant__code", "round_number")
+        .iterator(chunk_size=2000)
+    )
 
-    for (session_code, participant_code), pgroup in groupby(qs, key=keyfunc):
-        # 3) Load ONLY this participant's Batch rows (small + fast)
-        #    There should be at most ~80 rows here.
-        batch_map = {}
-        for b in (
+    def keyfunc(row):
+        return (row[0], row[1])  # (session_code, participant_code)
+
+    for (session_code, participant_code), rows in groupby(pq, key=keyfunc):
+        # Pull ONLY this participant's batch rows (should be ~80)
+        bq = (
             Batch.objects
             .filter(session_code=session_code, owner_code=participant_code)
-            .values(
-                "round_number",
-                "role",
-                "condition",
-                "item_nr",
-                "image",
-                "sentences",
-                "rewards",
+            .values_list(
+                "round_number", "role", "condition", "item_nr", "image", "sentences", "rewards"
             )
-            .iterator()
-        ):
-            batch_map[int(b["round_number"])] = b
+            .iterator(chunk_size=500)
+        )
+        batch_map = {int(rn): (role, cond, item_nr, img, sent, rew) for rn, role, cond, item_nr, img, sent, rew in bq}
 
-        # 4) Stream player rows (exactly rounds they actually visited)
-        for p in pgroup:
-            rnd = int(p.round_number)
+        for row in rows:
+            _, _, rnd, inner_role, prod_dec, interp_dec, ds = row
+            rnd = int(rnd)
 
-            # optional: enforce exactly 1..80 only
+            # enforce 1..80 (or Constants.num_rounds)
             if rnd < 1 or rnd > Constants.num_rounds:
                 continue
 
-            b = batch_map.get(rnd, None)
+            b = batch_map.get(rnd)
 
-            # Prefer Batch values (because you update them in update_batch()).
-            # Fall back to Player fields if Batch row missing for some reason.
-            role = (b.get("role") if b else (p.field_maybe_none("inner_role") or ""))
-            condition = (b.get("condition") if b else "")
-            item_nr = (b.get("item_nr") if b else "")
-            image = (b.get("image") if b else "")
+            if b:
+                role, cond, item_nr, img, sent, rew = b
+                producer_sentences = sent or ""
+                interpreter_rewards = rew or ""
+            else:
+                # fallback if batch row missing
+                role = inner_role or ""
+                cond = ""
+                item_nr = ""
+                img = ""
+                producer_sentences = prod_dec or ""
+                interpreter_rewards = interp_dec or ""
 
-            producer_sentences = (b.get("sentences") if b else (p.field_maybe_none("producer_decision") or ""))
-            interpreter_rewards = (b.get("rewards") if b else (p.field_maybe_none("interpreter_decision") or ""))
-
-            # decision_seconds is on Player; if it’s 0.0, export 0.0 (not blank)
-            ds = p.field_maybe_none("decision_seconds")
+            # keep ds as 0.0 if present; only blank if None
             if ds is None:
                 ds = ""
 
@@ -602,9 +605,9 @@ def custom_export(players):
                 participant_code,
                 rnd,
                 role,
-                condition,
+                cond,
                 item_nr,
-                image,
+                img,
                 producer_sentences,
                 interpreter_rewards,
                 ds,
