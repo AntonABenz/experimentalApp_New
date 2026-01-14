@@ -1,5 +1,7 @@
+import json
 import re
-import random  # (kept only if you still need it elsewhere; not used now)
+import random
+import numpy as np
 from pathlib import Path
 from typing import Dict, Any
 
@@ -43,18 +45,17 @@ def _build_practice_settings(xl: pd.ExcelFile) -> Dict[str, Dict[str, Any]]:
     pattern = re.compile(r"_(\d+)$")
 
     for sheet_name in practice_sheets:
-        df = xl.parse(sheet_name, dtype=str, keep_default_na=False, na_filter=False)
+        df = xl.parse(sheet_name, dtype=str, keep_default_na=False)
         df.columns = [str(c).strip().lower() for c in df.columns]
         if not {"name", "value"}.issubset(df.columns):
             continue
 
         practice_dict: Dict[str, Any] = {}
         for _, row in df.iterrows():
-            key = str(row.get("name", "")).strip()
-            value = str(row.get("value", "")).strip()
+            key = row["name"]
+            value = row["value"]
             if not key:
                 continue
-
             m = pattern.search(key)
             if m:
                 base_key = pattern.sub("", key)
@@ -68,17 +69,13 @@ def _build_practice_settings(xl: pd.ExcelFile) -> Dict[str, Dict[str, Any]]:
 
 
 def _allowed_value_converter(v: str):
-    return [item.strip() for item in str(v).split(";") if item.strip()]
+    return [item.strip() for item in v.split(";") if item.strip()]
 
 
 def _validate_regex_patterns(regexs):
     valid_regexs = []
     for regex in regexs:
-        regex = str(regex or "").strip()
-        if not regex:
-            continue
         try:
-            # keep original semantics but ensure anchors exist
             if not regex.startswith("^"):
                 regex = "^" + regex
             if not regex.endswith("$"):
@@ -99,38 +96,37 @@ def get_data(filename: str):
     if SETTINGS_WS not in xl.sheet_names:
         raise Exception(f"Worksheet '{SETTINGS_WS}' not found")
 
-    settings_df = xl.parse(SETTINGS_WS, header=None, dtype=str, keep_default_na=False, na_filter=False)
+    settings_df = xl.parse(SETTINGS_WS, header=None, dtype=str, keep_default_na=False)
     settings_dict = (
         settings_df.set_index(settings_df.columns[0])
         .to_dict()
         .get(settings_df.columns[1], {})
     )
 
-    # normalize keys to str
-    settings_dict = {str(k).strip(): ("" if v is None else str(v).strip()) for k, v in settings_dict.items()}
-
     settings_dict["suffixes"] = [
-        value for key, value in settings_dict.items()
-        if re.fullmatch(r"suffix_\d+", str(key).strip())
+        value for key, value in settings_dict.items() if re.fullmatch(r"suffix_\d+", str(key))
     ]
 
     regexs = [
-        value for key, value in settings_dict.items()
-        if re.fullmatch(r"allowed_regex_\d+", str(key).strip())
+        value for key, value in settings_dict.items() if re.fullmatch(r"allowed_regex_\d+", str(key))
     ]
     settings_dict["allowed_regex"] = _validate_regex_patterns(regexs)
 
     settings_dict["allowed_values"] = [
         _allowed_value_converter(value)
         for key, value in settings_dict.items()
-        if re.fullmatch(r"allowed_values_\d+", str(key).strip())
+        if re.fullmatch(r"allowed_values_\d+", str(key))
     ]
 
     if "interpreter_choices" in settings_dict:
-        settings_dict["interpreter_choices"] = _allowed_value_converter(settings_dict["interpreter_choices"])
+        settings_dict["interpreter_choices"] = _allowed_value_converter(
+            settings_dict["interpreter_choices"]
+        )
 
     if "interpreter_input_choices" in settings_dict:
-        settings_dict["interpreter_input_choices"] = _allowed_value_converter(settings_dict["interpreter_input_choices"])
+        settings_dict["interpreter_input_choices"] = _allowed_value_converter(
+            settings_dict["interpreter_input_choices"]
+        )
 
     settings_dict["practice_pages"] = {
         key: bool(int(value)) if str(value).isdigit() else False
@@ -142,35 +138,42 @@ def get_data(filename: str):
     if DATA_WS not in xl.sheet_names:
         raise Exception(f"Worksheet '{DATA_WS}' not found")
 
-    # IMPORTANT:
-    # - dtype=str forces everything into strings
-    # - keep_default_na=False + na_filter=False prevents pandas treating "None"/"NA" as missing
-    df = xl.parse(
-        DATA_WS,
-        dtype=str,
-        keep_default_na=False,
-        na_filter=False,
-    )
+    # 1. Load Data (preserving "None" as text)
+    df = xl.parse(DATA_WS, dtype={"Condition": str}, keep_default_na=False)
 
-    # Strip whitespace everywhere, keep empty cells as ""
-    df = df.applymap(lambda x: str(x).strip() if x is not None else "")
+    # 2. Fix empty strings -> NaN (CRITICAL for sentences to load correctly)
+    df.replace("", np.nan, inplace=True)
 
-    # Deterministic image cleanup ONLY
+    # 3. Repair Images (Randomly swap bad items or Producer 0 items)
     if "Item" in df.columns:
-        fallback_image = "d-A-B-BC-3"
+        # Create pool of valid images (starting with d-)
+        valid_pool = [
+            str(x).strip() for x in df["Item"].dropna().unique() 
+            if str(x).startswith("d-") and "NA" not in str(x)
+        ]
+        if not valid_pool: valid_pool = ["d-A-B-BC-3"]
 
-        def fix_item(v: str) -> str:
-            v = str(v or "").strip()
-            if v == "NA_x":
-                return fallback_image
-            if v.lower() in {"", "nan"}:
-                return ""
-            # optional: normalize spaces
-            return v.replace(" ", "_")
+        def repair_images(row):
+            item = str(row.get("Item", "") if pd.notna(row.get("Item")) else "").strip()
+            prod = str(row.get("Producer", "") if pd.notna(row.get("Producer")) else "")
 
-        df["Item"] = df["Item"].map(fix_item)
+            # Logic: If it's Producer 0 OR the filename is broken (NA_x, D_...), swap it.
+            is_producer_zero = (prod == "0" or prod == "0.0")
+            is_broken_file = (
+                item == "NA_x" or 
+                item.startswith("D_") or 
+                item == "nan" or 
+                item == ""
+            )
 
-    # Convert to your internal format
+            if is_producer_zero or is_broken_file:
+                # Give the Interpreter a valid image to look at
+                return random.choice(valid_pool)
+
+            return item
+
+        df["Item"] = df.apply(repair_images, axis=1)
+
     conv_data = convert(df)
 
     # ----- PRACTICE -----
@@ -181,3 +184,35 @@ def get_data(filename: str):
         settings=settings_dict,
         practice_settings=practice_settings,
     )
+
+
+def long_data(filename: str):
+    xlsx_path = _load_excel(filename)
+    xl = pd.ExcelFile(xlsx_path)
+    ALT_DATA_WS = "alt_data"
+    if ALT_DATA_WS not in xl.sheet_names:
+        raise Exception(f"No sheet named '{ALT_DATA_WS}' in {xlsx_path}")
+    
+    df = xl.parse(ALT_DATA_WS, dtype={"Condition": str}, keep_default_na=False)
+    df.replace("", np.nan, inplace=True)
+    
+    if "Item" in df.columns:
+        valid_pool = [
+            str(x).strip() for x in df["Item"].dropna().unique() 
+            if str(x).startswith("d-") and "NA" not in str(x)
+        ]
+        if not valid_pool: valid_pool = ["d-A-B-BC-3"]
+
+        def repair_images(row):
+            item = str(row.get("Item", "") if pd.notna(row.get("Item")) else "").strip()
+            prod = str(row.get("Producer", "") if pd.notna(row.get("Producer")) else "")
+            is_producer_zero = (prod == "0" or prod == "0.0")
+            is_broken_file = (item == "NA_x" or item.startswith("D_") or item == "nan" or item == "")
+            if is_producer_zero or is_broken_file:
+                return random.choice(valid_pool)
+            return item
+
+        df["Item"] = df.apply(repair_images, axis=1)
+
+    conv_data = convert(df)
+    return conv_data
