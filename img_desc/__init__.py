@@ -59,12 +59,20 @@ def _truthy(v) -> bool:
     return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
 
 
-def _read_excel_strict(filename: str):
-    """
-    Critical: keep_default_na=False so the literal text "None" stays "None"
-    instead of becoming NaN/None.
-    Also reads everything as strings first, then we cast numeric columns.
-    """
+def _read_excel_strict(filename):
+    import os
+    from pathlib import Path
+
+    logger.info(f"CWD={os.getcwd()}")
+    logger.info(f"filename passed in={filename}")
+
+    logger.info(f"Exists in CWD? {Path(filename).exists()}")
+    logger.info(f"Exists in CWD by name? {Path('disjunctionExpTest8EN_1.xlsx').exists()}")
+
+    logger.info(f"Exists start/data? {Path('start/data/disjunctionExpTest8EN_1.xlsx').exists()}")
+    logger.info(f"Exists /app/start/data? {Path('/app/start/data/disjunctionExpTest8EN_1.xlsx').exists()}")
+    logger.info(f"Exists /app/data? {Path('/app/data/disjunctionExpTest8EN_1.xlsx').exists()}")
+
     xls = pd.ExcelFile(filename)
 
     # Heuristics: find data sheet + settings sheet
