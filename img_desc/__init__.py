@@ -396,7 +396,29 @@ def _collect_indexed(settings: dict, prefix: str, max_n: int = 20):
             out.append(vv)
     return out
 
+def get_all_batches_sql(session_code):
+    """
+    Retrieves all Batch rows for the given session_code.
+    Returns a list of dictionaries (ValuesQuerySet) so you can access
+    fields like b['batch'] or b['busy'].
+    """
+    return list(Batch.objects.filter(session_code=session_code).values())
 
+
+def sql_update_batch(batch_id, busy=None, owner_code=None):
+    """
+    Updates a specific Batch row identified by its ID.
+    """
+    # We use Batch.objects.filter to get a QuerySet
+    rows = Batch.objects.filter(id=batch_id)
+    if rows.exists():
+        b = rows.first()
+        if busy is not None:
+            b.busy = busy
+        if owner_code is not None:
+            b.owner_code = owner_code
+        b.save()
+        
 def creating_session(subsession: Subsession):
     session = subsession.session
 
