@@ -166,16 +166,20 @@ class Subsession(BaseSubsession):
         self.active_batch = int(n)
 
     def check_for_batch_completion(self):
-        active_batch = self.get_active_batch_number()
-        remaining = Batch.filter(
-            session_code=self.session.code,
-            batch=active_batch,
-            processed=False,
-        )
+        session = self.session
+        active_batch = self.active_batch or 1
+        all_data = get_all_batches_sql(session.code)
+    
+        remaining = [
+            b for b in all_data
+            if b["batch"] == active_batch and not b["processed"]
+        ]
         if remaining:
             return
-        self.set_active_batch_number(active_batch + 1)
-
+    
+        # just bump the value in this subsession and session.vars
+        self.active_batch = active_batch + 1
+        session.vars["active_batch"] = active_batch + 1
 
 class Group(BaseGroup):
     pass
@@ -289,51 +293,57 @@ class Player(BasePlayer):
         return f"{base}/{image_name}"
 
     def start(self):
-        """
-        Assign the participant to one id_in_group in the current active batch (round 1),
-        then find the row for each subsequent round.
-        """
-        session_code = self.session.code
-        active_batch = self.subsession.get_active_batch_number()
-
-        # Round 1: claim an unowned id_in_group within active_batch
+        session = self.session
+        subsession = self.subsession
+    
+        # active_batch safe default
+        if subsession.field_maybe_none("active_batch") is None:
+            subsession.active_batch = 1
+    
+        all_data = get_all_batches_sql(session.code)
+    
+        # ---- allocate participant to a free id_in_group only ONCE (round 1) ----
         if self.round_number == 1:
-            candidate = (
-                Batch.objects
-                .filter(session_code=session_code, batch=active_batch, busy=False, owner_code="")
-                .order_by("id_in_group")
-                .first()
-            )
-            if not candidate:
+            active_batch = subsession.active_batch or 1
+    
+            candidates = [
+                b for b in all_data
+                if b["batch"] == active_batch
+                and not b["busy"]
+                and (b.get("owner_code") or "") == ""
+            ]
+            if not candidates:
                 self.faulty = True
                 return
-
-            chosen_id = candidate.id_in_group
-
-            # claim ALL rows for that id_in_group in this batch
-            rows = Batch.filter(session_code=session_code, batch=active_batch, id_in_group=chosen_id)
-            if not rows:
-                self.faulty = True
-                return
-
-            for r in rows:
-                r.busy = True
-                r.owner_code = self.participant.code
-                r.save()
-
-        # Find this participant's row for this round
-        my_row = (
-            Batch.objects
-            .filter(session_code=session_code, owner_code=self.participant.code, round_number=self.round_number)
-            .first()
-        )
+    
+            candidates.sort(key=lambda b: b["id_in_group"])
+            chosen = candidates[0]
+    
+            self.batch = chosen["batch"]
+    
+            # mark ALL rows for that participant id_in_group in this batch as busy/owned
+            for b in all_data:
+                if b["batch"] == chosen["batch"] and b["id_in_group"] == chosen["id_in_group"]:
+                    sql_update_batch(b["id"], busy=True, owner_code=self.participant.code)
+    
+            # refresh after updates
+            all_data = get_all_batches_sql(session.code)
+    
+        # ---- find the row for this participant + round ----
+        my_row = None
+        for b in all_data:
+            if (b.get("owner_code") == self.participant.code) and (int(b.get("round_number") or 0) == int(self.round_number)):
+                my_row = b
+                break
+    
         if not my_row:
             self.faulty = True
             return
-
-        self.link_id = my_row.id
-        self.inner_role = my_row.role
-
+    
+        # link + role/sentences
+        self.link_id = my_row["id"]
+        self.inner_role = my_row["role"] or ""
+        self.inner_sentences = json.dumps(self.get_sentences_data())
 
 def _force_str(val) -> str:
     """
@@ -491,19 +501,25 @@ class Q(Page):
     form_model = "player"
 
     @staticmethod
-    def is_displayed(player: Player):
-        player.start()
+    def is_displayed(player):
+        if player.round_number > Constants.num_rounds:
+            return False
+
+        # run start() once per round (guard with link_id)
+        if not player.link_id:
+            player.start()
+
         if player.faulty:
             return False
 
-        # timing start on first render of each round
+        # start timing only when page is actually shown and link is valid
         if player.start_decision_time == 0:
             player.start_decision_time = time.time()
 
-        return player.round_number <= Constants.num_rounds
+        return True
 
     @staticmethod
-    def get_form_fields(player: Player):
+    def get_form_fields(player):
         if player.inner_role == PRODUCER:
             return ["producer_decision"]
         if player.inner_role == INTERPRETER:
@@ -511,30 +527,11 @@ class Q(Page):
         return []
 
     @staticmethod
-    def vars_for_template(player: Player):
-        raw_choices = player.session.vars.get("interpreter_choices") or ""
-        if isinstance(raw_choices, str):
-            interpreter_choices = [x.strip() for x in raw_choices.split(";") if x.strip()]
-        else:
-            interpreter_choices = list(raw_choices) if raw_choices else []
-
-        return dict(
-            d=player.get_linked_batch(),
-            allowed_values=player.session.vars.get("allowed_values", []),
-            allowed_regexes=player.session.vars.get("allowed_regexes", []),
-            suffixes=player.session.vars.get("suffixes", []),
-            prefix=player.session.vars.get("prefix", ""),
-            caseflag=player.session.vars.get("caseflag", False),
-            interpreter_choices=interpreter_choices,
-            interpreter_title=player.session.vars.get("interpreter_title", "Buy medals:"),
-            instructions_url=player.session.vars.get("instructions_url"),
-        )
-
-    @staticmethod
-    def before_next_page(player: Player, timeout_happened):
+    def before_next_page(player, timeout_happened):
         player.end_decision_time = time.time()
+
         if player.start_decision_time:
-            player.decision_seconds = player.end_decision_time - player.start_decision_time
+            player.decision_seconds = float(player.end_decision_time - player.start_decision_time)
 
         player.update_batch()
 
