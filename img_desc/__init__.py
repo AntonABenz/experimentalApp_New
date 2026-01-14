@@ -62,51 +62,70 @@ def _truthy(v) -> bool:
 def _read_excel_strict(filename):
     import os
     from pathlib import Path
+    import pandas as pd
 
     logger.info(f"CWD={os.getcwd()}")
     logger.info(f"filename passed in={filename}")
 
-    logger.info(f"Exists in CWD? {Path(filename).exists()}")
-    logger.info(f"Exists in CWD by name? {Path('disjunctionExpTest8EN_1.xlsx').exists()}")
+    # --- Resolve Excel path robustly ---
+    candidates = [
+        Path(filename),                               # absolute or relative
+        Path("start/data") / filename,                # /app/start/data/<file>
+        Path("/app/start/data") / filename,           # explicit for Heroku
+        Path("data") / filename,                      # optional fallback
+        Path("/app/data") / filename,                 # optional fallback
+    ]
 
-    logger.info(f"Exists start/data? {Path('start/data/disjunctionExpTest8EN_1.xlsx').exists()}")
-    logger.info(f"Exists /app/start/data? {Path('/app/start/data/disjunctionExpTest8EN_1.xlsx').exists()}")
-    logger.info(f"Exists /app/data? {Path('/app/data/disjunctionExpTest8EN_1.xlsx').exists()}")
+    xlsx_path = None
+    for p in candidates:
+        if p.exists():
+            xlsx_path = p
+            break
 
-    xls = pd.ExcelFile(filename)
+    if not xlsx_path:
+        tried = ", ".join(str(p) for p in candidates)
+        raise FileNotFoundError(f"Excel file not found: {filename}. Tried: {tried}")
 
-    # Heuristics: find data sheet + settings sheet
-    sheet_names = [s.lower() for s in xls.sheet_names]
-    data_sheet = xls.sheet_names[0]
+    logger.info(f"Excel resolved to: {xlsx_path}")
+
+    # --- Load workbook ---
+    xls = pd.ExcelFile(xlsx_path, engine="openpyxl")
+
+    # --- Detect data sheet + settings sheet ---
+    sheet_names = xls.sheet_names
+    sheet_names_l = [s.lower().strip() for s in sheet_names]
+
+    data_sheet = sheet_names[0]
     settings_sheet = None
 
-    for i, s in enumerate(sheet_names):
+    for i, s in enumerate(sheet_names_l):
         if "setting" in s:
-            settings_sheet = xls.sheet_names[i]
+            settings_sheet = sheet_names[i]
         if s in {"data", "trials", "items"}:
-            data_sheet = xls.sheet_names[i]
+            data_sheet = sheet_names[i]
 
+    # --- Read DATA sheet (CRITICAL: preserve "None" as string) ---
     df = pd.read_excel(
-        filename,
+        xlsx_path,
         sheet_name=data_sheet,
-        dtype=str,                 # read as strings first
-        keep_default_na=False,     # <-- THIS is the big fix for "None"
-        na_filter=False,           # don't auto-detect NA strings
+        dtype=str,
+        keep_default_na=False,  # do NOT convert "None", "NA", etc.
+        na_filter=False,        # do NOT auto-detect NA values
         engine="openpyxl",
     )
 
+    # --- Read SETTINGS sheet (if present) ---
     settings = {}
     if settings_sheet:
         raw = pd.read_excel(
-            filename,
+            xlsx_path,
             sheet_name=settings_sheet,
             dtype=str,
             keep_default_na=False,
             na_filter=False,
             engine="openpyxl",
         )
-        # support either "key/value" columns or a 2-col sheet
-        cols = [c.lower().strip() for c in raw.columns]
+
         if len(raw.columns) >= 2:
             kcol, vcol = raw.columns[0], raw.columns[1]
             for _, row in raw.iterrows():
@@ -116,7 +135,6 @@ def _read_excel_strict(filename):
                     settings[k] = v
 
     return df, settings
-
 
 def _safe_int(x, default=0):
     try:
@@ -317,90 +335,148 @@ class Player(BasePlayer):
         self.inner_role = my_row.role
 
 
+def _force_str(val) -> str:
+    """
+    Turn cell value into string safely.
+    - Keep literal 'None' as 'None'
+    - Convert real None -> ''
+    - Convert pandas-ish nan -> ''
+    """
+    if val is None:
+        return ""
+    s = str(val).strip()
+    if s.lower() == "nan":
+        return ""
+    return s
+
+
+def _to_int(val, default=0) -> int:
+    if val is None:
+        return default
+    s = str(val).strip()
+    if s == "" or s.lower() == "nan":
+        return default
+    try:
+        return int(s)
+    except ValueError:
+        # handles "3.0" etc.
+        try:
+            return int(float(s))
+        except Exception:
+            return default
+
+
+def _parse_bool(val) -> bool:
+    s = _force_str(val).lower()
+    return s in {"1", "true", "t", "yes", "y"}
+
+
+def _collect_indexed(settings: dict, prefix: str, max_n: int = 20):
+    """
+    Collect keys like prefix_1, prefix_2,... in order.
+    Returns a list of strings.
+    """
+    out = []
+    for i in range(1, max_n + 1):
+        v = settings.get(f"{prefix}_{i}")
+        if v is None:
+            continue
+        vv = _force_str(v)
+        if vv != "":
+            out.append(vv)
+    return out
+
+
 def creating_session(subsession: Subsession):
     session = subsession.session
 
-    # Ensure active_batch is set (in vars)
-    subsession.set_active_batch_number(session.vars.get("active_batch", 1))
+    # ensure subsession.active_batch always has a value
+    if subsession.field_maybe_none("active_batch") is None:
+        subsession.active_batch = 1
 
+    # only do heavy init once
     if subsession.round_number != 1:
         return
 
+    subsession.active_batch = 1
+    session.vars["active_batch"] = 1
+
     filename = session.config.get("filename")
     if not filename:
-        raise RuntimeError("Missing filename in session config")
+        raise RuntimeError("Missing session.config['filename']")
 
-    df, settings = _read_excel_strict(filename)
+    # ---- read excel robustly (uses /app/start/data fallback) ----
+    df_raw, settings_raw = _read_excel_strict(filename)
 
-    # IMPORTANT:
-    # If you replaced the Excel and want new content, you MUST clear old rows for this session
-    Batch.objects.filter(session_code=session.code).delete()
-
-    # Normalize + store settings
-    clean_settings = {normalize_key(k): v for k, v in (settings or {}).items()}
+    # ---- normalize settings keys ----
+    clean_settings = {}
+    for k, v in (settings_raw or {}).items():
+        clean_settings[normalize_key(k)] = v
     session.vars["user_settings"] = clean_settings
 
-    # core settings
-    session.vars["s3path_base"] = clean_settings.get("s3path_base", "")
-    session.vars["extension"] = clean_settings.get("extension", "png")
-    session.vars["prefix"] = clean_settings.get("prefix", "")
-    session.vars["caseflag"] = _truthy(clean_settings.get("caseflag", "false"))
+    # ---- core settings ----
+    session.vars["s3path_base"] = _force_str(clean_settings.get("s3path_base"))
+    session.vars["extension"] = _force_str(clean_settings.get("extension")) or "png"
+    session.vars["prefix"] = _force_str(clean_settings.get("prefix"))
+    session.vars["interpreter_title"] = _force_str(clean_settings.get("interpreter_title")) or "Buy medals:"
+    session.vars["caseflag"] = _parse_bool(clean_settings.get("caseflag"))
 
-    # suffixes: suffix_1, suffix_2, ...
-    suffixes = []
-    i = 1
-    while True:
-        key = f"suffix_{i}"
-        v = clean_settings.get(key)
-        if v is None or str(v).strip() == "":
-            break
-        suffixes.append(str(v).strip())
-        i += 1
-        if i > 20:
-            break
-    session.vars["suffixes"] = suffixes
+    # interpreter choices can be either "a;b;c" or already list-like text
+    raw_choices = clean_settings.get("interpreter_choices", "")
+    if isinstance(raw_choices, str):
+        session.vars["interpreter_choices"] = [x.strip() for x in raw_choices.split(";") if x.strip()]
+    else:
+        session.vars["interpreter_choices"] = []
 
-    # interpreter choices + title
-    session.vars["interpreter_choices"] = clean_settings.get("interpreter_choices", "")
-    session.vars["interpreter_title"] = clean_settings.get("interpreter_title", "Buy medals:")
+    # suffixes are stored as suffix_1, suffix_2, ...
+    session.vars["suffixes"] = _collect_indexed(clean_settings, "suffix", max_n=20)
 
-    # instructions url
-    default_url = "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
-    session.vars["instructions_url"] = clean_settings.get("instructions_url") or default_url
-
-    # allowed values/regexes aligned by index
+    # allowed values / regexes aligned by field index
     allowed_values = []
     allowed_regexes = []
-    for i in range(1, 11):
-        v = clean_settings.get(f"allowed_values_{i}", "")
-        r = clean_settings.get(f"allowed_regex_{i}", "")
-        if str(v).strip() == "" and str(r).strip() == "":
+    for i in range(1, 21):
+        v = clean_settings.get(f"allowed_values_{i}")
+        r = clean_settings.get(f"allowed_regex_{i}")
+        if v is None and r is None:
+            # if both missing, continue (don’t early-break because sheets sometimes skip indices)
             continue
-        allowed_values.append([x.strip() for x in str(v).split(";") if x.strip()])
-        allowed_regexes.append(str(r).strip())
+        v_str = _force_str(v)
+        r_str = _force_str(r)
+        allowed_values.append([x.strip() for x in v_str.split(";") if x.strip()] if v_str else [])
+        allowed_regexes.append(r_str)
     session.vars["allowed_values"] = allowed_values
     session.vars["allowed_regexes"] = allowed_regexes
 
-    # Build Batch rows from df
-    # Expect columns like: Exp, group_enumeration, role, id, partner_id, Condition, Item.Nr, Item, sentences
-    for _, r in df.iterrows():
+    # instructions url
+    default_url = (
+        "https://docs.google.com/document/d/e/"
+        "2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/"
+        "pub?embedded=true"
+    )
+    session.vars["instructions_url"] = _force_str(clean_settings.get("instructions_url")) or default_url
+
+    # optional: completion_code for prolific
+    if session.config.get("completion_code"):
+        session.vars["completion_code"] = str(session.config["completion_code"]).strip()
+
+    # ---- build Batch rows ----
+    # IMPORTANT: DO NOT store df in session.vars (memory)
+    records = df_raw.to_dict(orient="records")
+
+    for r in records:
         Batch.create(
             session_code=session.code,
             owner_code="",
-            batch=_safe_int(r.get("Exp"), 0),
-            round_number=_safe_int(r.get("group_enumeration"), 0),
-            role=_safe_str(r.get("role")),
-            id_in_group=_safe_int(r.get("id"), 0),
-            partner_id=_safe_int(r.get("partner_id"), 0),
-            condition=_safe_str(r.get("Condition")),
-            item_nr=_safe_str(r.get("Item.Nr")),
-            image=_safe_str(r.get("Item")),
-            sentences=_safe_str(r.get("sentences")) or "[]",
-            rewards="",
-            busy=False,
-            processed=False,
+            batch=_to_int(r.get("Exp"), 0),
+            item_nr=_force_str(r.get("Item.Nr")),
+            condition=_force_str(r.get("Condition")),
+            image=_force_str(r.get("Item")),          # keeps literal "None"
+            round_number=_to_int(r.get("group_enumeration"), 0),
+            role=_force_str(r.get("role")),
+            id_in_group=_to_int(r.get("id"), 0),
+            partner_id=_to_int(r.get("partner_id"), 0),
+            sentences=_force_str(r.get("sentences") or "[]"),
         )
-
 
 class FaultyCatcher(Page):
     @staticmethod
