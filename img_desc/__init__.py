@@ -131,18 +131,17 @@ class Subsession(BaseSubsession):
     def check_for_batch_completion(self):
         session = self.session
         active_batch = self.active_batch or 1
-        
-        # Optimization: Only load current batch rows
+    
         current_rows = get_batches_filtered(session.code, batch_val=active_batch)
-        
-        remaining = [
-            b for b in current_rows
-            if not b["processed"]
-        ]
+        remaining = [b for b in current_rows if not b["processed"]]
+    
         if remaining:
             return
+    
+        # bump in memory only
+        self.active_batch = active_batch + 1
         session.vars["active_batch"] = active_batch + 1
-        Subsession.objects.filter(session=session).update(active_batch=active_batch + 1)
+
 
 class Group(BaseGroup):
     pass
@@ -287,63 +286,52 @@ class Player(BasePlayer):
     def start(self):
         session = self.session
         subsession = self.subsession
-
+    
+        # ensure default
         if subsession.field_maybe_none("active_batch") is None:
-            Subsession.objects.filter(session=session, active_batch__isnull=True).update(active_batch=1)
             subsession.active_batch = 1
-
-        # Optimization: Fetch ONLY rows for current batch
-        active_candidates = get_batches_filtered(session.code, batch_val=subsession.active_batch)
-        
-        # Filter logic in Python
-        candidates = [
-            b for b in active_candidates
-            if not b["busy"]
-            and (b.get("owner_code") or "") == ""
-        ]
-
+    
+        # round 1: allocate participant
         if self.round_number == 1:
+            active_batch = subsession.active_batch or 1
+    
+            active_rows = get_batches_filtered(session.code, batch_val=active_batch)
+    
+            candidates = [
+                b for b in active_rows
+                if not b["busy"] and (b.get("owner_code") or "") == ""
+            ]
             if not candidates:
                 self.faulty = True
                 return
-
+    
             candidates.sort(key=lambda b: b["id_in_group"])
-            free = candidates[0]
-            chosen_batch = free["batch"]
-            chosen_id = free["id_in_group"]
-
+            chosen = candidates[0]
+            chosen_id = chosen["id_in_group"]
+            chosen_batch = chosen["batch"]
+    
             self.batch = chosen_batch
-
-            sql_update_batch(
-                free["id"],
-                busy=True,
-                owner_code=self.participant.code
-            )
-
-        # Optimization: Fetch ONLY the single row needed for this player/round
+    
+            # IMPORTANT: mark ALL rows for this id_in_group as owned/busy
+            for b in active_rows:
+                if b["id_in_group"] == chosen_id:
+                    sql_update_batch(b["id"], busy=True, owner_code=self.participant.code)
+    
+        # now fetch exactly this participant+round row
         my_rows = get_batches_filtered(
-            session.code, 
-            round_val=self.round_number, 
+            session.code,
+            round_val=self.round_number,
             owner_code=self.participant.code
         )
-
+    
         if not my_rows:
             self.faulty = True
             return
-
+    
         my_row = my_rows[0]
-
         self.link_id = my_row["id"]
         self.inner_role = my_row["role"]
         self.inner_sentences = json.dumps(self.get_sentences_data())
-
-        if self.round_number == 1 and session.config.get("for_prolific"):
-            p = self.participant
-            vars_ = p.vars
-            prolific_id = vars_.get("prolific_id") or vars_.get("prolific_pid")
-            if vars_.get("prolific_session_id"):
-                p.label = vars_.get("prolific_session_id")
-
 
 def creating_session(subsession: Subsession):
     session = subsession.session
@@ -448,16 +436,24 @@ class Q(Page):
 
     @staticmethod
     def is_displayed(player):
+        if player.round_number > Constants.num_rounds:
+            return False
         if player.faulty:
             return False
-        
+    
+        # run start() once per round (guard by link_id)
+        if not player.link_id:
+            player.start()
+    
+        if player.faulty:
+            return False
+    
+        # start timing only after start() succeeded
         if player.start_decision_time == 0:
             player.start_decision_time = time.time()
-        
-        player.start()
-        if player.faulty:
-            return False
-        return player.round_number <= Constants.num_rounds
+    
+        return True
+
 
     @staticmethod
     def get_form_fields(player):
