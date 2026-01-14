@@ -345,6 +345,7 @@ class Player(BasePlayer):
                 and (b.get("owner_code") or "") == ""
             ]
             if not candidates:
+                logger.error(f"No candidates found for participant {self.participant.code} in batch {active_batch}")
                 self.faulty = True
                 return
     
@@ -356,6 +357,8 @@ class Player(BasePlayer):
                 if b["batch"] == chosen["batch"] and b["id_in_group"] == chosen["id_in_group"]:
                     update_batch_in_session(session, b["id"], busy=True, owner_code=self.participant.code)
     
+            logger.info(f"Assigned participant {self.participant.code} to id_in_group {chosen['id_in_group']} in batch {chosen['batch']}")
+            
             # refresh after updates
             all_data = get_all_batches_from_session(session)
     
@@ -367,12 +370,16 @@ class Player(BasePlayer):
                 break
     
         if not my_row:
+            logger.error(f"No batch row found for participant {self.participant.code}, round {self.round_number}")
+            logger.error(f"Available batches for this participant: {[b for b in all_data if b.get('owner_code') == self.participant.code][:5]}")
             self.faulty = True
             return
     
         # link + role/sentences
         self.link_id = my_row["id"]
         self.inner_role = my_row["role"] or ""
+        
+        logger.info(f"Round {self.round_number}: Linked participant {self.participant.code} to batch_id {my_row['id']}, role {self.inner_role}")
 
 
 # ============================================================================
@@ -483,6 +490,34 @@ def creating_session(subsession: Subsession):
 # PAGES
 # ============================================================================
 
+class DebugBatches(Page):
+    """Temporary debug page - remove after testing"""
+    @staticmethod
+    def is_displayed(player):
+        # Only show for first participant, round 1
+        return player.round_number == 1 and player.id_in_subsession == 1
+    
+    @staticmethod
+    def vars_for_template(player):
+        batches = get_all_batches_from_session(player.session)
+        logger.info(f"Total batches: {len(batches)}")
+        logger.info(f"First 3 batches: {batches[:3]}")
+        
+        # Count by round
+        rounds_count = {}
+        for b in batches:
+            rnd = b.get('round_number', 0)
+            rounds_count[rnd] = rounds_count.get(rnd, 0) + 1
+        
+        logger.info(f"Batches per round: {rounds_count}")
+        
+        return {
+            'total_batches': len(batches),
+            'first_batches': batches[:10],
+            'rounds_count': rounds_count,
+        }
+
+
 class FaultyCatcher(Page):
     @staticmethod
     def is_displayed(player):
@@ -502,9 +537,12 @@ class Q(Page):
 
         # run start() once per round (guard with link_id)
         if not player.link_id:
+            logger.info(f"Calling start() for participant {player.participant.code}, round {player.round_number}")
             player.start()
+            logger.info(f"After start(): link_id={player.link_id}, faulty={player.faulty}, role={player.inner_role}")
 
         if player.faulty:
+            logger.warning(f"Player {player.participant.code} marked as faulty in round {player.round_number}")
             return False
 
         # start timing only when page is actually shown and link is valid
@@ -653,4 +691,4 @@ def custom_export(players):
         ]
 
 
-page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
+page_sequence = [DebugBatches, FaultyCatcher, Q, Feedback, FinalForProlific]
