@@ -319,7 +319,7 @@ class Player(BasePlayer):
             candidates.sort(key=lambda b: b["id_in_group"])
             chosen = candidates[0]
     
-            self.batch = chosen["batch"]
+            # REMOVED: self.batch = chosen["batch"]  # This line caused the error
     
             # mark ALL rows for that participant id_in_group in this batch as busy/owned
             for b in all_data:
