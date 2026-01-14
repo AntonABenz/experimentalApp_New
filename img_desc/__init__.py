@@ -366,6 +366,11 @@ def creating_session(subsession: Subsession):
     df = excel_data.get("data")
     session.vars["user_data"] = df
 
+    # LOG THE COLUMNS TO SEE WHAT WE HAVE
+    logger.info(f"Excel columns found: {list(df.columns)}")
+    if len(df) > 0:
+        logger.info(f"First row sample: {df.iloc[0].to_dict()}")
+
     def clean_str(val):
         if val is None:
             return ""
@@ -374,26 +379,68 @@ def creating_session(subsession: Subsession):
             return ""
         return s
     
-    if "Condition" in df.columns: df["Condition"] = df["Condition"].apply(clean_str)
-    if "Item.Nr" in df.columns: df["Item.Nr"] = df["Item.Nr"].apply(clean_str)
-    if "Item" in df.columns: df["Item"] = df["Item"].apply(clean_str)
+    def safe_int(val, default=0):
+        if val is None:
+            return default
+        s = str(val).strip()
+        if s == "" or s.lower() == "nan":
+            return default
+        try:
+            return int(float(s))
+        except:
+            return default
+    
+    if "Condition" in df.columns: 
+        df["Condition"] = df["Condition"].apply(clean_str)
+    if "Item.Nr" in df.columns: 
+        df["Item.Nr"] = df["Item.Nr"].apply(clean_str)
+    if "Item" in df.columns: 
+        df["Item"] = df["Item"].apply(clean_str)
 
     records = df.to_dict(orient="records")
-    for r in records:
-        Batch.create(
-            session_code=session.code,
-            owner_code="",
-            batch=r.get("Exp"),
-            item_nr=r.get("Item.Nr"),
-            condition=r.get("Condition"),
-            image=r.get("Item"),
-            round_number=r.get("group_enumeration"),
-            role=r.get("role"),
-            id_in_group=r.get("id"),
-            partner_id=r.get("partner_id"),
-            sentences=r.get("sentences"),
+    
+    for i, r in enumerate(records):
+        # Try multiple possible column names for round_number
+        round_num = safe_int(
+            r.get("group_enumeration") or 
+            r.get("round") or 
+            r.get("Round") or 
+            r.get("trial") or
+            r.get("Trial")
         )
+        
+        # Try multiple possible column names for id_in_group
+        id_in_grp = safe_int(
+            r.get("id") or 
+            r.get("ID") or 
+            r.get("player_id") or 
+            r.get("participant_id") or
+            r.get("id_in_group")
+        )
+        
+        batch_dict = {
+            'session_code': session.code,
+            'owner_code': "",
+            'batch': safe_int(r.get("Exp")),
+            'item_nr': clean_str(r.get("Item.Nr")),
+            'condition': clean_str(r.get("Condition")),
+            'image': clean_str(r.get("Item")),
+            'round_number': round_num,
+            'role': clean_str(r.get("role") or r.get("Role")),
+            'id_in_group': id_in_grp,
+            'partner_id': safe_int(r.get("partner_id") or r.get("Partner_ID")),
+            'sentences': clean_str(r.get("sentences") or "[]"),
+        }
+        
+        # Log first batch for debugging
+        if i == 0:
+            logger.info(f"First batch being created: {batch_dict}")
+        
+        Batch.create(**batch_dict)
 
+    logger.info(f"Created {len(records)} batch records")
+
+    # Rest of your settings code stays the same
     settings = excel_data.get("settings") or {}
     clean_settings = {}
     for k, v in settings.items():
