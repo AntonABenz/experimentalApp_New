@@ -397,35 +397,34 @@ def _collect_indexed(settings: dict, prefix: str, max_n: int = 20):
     return out
 
 # Add this import at the top of your file, or inside the function
-from django.forms.models import model_to_dict
-
 def get_all_batches_sql(session_code):
     """
     Retrieves all Batch rows for the given session_code.
-    Returns a list of dictionaries with all field values.
+    Works around oTree 5's filter() restrictions.
     """
-    batches = Batch.filter(session_code=session_code)
+    # Get ALL batches and filter in Python
+    all_batches = Batch.filter()  # Gets all batches
     
-    # Convert to list of dicts manually since .values() isn't available
     result = []
-    for b in batches:
-        result.append({
-            'id': b.id,
-            'session_code': b.session_code,
-            'owner_code': b.owner_code,
-            'batch': b.batch,
-            'round_number': b.round_number,
-            'role': b.role,
-            'id_in_group': b.id_in_group,
-            'partner_id': b.partner_id,
-            'condition': b.condition,
-            'item_nr': b.item_nr,
-            'image': b.image,
-            'sentences': b.sentences,
-            'rewards': b.rewards,
-            'busy': b.busy,
-            'processed': b.processed,
-        })
+    for b in all_batches:
+        if b.session_code == session_code:
+            result.append({
+                'id': b.id,
+                'session_code': b.session_code,
+                'owner_code': b.owner_code,
+                'batch': b.batch,
+                'round_number': b.round_number,
+                'role': b.role,
+                'id_in_group': b.id_in_group,
+                'partner_id': b.partner_id,
+                'condition': b.condition,
+                'item_nr': b.item_nr,
+                'image': b.image,
+                'sentences': b.sentences,
+                'rewards': b.rewards,
+                'busy': b.busy,
+                'processed': b.processed,
+            })
     return result
 
 
@@ -433,14 +432,16 @@ def sql_update_batch(batch_id, busy=None, owner_code=None):
     """
     Updates a specific Batch row identified by its ID.
     """
-    rows = Batch.filter(id=batch_id)
-    if rows:
-        b = rows[0]
-        if busy is not None:
-            b.busy = busy
-        if owner_code is not None:
-            b.owner_code = owner_code
-        b.save()
+    # Get all and find by id
+    all_batches = Batch.filter()
+    for b in all_batches:
+        if b.id == batch_id:
+            if busy is not None:
+                b.busy = busy
+            if owner_code is not None:
+                b.owner_code = owner_code
+            b.save()
+            break
         
 def creating_session(subsession: Subsession):
     session = subsession.session
