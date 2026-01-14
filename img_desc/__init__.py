@@ -6,6 +6,7 @@ import re
 import time
 from sqlalchemy import create_engine, text
 from django.shortcuts import redirect
+from django.db import models as django_models  # <--- REQUIRED for Batch.objects
 
 logger = logging.getLogger("benzapp.img_desc")
 
@@ -74,7 +75,7 @@ def _parse_tokens_list(raw):
     return out
 
 # ----------------------------
-# Constants / Models
+# Constants
 # ----------------------------
 class Constants(BaseConstants):
     name_in_url = "img_desc"
@@ -88,22 +89,38 @@ class Constants(BaseConstants):
     INTERPRETER = INTERPRETER
     PRODUCER = PRODUCER
 
+# ----------------------------
+# Batch Model (Standard Django)
+# ----------------------------
 class Batch(ExtraModel):
-    session_code = models.StringField()
-    owner_code = models.StringField(blank=True)
-    sentences = models.LongStringField(blank=True)
-    rewards = models.LongStringField(blank=True)
-    condition = models.StringField(blank=True)
-    item_nr = models.StringField(blank=True)
-    image = models.StringField(blank=True)
-    round_number = models.IntegerField()
-    role = models.StringField()
-    batch = models.IntegerField()
-    id_in_group = models.IntegerField()
-    partner_id = models.IntegerField()
-    busy = models.BooleanField(initial=False)
-    processed = models.BooleanField(initial=False)
+    # This Manager line allows Batch.objects.filter(...) to work
+    objects = django_models.Manager()
 
+    # Standard Django fields to prevent "Cannot resolve keyword" errors
+    session_code = django_models.CharField(max_length=255)
+    owner_code = django_models.CharField(max_length=255, blank=True, default="")
+    
+    # TextFields for longer content
+    sentences = django_models.TextField(blank=True, default="")
+    rewards = django_models.TextField(blank=True, default="")
+    
+    condition = django_models.CharField(max_length=255, blank=True, default="")
+    item_nr = django_models.CharField(max_length=255, blank=True, default="")
+    image = django_models.CharField(max_length=255, blank=True, default="")
+    
+    round_number = django_models.IntegerField(default=0)
+    role = django_models.CharField(max_length=255, blank=True, default="")
+    
+    batch = django_models.IntegerField(default=0)
+    id_in_group = django_models.IntegerField(default=0)
+    partner_id = django_models.IntegerField(default=0)
+    
+    busy = django_models.BooleanField(default=False)
+    processed = django_models.BooleanField(default=False)
+
+# ----------------------------
+# SQL Helpers (Low Memory)
+# ----------------------------
 _custom_engine = None
 
 def get_engine():
@@ -119,11 +136,9 @@ def get_engine():
     _custom_engine = create_engine(db_url)
     return _custom_engine
 
-# --- OPTIMIZED SQL HELPER (Prevents Memory Crashes) ---
 def get_batches_filtered(session_code, batch_val=None, round_val=None, owner_code=None, role=None, partner_id=None, id_in_group=None):
     """
-    Fetches ONLY the specific rows needed.
-    Replaces the memory-heavy get_all_batches_sql.
+    Optimized Fetch: Loads only necessary rows to prevent Memory Crashes.
     """
     engine = get_engine()
     clauses = ["session_code = :session_code"]
@@ -188,7 +203,6 @@ class Subsession(BaseSubsession):
 
     def check_for_batch_completion(self):
         active_batch = self.field_maybe_none("active_batch") or 1
-        # Optimization: Only load active batch rows
         rows = get_batches_filtered(self.session.code, batch_val=active_batch)
         remaining = any(not r['processed'] for r in rows)
         
@@ -335,7 +349,7 @@ class Player(BasePlayer):
                 subsession.active_batch = 1
                 subsession.save()
             
-            # Optimized: Only fetch free slots in the active batch
+            # Fetch candidates using SQL optimization
             active_candidates = get_batches_filtered(session.code, batch_val=subsession.active_batch)
             candidates = [
                 b for b in active_candidates
@@ -352,12 +366,14 @@ class Player(BasePlayer):
             chosen_id = free["id_in_group"]
             self.batch = chosen_batch
 
+            # Claim the batch
             sql_update_batch(
                 free["id"],
                 busy=True,
                 owner_code=self.participant.code
             )
 
+            # Refetch MY row
             my_rows = get_batches_filtered(
                 session.code,
                 round_val=self.round_number,
@@ -410,11 +426,12 @@ def creating_session(subsession: Subsession):
         if c in df.columns:
             df[c] = df[c].apply(_force_str_keep_none_token)
 
+    # Use Batch.objects.filter().delete() because we are now using Standard Django
     Batch.objects.filter(session_code=session.code).delete()
 
     records = df.to_dict(orient="records")
     for r in records:
-        Batch.create(
+        Batch.objects.create(
             session_code=session.code,
             owner_code="",
             batch=int(r.get("Exp") or 0),
@@ -573,8 +590,8 @@ class FinalForProlific(Page):
 
 def custom_export(players):
     """
-    Export logic using Django ORM .values_list().
-    Includes FEEDBACK in the last column.
+    Export logic using Django ORM and Iterators.
+    Includes FEEDBACK column.
     """
     yield [
         "session_code", "participant_code", "round_number", "role",
@@ -596,6 +613,7 @@ def custom_export(players):
     def keyfunc(row):
         return (row[0], row[1])
 
+    # Since Batch uses Standard Django Models now, we can use objects.filter safely
     for (session_code, participant_code), rows in groupby(pq, key=keyfunc):
         bq = (
             Batch.objects
@@ -608,6 +626,8 @@ def custom_export(players):
         for row in rows:
             _, _, rnd, inner_role, prod_dec, interp_dec, ds, fb = row
             rnd = int(rnd)
+            
+            # Filter rounds 1-80
             if rnd < 1 or rnd > Constants.num_rounds:
                 continue
 
