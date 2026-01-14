@@ -402,23 +402,40 @@ from django.forms.models import model_to_dict
 def get_all_batches_sql(session_code):
     """
     Retrieves all Batch rows for the given session_code.
-    Uses _default_manager to bypass oTree's strict filtering rules,
-    allowing us to filter by a string (session_code) and use .values().
+    Returns a list of dictionaries with all field values.
     """
-    # Note: _default_manager is the standard Django manager.
-    # We use it because Batch.filter() refuses to accept plain strings 
-    # and Batch.objects is hidden in oTree 5.
-    return list(Batch._default_manager.filter(session_code=session_code).values())
+    batches = Batch.filter(session_code=session_code)
+    
+    # Convert to list of dicts manually since .values() isn't available
+    result = []
+    for b in batches:
+        result.append({
+            'id': b.id,
+            'session_code': b.session_code,
+            'owner_code': b.owner_code,
+            'batch': b.batch,
+            'round_number': b.round_number,
+            'role': b.role,
+            'id_in_group': b.id_in_group,
+            'partner_id': b.partner_id,
+            'condition': b.condition,
+            'item_nr': b.item_nr,
+            'image': b.image,
+            'sentences': b.sentences,
+            'rewards': b.rewards,
+            'busy': b.busy,
+            'processed': b.processed,
+        })
+    return result
 
 
 def sql_update_batch(batch_id, busy=None, owner_code=None):
     """
     Updates a specific Batch row identified by its ID.
     """
-    # Use _default_manager to get a standard Django QuerySet
-    rows = Batch._default_manager.filter(id=batch_id)
-    if rows.exists():
-        b = rows.first()
+    rows = Batch.filter(id=batch_id)
+    if rows:
+        b = rows[0]
         if busy is not None:
             b.busy = busy
         if owner_code is not None:
