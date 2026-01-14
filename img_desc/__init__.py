@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from django.shortcuts import redirect
+from django.db import models as django_models
 
 logger = logging.getLogger("benzapp.img_desc")
 
@@ -116,6 +117,7 @@ class Constants(BaseConstants):
 
 
 class Batch(ExtraModel):
+    objects = django_models.Manager()
     # NOTE: ExtraModel supports .objects like normal models
     session_code = models.StringField()
     owner_code = models.StringField(blank=True)
