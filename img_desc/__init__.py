@@ -494,17 +494,30 @@ class Feedback(Page):
     def is_displayed(self):
         return self.round_number == Constants.num_rounds
 
-
 class FinalForProlific(Page):
     @staticmethod
     def is_displayed(player):
-        return player.session.config.get("for_prolific") and (player.round_number == Constants.num_rounds)
+        return player.session.config.get("for_prolific") and player.round_number == Constants.num_rounds
 
     def get(self):
+        # Prefer a URL saved earlier (if you have it)
         url = self.player.field_maybe_none("full_return_url")
         if url:
             return redirect(url)
-        return redirect("https://cnn.com")
+
+        # Otherwise, always fall back to Prolific completion URL (NOT cnn.com)
+        completion_code = (
+            self.player.session.config.get("completion_code")
+            or self.player.session.vars.get("completion_code")
+            or self.player.subsession.field_maybe_none("completion_code")
+        )
+
+        if not completion_code:
+            # last resort: still redirect to Prolific but with API_ERR
+            return redirect(Constants.API_ERR_URL)
+
+        return redirect(Constants.STUBURL + str(completion_code))
+
 
 def custom_export(players):
     yield [
