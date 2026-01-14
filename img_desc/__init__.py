@@ -520,10 +520,16 @@ class FinalForProlific(Page):
 
 
 def custom_export(players):
+    """
+    One row per *Player round* (so each participant has exactly 80 rows if they finished 80 rounds).
+    Includes the participant's decision time (decision_seconds) and the linked Batch fields.
+    """
+
+    # 1) stream header immediately
     yield [
-        "session",
+        "session_code",
         "participant_code",
-        "round",
+        "round_number",
         "role",
         "condition",
         "item_nr",
@@ -533,86 +539,75 @@ def custom_export(players):
         "decision_seconds",
     ]
 
-    # session codes in this export
-    try:
-        session_codes = list(
-            players.values_list("session__code", flat=True).distinct()
-        )
-    except Exception:
-        session_codes = list(set(p.session.code for p in players))
+    # 2) make sure we iterate in a stable order for grouping
+    qs = (
+        players
+        .select_related("session", "participant")
+        .order_by("session__code", "participant__code", "round_number")
+        .iterator()
+    )
 
-    if not session_codes:
-        return
+    from itertools import groupby
 
-    # timing map: (session_code, participant_code, round) -> decision_seconds
-    timing_map = {}
-    try:
-        for s_code, p_code, r_num, secs in (
-            Player.objects.filter(session__code__in=session_codes)
-            .values_list("session__code", "participant__code", "round_number", "decision_seconds")
+    def keyfunc(p):
+        return (p.session.code, p.participant.code)
+
+    for (session_code, participant_code), pgroup in groupby(qs, key=keyfunc):
+        # 3) Load ONLY this participant's Batch rows (small + fast)
+        #    There should be at most ~80 rows here.
+        batch_map = {}
+        for b in (
+            Batch.objects
+            .filter(session_code=session_code, owner_code=participant_code)
+            .values(
+                "round_number",
+                "role",
+                "condition",
+                "item_nr",
+                "image",
+                "sentences",
+                "rewards",
+            )
             .iterator()
         ):
-            timing_map[(s_code, p_code, r_num)] = secs
-    except Exception:
-        timing_map = {}
+            batch_map[int(b["round_number"])] = b
 
-    engine = get_engine()
+        # 4) Stream player rows (exactly rounds they actually visited)
+        for p in pgroup:
+            rnd = int(p.round_number)
 
-    # Build a dialect-safe IN (...) clause
-    placeholders = ",".join([f":s{i}" for i in range(len(session_codes))])
-    params = {f"s{i}": session_codes[i] for i in range(len(session_codes))}
+            # optional: enforce exactly 1..80 only
+            if rnd < 1 or rnd > Constants.num_rounds:
+                continue
 
-    sql = text(f"""
-        SELECT
-            session_code,
-            owner_code,
-            round_number,
-            role,
-            condition,
-            item_nr,
-            image,
-            sentences,
-            rewards
-        FROM img_desc_batch
-        WHERE session_code IN ({placeholders})
-        ORDER BY session_code, batch, id_in_group
-    """)
+            b = batch_map.get(rnd, None)
 
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(sql, params)
-            for row in result:
-                s_code = row[0]
-                owner_code = row[1]
-                round_number = row[2]
-                role = row[3]
-                condition = row[4]
-                item_nr = row[5]
-                image = row[6]
-                sentences = row[7]
-                rewards = row[8]
+            # Prefer Batch values (because you update them in update_batch()).
+            # Fall back to Player fields if Batch row missing for some reason.
+            role = (b.get("role") if b else (p.field_maybe_none("inner_role") or ""))
+            condition = (b.get("condition") if b else "")
+            item_nr = (b.get("item_nr") if b else "")
+            image = (b.get("image") if b else "")
 
+            producer_sentences = (b.get("sentences") if b else (p.field_maybe_none("producer_decision") or ""))
+            interpreter_rewards = (b.get("rewards") if b else (p.field_maybe_none("interpreter_decision") or ""))
+
+            # decision_seconds is on Player; if it’s 0.0, export 0.0 (not blank)
+            ds = p.field_maybe_none("decision_seconds")
+            if ds is None:
                 ds = ""
-                if owner_code:
-                    ds = timing_map.get((s_code, owner_code, round_number), "")
 
-                yield [
-                    s_code,
-                    owner_code,
-                    round_number,
-                    role,
-                    condition,
-                    item_nr,
-                    image,
-                    sentences,
-                    rewards,
-                    ds,
-                ]
-    except Exception as e:
-        # Don't break /export download completely; just stop after header.
-        # You can log if you want:
-        # logger.exception("custom_export failed: %s", e)
-        return
-
+            yield [
+                session_code,
+                participant_code,
+                rnd,
+                role,
+                condition,
+                item_nr,
+                image,
+                producer_sentences,
+                interpreter_rewards,
+                ds,
+            ]
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
