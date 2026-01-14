@@ -536,6 +536,7 @@ class Q(Page):
             interpreter_choices=interpreter_choices,
             interpreter_title=interpreter_title,
             instructions_url=player.session.vars.get("instructions_url"),
+            caseflag=player.session.vars.get("caseflag", False),  # ← ADD THIS LINE
         )
 
     @staticmethod
