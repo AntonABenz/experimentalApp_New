@@ -7,308 +7,340 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
 
 {% block content %}
 <style>
-    [v-cloak] { display: none; }
+  [v-cloak] { display: none; }
 
-    .instructions-btn {
-        position: fixed;
-        top: 14px; right: 14px;
-        z-index: 3500;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-    }
-    .field-help {
-        display: inline-flex; align-items: center; justify-content: center;
-        width: 22px; height: 22px; border-radius: 50%;
-        border: 1px solid #888; background: #fff;
-        font-weight: 800; font-size: 12px; margin-left: 8px;
-        cursor: pointer; user-select: none; flex: 0 0 auto;
-    }
-    .field-help:hover { background: #f6f6f6; }
+  .instructions-btn {
+      position: fixed;
+      top: 14px; right: 14px;
+      z-index: 3500;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  }
+  .field-help {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; border-radius: 50%;
+      border: 1px solid #888; background: #fff;
+      font-weight: 800; font-size: 12px; margin-left: 8px;
+      cursor: pointer; user-select: none; flex: 0 0 auto;
+  }
+  .field-help:hover { background: #f6f6f6; }
 
-    .modal-overlay {
-        position: fixed; inset: 0;
-        background: rgba(0,0,0,0.55);
-        display: flex; align-items: center; justify-content: center;
-        z-index: 5000; padding: 12px;
-    }
-    .modal-box {
-        background: white; width: 96%; max-width: 1100px;
-        height: auto; max-height: 92%;
-        border-radius: 10px; overflow: hidden;
-        display: flex; flex-direction: column;
-    }
-    .modal-header {
-        padding: 10px 12px; border-bottom: 1px solid #e5e5e5;
-        display: flex; justify-content: space-between; align-items: center; gap: 8px;
-    }
-    .modal-body { flex: 1; overflow: auto; padding: 14px; }
+  .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.55);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 5000; padding: 12px;
+  }
+  .modal-box {
+      background: white; width: 96%; max-width: 1100px;
+      height: auto; max-height: 92%;
+      border-radius: 10px; overflow: hidden;
+      display: flex; flex-direction: column;
+  }
+  .modal-header {
+      padding: 10px 12px; border-bottom: 1px solid #e5e5e5;
+      display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  }
+  .modal-body { flex: 1; overflow: auto; padding: 14px; }
 
-    /* Confirm Modal specific style */
-    .confirm-box { max-width: 400px; height: auto; }
+  .confirm-box { max-width: 400px; height: auto; }
 
-    .input-group { max-width: 900px; margin: 0 auto; }
-    .input-kids { min-width: 260px; }
-    .clean-row { margin-bottom: 16px; }
-    .field-wrap { display: inline-flex; align-items: center; margin-right: 14px; margin-bottom: 8px; }
-    .suffix { margin-left: 10px; font-weight: 700; }
-    .invalid { border-color: #dc3545 !important; box-shadow: 0 0 0 0.15rem rgba(220,53,69,.25); }
-    .sentence-card { background: #e3f2fd; border-left: 5px solid #2196f3; padding: 18px; margin: 18px auto; max-width: 900px; font-size: 1.15rem; text-align: center; }
-    table.buy-table { max-width: 900px; margin: 0 auto; }
+  .input-group { max-width: 900px; margin: 0 auto; }
+  .input-kids { min-width: 260px; }
+  .clean-row { margin-bottom: 16px; }
+  .field-wrap { display: inline-flex; align-items: center; margin-right: 14px; margin-bottom: 8px; }
+  .suffix { margin-left: 10px; font-weight: 700; }
+  .invalid { border-color: #dc3545 !important; box-shadow: 0 0 0 0.15rem rgba(220,53,69,.25); }
+  .sentence-card { background: #e3f2fd; border-left: 5px solid #2196f3; padding: 18px; margin: 18px auto; max-width: 900px; font-size: 1.15rem; text-align: center; }
+  table.buy-table { max-width: 900px; margin: 0 auto; }
 </style>
 
 <script>
 window.props = {
-    role: "{{ player.inner_role }}",
-    prefix: {{ prefix|json }},
-    allowedValues: {{ allowed_values|json }},
-    allowedRegexes: {{ allowed_regexes|json }},
-    suffixes: {{ suffixes|json }},
-    full_sentences: {{ player.get_full_sentences|json }},
-    interpreter_choices: {{ interpreter_choices|json }},
-    interpreter_title: {{ interpreter_title|json }},
-    instructions_url: {{ instructions_url|json }}
+  role: "{{ player.inner_role }}",
+  prefix: {{ prefix|json }},
+  allowedValues: {{ allowed_values|json }},
+  allowedRegexes: {{ allowed_regexes|json }},
+  suffixes: {{ suffixes|json }},
+  full_sentences: {{ player.get_full_sentences|json }},
+  interpreter_choices: {{ interpreter_choices|json }},
+  interpreter_title: {{ interpreter_title|json }},
+  instructions_url: {{ instructions_url|json }},
+  caseflag: {{ caseflag|json }},
+  server_image_url: "{{ player.get_image_url }}"
 };
 </script>
 
 <div id="app" v-cloak>
 
-    <button type="button" class="btn btn-success instructions-btn" @click="openInstructions">
-        Instructions
-    </button>
+  <button type="button" class="btn btn-success instructions-btn" @click="openInstructions">
+    Instructions
+  </button>
 
-    <div v-if="showInstructions" class="modal-overlay" @click.self="closeInstructions">
-        <div class="modal-box">
-            <div class="modal-header">
-                <div style="font-weight:700;">Instructions</div>
-                <div>
-                    <button type="button" class="btn btn-sm btn-secondary" @click="reloadInstructions">Reload</button>
-                    <button type="button" class="btn btn-sm btn-danger" @click="closeInstructions">Close</button>
-                </div>
-            </div>
-            <div class="modal-body" style="padding:0;">
-                <iframe :src="instructionsSrc" style="width:100%; height:100%; border:none;"></iframe>
-            </div>
+  <!-- Instructions modal -->
+  <div v-if="showInstructions" class="modal-overlay" @click.self="closeInstructions">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div style="font-weight:700;">Instructions</div>
+        <div>
+          <button type="button" class="btn btn-sm btn-secondary" @click="reloadInstructions">Reload</button>
+          <button type="button" class="btn btn-sm btn-danger" @click="closeInstructions">Close</button>
         </div>
+      </div>
+      <div class="modal-body" style="padding:0;">
+        <iframe :src="instructionsSrc" style="width:100%; height:100%; border:none;"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <!-- Allowed options modal -->
+  <div v-if="showOptions" class="modal-overlay" @click.self="closeOptions">
+    <div class="modal-box" style="max-width:900px; height:auto; max-height:90%;">
+      <div class="modal-header">
+        <div style="font-weight:700;">Allowed options — Field [[ optionsFieldNumber ]]</div>
+        <button type="button" class="btn btn-sm btn-danger" @click="closeOptions">Close</button>
+      </div>
+      <div class="modal-body">
+        <div v-if="optionsList.length">
+          <ul><li v-for="(v,idx) in optionsList" :key="'opt-'+idx">[[ v ]]</li></ul>
+        </div>
+        <div v-else class="text-muted">No list provided for this field.</div>
+        <hr>
+        <div>
+          <div style="font-weight:700; margin-bottom:6px;">Regex:</div>
+          <pre style="white-space:pre-wrap; word-break:break-word; background:#f7f7f7; padding:10px; border-radius:6px;">[[ optionsRegex || "(no regex provided)" ]]</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm modal (Producer) -->
+  <div v-if="showConfirmModal" class="modal-overlay" @click.self="showConfirmModal = false">
+    <div class="modal-box confirm-box">
+      <div class="modal-header">
+        <div style="font-weight:700;">Confirm</div>
+        <button type="button" class="close" @click="showConfirmModal = false">&times;</button>
+      </div>
+      <div class="modal-body text-center">
+        <p class="lead font-weight-bold" style="margin-top: 10px;">Do you want to submit?</p>
+        <div class="d-flex justify-content-around mt-4 mb-2">
+          <button type="button" class="btn btn-danger btn-lg" style="min-width: 100px;" @click="showConfirmModal = false">No</button>
+          <button type="button" class="btn btn-success btn-lg" style="min-width: 100px;" @click="confirmSubmit">Yes</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PRODUCER -->
+  <div v-if="props.role === 'P'">
+    <div class="text-center my-4">
+      <img v-if="imageUrl"
+           :src="imageUrl"
+           @error="onImageError"
+           style="max-width:100%;max-height:520px;border:1px solid #ddd;">
+      <div v-if="imageBroken" class="alert alert-warning mt-2" style="max-width:900px;margin:12px auto;">
+        Image could not be loaded. Please contact the experimenter.
+      </div>
     </div>
 
-    <div v-if="showOptions" class="modal-overlay" @click.self="closeOptions">
-        <div class="modal-box" style="max-width:900px; height:auto; max-height:90%;">
-            <div class="modal-header">
-                <div style="font-weight:700;">Allowed options — Field [[ optionsFieldNumber ]]</div>
-                <button type="button" class="btn btn-sm btn-danger" @click="closeOptions">Close</button>
-            </div>
-            <div class="modal-body">
-                <div v-if="optionsList.length">
-                    <ul><li v-for="(v,idx) in optionsList" :key="'opt-'+idx">[[ v ]]</li></ul>
-                </div>
-                <div v-else class="text-muted">No list provided for this field.</div>
-                <hr>
-                <div>
-                    <div style="font-weight:700; margin-bottom:6px;">Regex:</div>
-                    <pre style="white-space:pre-wrap; word-break:break-word; background:#f7f7f7; padding:10px; border-radius:6px;">[[ optionsRegex || "(no regex provided)" ]]</pre>
-                </div>
-            </div>
+    <div class="text-center">
+      <div v-for="(item, i) in items" :key="i" class="clean-row">
+        <div class="input-group">
+          <div v-for="(f, j) in item.fields" :key="j" class="field-wrap">
+            <input class="form-control input-kids"
+                   :class="{ invalid: fieldInvalid(i,j) }"
+                   v-model="f.value"
+                   :placeholder="'Field ' + (j+1)"
+                   autocomplete="off">
+            <div class="field-help" :title="'Show allowed options for Field ' + (j+1)" @click="openOptions(j)">?</div>
+            <span v-if="f.suffix" class="suffix">[[ f.suffix ]]</span>
+          </div>
+          <button type="button" class="btn btn-outline-secondary ml-2" @click="addItem" :disabled="items.length>=maxItems">+</button>
+          <button type="button" class="btn btn-outline-danger ml-1" @click="removeItem(i)" :disabled="items.length<=1">-</button>
         </div>
+      </div>
     </div>
 
-    <div v-if="showConfirmModal" class="modal-overlay" @click.self="showConfirmModal = false">
-        <div class="modal-box confirm-box">
-            <div class="modal-header">
-                <div style="font-weight:700;">Confirm</div>
-                <button type="button" class="close" @click="showConfirmModal = false">&times;</button>
-            </div>
-            <div class="modal-body text-center">
-                <p class="lead font-weight-bold" style="margin-top: 10px;">Do you want to submit?</p>
-                <div class="d-flex justify-content-around mt-4 mb-2">
-                    <button type="button" class="btn btn-danger btn-lg" style="min-width: 100px;" @click="showConfirmModal = false">No</button>
-                    <button type="button" class="btn btn-success btn-lg" style="min-width: 100px;" @click="confirmSubmit">Yes</button>
-                </div>
-            </div>
-        </div>
+    <input type="hidden" name="producer_decision" :value="producerPayload">
+  </div>
+
+  <!-- INTERPRETER -->
+  <div v-else>
+    <h4 class="text-center mb-3">[[ props.interpreter_title ]]</h4>
+
+    <div v-if="props.full_sentences.length === 0" class="alert alert-danger text-center">
+      Internal error: no sentences received. Please contact the experimenter.
     </div>
 
-    <div v-if="props.role === 'P'">
-        <div class="text-center my-4">
-            <img v-if="imageUrl"
-                 :src="imageUrl"
-                 @error="onImageError"
-                 style="max-width:100%;max-height:520px;border:1px solid #ddd;">
-            <div v-if="imageBroken" class="alert alert-warning mt-2" style="max-width:900px;margin:12px auto;">
-                Image could not be loaded. Please contact the experimenter.
-            </div>
-        </div>
-
-        <div class="text-center">
-            <div v-for="(item, i) in items" :key="i" class="clean-row">
-                <div class="input-group">
-                    <div v-for="(f, j) in item.fields" :key="j" class="field-wrap">
-                        <input class="form-control input-kids"
-                               :class="{ invalid: fieldInvalid(i,j) }"
-                               v-model="f.value"
-                               :placeholder="'Field ' + (j+1)"
-                               autocomplete="off">
-                        <div class="field-help" :title="'Show allowed options for Field ' + (j+1)" @click="openOptions(j)">?</div>
-                        <span v-if="f.suffix" class="suffix">[[ f.suffix ]]</span>
-                    </div>
-                    <button type="button" class="btn btn-outline-secondary ml-2" @click="addItem" :disabled="items.length>=maxItems">+</button>
-                    <button type="button" class="btn btn-outline-danger ml-1" @click="removeItem(i)" :disabled="items.length<=1">-</button>
-                </div>
-            </div>
-        </div>
-        <input type="hidden" name="producer_decision" :value="producerPayload">
+    <div v-else class="sentence-card">
+      <div v-for="(s,idx) in props.full_sentences" :key="'fs-'+idx">[[ s ]]</div>
     </div>
 
-    <div v-else>
-        <h4 class="text-center mb-3">[[ props.interpreter_title ]]</h4>
-        <div v-if="props.full_sentences.length === 0" class="alert alert-danger text-center">
-            Internal error: no sentences received. Please contact the experimenter.
-        </div>
-        <div v-else class="sentence-card">
-            <div v-for="(s,idx) in props.full_sentences" :key="'fs-'+idx">[[ s ]]</div>
-        </div>
-        <h5 class="text-center mb-3">Buy medals:</h5>
-        <table class="table table-bordered buy-table">
-            <thead>
-                <tr>
-                    <th>Description</th><th class="text-center">Yes</th><th class="text-center">No</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr v-for="(choice,i) in props.interpreter_choices" :key="'ic-'+i">
-                    <td>[[ choice ]]</td>
-                    <td class="text-center"><input type="radio" :name="'row_'+i" value="Yes" v-model="interpRows[i]"></td>
-                    <td class="text-center"><input type="radio" :name="'row_'+i" value="No" v-model="interpRows[i]"></td>
-                </tr>
-            </tbody>
-        </table>
-        <input type="hidden" name="interpreter_decision" :value="interpreterPayload">
-        {% if player.inner_role == 'I' %} {{ formfield_errors 'interpreter_decision' }} {% endif %}
-    </div>
+    <h5 class="text-center mb-3">Buy medals:</h5>
+    <table class="table table-bordered buy-table">
+      <thead>
+        <tr>
+          <th>Description</th><th class="text-center">Yes</th><th class="text-center">No</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="(choice,i) in props.interpreter_choices" :key="'ic-'+i">
+          <td>[[ choice ]]</td>
+          <td class="text-center"><input type="radio" :name="'row_'+i" value="Yes" v-model="interpRows[i]"></td>
+          <td class="text-center"><input type="radio" :name="'row_'+i" value="No" v-model="interpRows[i]"></td>
+        </tr>
+      </tbody>
+    </table>
 
-    <p v-if="errorMsg" class="alert alert-danger text-center mt-3">[[ errorMsg ]]</p>
+    <input type="hidden" name="interpreter_decision" :value="interpreterPayload">
+    {% if player.inner_role == 'I' %} {{ formfield_errors 'interpreter_decision' }} {% endif %}
+  </div>
 
-    <div class="text-center mt-4">
-        <button type="button" class="btn btn-primary btn-lg" @click="handleNext">Next</button>
-    </div>
+  <p v-if="errorMsg" class="alert alert-danger text-center mt-3">[[ errorMsg ]]</p>
+
+  <div class="text-center mt-4">
+    <button type="button" class="btn btn-primary btn-lg" @click="handleNext">Next</button>
+  </div>
 
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
 const app = Vue.createApp({
-    data() {
-        const p = window.props || {};
-        const suffixes = Array.isArray(p.suffixes) && p.suffixes.length ? p.suffixes : ["", ""];
-        const ic = Array.isArray(p.interpreter_choices) ? p.interpreter_choices : [];
+  data() {
+    const p = window.props || {};
+    const suffixes = Array.isArray(p.suffixes) && p.suffixes.length ? p.suffixes : ["", ""];
+    const ic = Array.isArray(p.interpreter_choices) ? p.interpreter_choices : [];
 
-        return {
-            props: p,
-            items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
-            maxItems: 5,
-            interpRows: Array(ic.length).fill(null),
-            errorMsg: "",
-            showInstructions: false,
-            instructionsNonce: 0,
-            showOptions: false,
-            optionsFieldIndex: 0,
-            imageBroken: false,
-            showConfirmModal: false
-        };
+    return {
+      props: p,
+      items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
+      maxItems: 5,
+      interpRows: Array(ic.length).fill(null),
+      errorMsg: "",
+      showInstructions: false,
+      instructionsNonce: 0,
+      showOptions: false,
+      optionsFieldIndex: 0,
+      imageBroken: false,
+      showConfirmModal: false
+    };
+  },
+  computed: {
+    producerPayload() {
+      return JSON.stringify(this.items.map(i => i.fields.map(f => f.value)));
     },
-    computed: {
-        producerPayload() { return JSON.stringify(this.items.map(i => i.fields.map(f => f.value))); },
-        interpreterPayload() {
-            return JSON.stringify((this.props.interpreter_choices || []).map((choice, i) => ({ choice, answer: this.interpRows[i] })));
-        },
-        instructionsSrc() {
-            const base = String(this.props.instructions_url || "");
-            if (!base) return "";
-            const joiner = base.includes("?") ? "&" : "?";
-            return base + joiner + "v=" + this.instructionsNonce;
-        },
-        imageUrl() {
-            const el = document.querySelector("img[data-server-image-url]");
-            return el ? el.getAttribute("data-server-image-url") : "{{ player.get_image_url }}";
-        },
-        optionsFieldNumber() { return this.optionsFieldIndex + 1; },
-        optionsList() {
-            const av = Array.isArray(this.props.allowedValues) ? this.props.allowedValues : [];
-            return av[this.optionsFieldIndex] || [];
-        },
-        optionsRegex() {
-            const ar = Array.isArray(this.props.allowedRegexes) ? this.props.allowedRegexes : [];
-            return ar[this.optionsFieldIndex] || "";
-        }
+    interpreterPayload() {
+      return JSON.stringify((this.props.interpreter_choices || []).map((choice, i) => ({ choice, answer: this.interpRows[i] })));
     },
-    methods: {
-        openInstructions() { this.instructionsNonce += 1; this.showInstructions = true; },
-        closeInstructions() { this.showInstructions = false; },
-        reloadInstructions() { this.instructionsNonce += 1; },
-        openOptions(fieldIndex) { this.optionsFieldIndex = fieldIndex; this.showOptions = true; },
-        closeOptions() { this.showOptions = false; },
-        addItem() {
-            if (this.items.length >= this.maxItems) return;
-            const suffixes = this.items[0].fields.map(f => f.suffix);
-            this.items.push({ fields: suffixes.map(s => ({ value: "", suffix: s })) });
-        },
-        removeItem(i) {
-            if (this.items.length <= 1) return;
-            this.items.splice(i, 1);
-        },
-        onImageError() { this.imageBroken = true; },
-        fieldInvalid(rowIdx, fieldIdx) {
-            if (this.props.role !== "P") return false;
-            const val = String(this.items[rowIdx].fields[fieldIdx].value || "").trim();
-            if (!val) return false;
-            const regexStr = (this.props.allowedRegexes || [])[fieldIdx];
-            if (!regexStr) return false;
-            try {
-                const re = new RegExp("^" + regexStr + "$", "i");
-                return !re.test(val);
-            } catch (e) { return false; }
-        },
-        handleNext() {
-            this.errorMsg = "";
-
-            if (this.props.role === "I") {
-                if (this.interpRows.some(v => !v)) {
-                    this.errorMsg = "Please answer Yes/No for every row.";
-                    return;
-                }
-                this.submitForm();
-            }
-
-            if (this.props.role === "P") {
-                for (let r = 0; r < this.items.length; r++) {
-                    for (let c = 0; c < this.items[r].fields.length; c++) {
-                        const val = String(this.items[r].fields[c].value || "").trim();
-                        if (!val) {
-                            this.errorMsg = "Please fill in all fields.";
-                            return;
-                        }
-                        const regexStr = (this.props.allowedRegexes || [])[c];
-                        if (regexStr) {
-                            try {
-                                const re = new RegExp("^" + regexStr + "$", "i");
-                                if (!re.test(val)) {
-                                    this.errorMsg = `Field ${c+1} does not match the allowed format.`;
-                                    return;
-                                }
-                            } catch (e) {}
-                        }
-                    }
-                }
-                this.showConfirmModal = true;
-            }
-        },
-        confirmSubmit() {
-            this.submitForm();
-        },
-        submitForm() {
-            const outerForm = document.querySelector("form");
-            if (outerForm) outerForm.submit();
-        }
+    instructionsSrc() {
+      const base = String(this.props.instructions_url || "");
+      if (!base) return "";
+      const joiner = base.includes("?") ? "&" : "?";
+      return base + joiner + "v=" + this.instructionsNonce;
+    },
+    imageUrl() {
+      return String(this.props.server_image_url || "");
+    },
+    optionsFieldNumber() { return this.optionsFieldIndex + 1; },
+    optionsList() {
+      const av = Array.isArray(this.props.allowedValues) ? this.props.allowedValues : [];
+      return av[this.optionsFieldIndex] || [];
+    },
+    optionsRegex() {
+      const ar = Array.isArray(this.props.allowedRegexes) ? this.props.allowedRegexes : [];
+      return ar[this.optionsFieldIndex] || "";
     }
+  },
+  methods: {
+    openInstructions() { this.instructionsNonce += 1; this.showInstructions = true; },
+    closeInstructions() { this.showInstructions = false; },
+    reloadInstructions() { this.instructionsNonce += 1; },
+
+    openOptions(fieldIndex) { this.optionsFieldIndex = fieldIndex; this.showOptions = true; },
+    closeOptions() { this.showOptions = false; },
+
+    addItem() {
+      if (this.items.length >= this.maxItems) return;
+      const suffixes = this.items[0].fields.map(f => f.suffix);
+      this.items.push({ fields: suffixes.map(s => ({ value: "", suffix: s })) });
+    },
+    removeItem(i) {
+      if (this.items.length <= 1) return;
+      this.items.splice(i, 1);
+    },
+
+    onImageError() { this.imageBroken = true; },
+
+    _makeRegex(regexStr) {
+      // caseflag=True => case-sensitive, else case-insensitive
+      const flags = this.props.caseflag ? "" : "i";
+      return new RegExp("^" + regexStr + "$", flags);
+    },
+
+    fieldInvalid(rowIdx, fieldIdx) {
+      if (this.props.role !== "P") return false;
+
+      const val = String(this.items[rowIdx].fields[fieldIdx].value || "").trim();
+      if (!val) return false;
+
+      const regexStr = (this.props.allowedRegexes || [])[fieldIdx];
+      if (!regexStr) return false;
+
+      try {
+        const re = this._makeRegex(regexStr);
+        return !re.test(val);
+      } catch (e) {
+        return false;
+      }
+    },
+
+    handleNext() {
+      this.errorMsg = "";
+
+      // Interpreter: must answer all rows
+      if (this.props.role === "I") {
+        if (this.interpRows.some(v => !v)) {
+          this.errorMsg = "Please answer Yes/No for every row.";
+          return;
+        }
+        this.submitForm();
+        return;
+      }
+
+      // Producer: validate all filled
+      if (this.props.role === "P") {
+        for (let r = 0; r < this.items.length; r++) {
+          for (let c = 0; c < this.items[r].fields.length; c++) {
+            const val = String(this.items[r].fields[c].value || "").trim();
+            if (!val) {
+              this.errorMsg = "Please fill in all fields.";
+              return;
+            }
+            const regexStr = (this.props.allowedRegexes || [])[c];
+            if (regexStr) {
+              try {
+                const re = this._makeRegex(regexStr);
+                if (!re.test(val)) {
+                  this.errorMsg = `Field ${c + 1} does not match the allowed format.`;
+                  return;
+                }
+              } catch (e) {}
+            }
+          }
+        }
+        this.showConfirmModal = true;
+      }
+    },
+
+    confirmSubmit() { this.submitForm(); },
+
+    submitForm() {
+      const outerForm = document.querySelector("form");
+      if (outerForm) outerForm.submit();
+    }
+  }
 });
+
 app.config.compilerOptions.delimiters = ["[[", "]]"];
 app.mount("#app");
 </script>
