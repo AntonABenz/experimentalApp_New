@@ -417,25 +417,40 @@ def creating_session(subsession: Subsession):
             i_idx = 0
 
             while round_counter <= Constants.num_rounds:
-                # Add 3 producer rounds
+                # Add up to 3 producer rounds
                 for _ in range(3):
-                    if p_idx < len(producer_items) and round_counter <= Constants.num_rounds:
+                    if round_counter > Constants.num_rounds:
+                        break
+                    if p_idx < len(producer_items):
                         item = producer_items[p_idx].copy()
                         item.pop("sort_key", None)
                         item["round_number"] = round_counter
                         final_history.append(item)
                         p_idx += 1
                         round_counter += 1
+                    else:
+                        # No more producer items, skip to interpreter
+                        break
 
-                # Add 5 interpreter rounds
+                # Add up to 5 interpreter rounds
                 for _ in range(5):
-                    if i_idx < len(interpreter_items) and round_counter <= Constants.num_rounds:
+                    if round_counter > Constants.num_rounds:
+                        break
+                    if i_idx < len(interpreter_items):
                         item = interpreter_items[i_idx].copy()
                         item.pop("sort_key", None)
                         item["round_number"] = round_counter
                         final_history.append(item)
                         i_idx += 1
                         round_counter += 1
+                    else:
+                        # No more interpreter items, we're done
+                        break
+                
+                # Safety check: if no items were added in this cycle, break to prevent infinite loop
+                if p_idx >= len(producer_items) and i_idx >= len(interpreter_items):
+                    logger.warning(f"Player {p.id_in_subsession}: Ran out of items at round {round_counter}")
+                    break
 
             p.batch_history = json.dumps(final_history)
             p.participant.vars["batch_history"] = p.batch_history
