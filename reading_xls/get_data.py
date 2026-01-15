@@ -17,6 +17,23 @@ DATA_WS = "data"
 PRACTICE_WS_PREFIX = "practice_"
 
 
+import hashlib
+from datetime import datetime
+from pathlib import Path
+
+def _fingerprint_file(p: Path) -> dict:
+    stat = p.stat()
+    sha = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            sha.update(chunk)
+    return {
+        "path": str(p.resolve()),
+        "size_bytes": stat.st_size,
+        "mtime_utc": datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z",
+        "sha256": sha.hexdigest(),
+    }
+
 def _load_excel(filename: str) -> Path:
     root = Path(__file__).resolve().parents[1]
     candidates = [
@@ -25,16 +42,19 @@ def _load_excel(filename: str) -> Path:
         root / "data" / filename,
     ]
 
+    logger.info(f"Excel filename requested: {filename}")
+    logger.info(f"Excel candidates: {[str(p.resolve()) for p in candidates]}")
+
     for p in candidates:
         if p.exists():
-            logger.info(f"Using Excel file: {p}")
+            fp = _fingerprint_file(p)
+            logger.info(f"Using Excel file fingerprint: {fp}")
             return p
 
     raise FileNotFoundError(
         f"Could not locate Excel file for filename='{filename}'. "
         f"Tried: {', '.join(str(p) for p in candidates)}"
     )
-
 
 def _build_practice_settings(xl: pd.ExcelFile) -> Dict[str, Dict[str, Any]]:
     practice_sheets = [
@@ -216,3 +236,5 @@ def long_data(filename: str):
 
     conv_data = convert(df)
     return conv_data
+
+
