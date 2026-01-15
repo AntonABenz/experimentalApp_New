@@ -80,8 +80,6 @@ class Player(BasePlayer):
             
         base = self.session.vars.get('s3path_base', '').rstrip('/')
         ext = self.session.vars.get('extension', 'png')
-        
-        # Clean up path if needed
         if "amazonaws" in base:
             base = base.replace("/practice", "")
             
@@ -92,29 +90,42 @@ class Player(BasePlayer):
         return f"{base}/{clean_name}"
 
     def get_sentences_data(self):
+        """
+        Smart Sentence Retrieval:
+        1. If I have sentences stored locally (from Bot or my own previous input), use them.
+        2. If not, and I am Interpreter, fetch from Partner.
+        """
         data = self.get_current_batch_data()
-        my_role = data.get('role', '')
         
-        if my_role == PRODUCER:
-            raw = data.get('sentences', '[]')
-            return json.loads(raw) if raw else []
-
-        partner_id_in_group = int(data.get('partner_id', 0))
-        if partner_id_in_group == 0:
-            return []
-
-        partner = None
-        for p in self.subsession.get_players():
-            if p.id_in_subsession == partner_id_in_group:
-                partner = p
-                break
+        # Check local storage first (Handles Producers AND Bot-Paired Interpreters)
+        raw = data.get('sentences', '[]')
+        local_sentences = json.loads(raw) if raw and raw != '[]' else []
         
-        if not partner:
-            return []
+        if local_sentences:
+            return local_sentences
 
-        p_data = partner.get_current_batch_data()
-        raw = p_data.get('sentences', '[]')
-        return json.loads(raw) if raw else []
+        # If empty and I am Interpreter, look for human partner
+        if data.get('role') == INTERPRETER:
+            partner_id_in_group = int(data.get('partner_id', 0))
+            if partner_id_in_group > 0:
+                # Find partner in current session
+                partner = None
+                for p in self.subsession.get_players():
+                    # Note: We need to match the oTree ID, not the Excel ID
+                    # Since we shifted IDs, this requires care.
+                    # Simplified: We look for the player whose id_in_group matches partner_id_in_group
+                    # BUT partner_id_in_group is Excel ID. 
+                    # oTree ID = Excel ID (because we skip 0).
+                    if p.id_in_subsession == partner_id_in_group:
+                        partner = p
+                        break
+                
+                if partner:
+                    p_data = partner.get_current_batch_data()
+                    raw_p = p_data.get('sentences', '[]')
+                    return json.loads(raw_p) if raw_p else []
+
+        return []
 
     def get_full_sentences(self):
         prefix = self.session.vars.get("prefix", "") or ""
@@ -153,20 +164,13 @@ def creating_session(subsession: Subsession):
     raw_records = excel_payload['data']
     settings = excel_payload['settings']
     
-    # --- FIX S3 PATH ---
-    # 1. Try 's3path' (from your excel) OR 's3path_base'
+    # Settings Setup
     raw_s3 = settings.get("s3path") or settings.get("s3path_base") or ""
-    
-    # 2. Fix AWS Console URLs (convert to public link)
     if "console.aws.amazon.com" in raw_s3 and "buckets/" in raw_s3:
         try:
-            # Extract bucket name from console URL
-            # Format: .../buckets/BUCKET_NAME?region=...
             parts = raw_s3.split("buckets/")[1].split("?")[0]
             raw_s3 = f"https://{parts}.s3.eu-central-1.amazonaws.com"
-            logger.info(f"Fixed S3 URL to: {raw_s3}")
-        except:
-            pass # Use as-is if parsing fails
+        except: pass
 
     session.vars["s3path_base"] = raw_s3
     session.vars["extension"] = settings.get("extension", "png")
@@ -181,7 +185,7 @@ def creating_session(subsession: Subsession):
     if session.config.get("completion_code"):
         session.vars["completion_code"] = str(session.config["completion_code"])
 
-    # Build Valid Image Pool
+    # Valid Image Pool
     valid_pool = []
     for r in raw_records:
         img = str(r.get('Item', '')).strip()
@@ -189,7 +193,7 @@ def creating_session(subsession: Subsession):
             valid_pool.append(img)
     if not valid_pool: valid_pool = ["d-A-B-BC-3"]
 
-    # Assign Players
+    # --- ASSIGNMENT LOGIC ---
     players = subsession.get_players()
     from collections import defaultdict
     data_by_id = defaultdict(list)
@@ -204,7 +208,6 @@ def creating_session(subsession: Subsession):
         item_nr = str(r.get('Item.Nr', '')).strip()
         image = str(r.get('Item', '')).strip()
 
-        # REPAIR: If Producer 0 or broken image, swap
         prod_val = str(r.get('Producer', ''))
         is_prod0 = (prod_val == '0' or prod_val == '0.0')
         is_broken = (image == 'NA_x' or image == 'nan' or image == '' or 'D_' in image)
@@ -223,57 +226,55 @@ def creating_session(subsession: Subsession):
 
         if 'Producer' in r and 'Interpreter' in r:
             try:
-                prod_id = int(float(r['Producer'])) + 1
-                interp_id = int(float(r['Interpreter'])) + 1
+                # Use EXACT IDs from Excel (0, 1, 2...)
+                prod_id = int(float(r['Producer']))
+                interp_id = int(float(r['Interpreter']))
                 
-                data_by_id[prod_id].append({
-                    'sort_key': (exp_num, rnd_num),
-                    'batch': exp_num,
-                    'partner_id': interp_id,
-                    'role': PRODUCER,
-                    'condition': condition,
-                    'item_nr': item_nr,
-                    'image': image,
-                    'sentences': sentences_json,
-                    'rewards': ''
-                })
+                # Assign Producer Data
+                # Note: We only care about this if prod_id > 0 (Human)
+                if prod_id > 0:
+                    data_by_id[prod_id].append({
+                        'sort_key': (exp_num, rnd_num),
+                        'batch': exp_num,
+                        'partner_id': interp_id, # Might be 0 (Bot) or >0 (Human)
+                        'role': PRODUCER,
+                        'condition': condition,
+                        'item_nr': item_nr,
+                        'image': image,
+                        'sentences': sentences_json,
+                        'rewards': ''
+                    })
                 
-                data_by_id[interp_id].append({
-                    'sort_key': (exp_num, rnd_num),
-                    'batch': exp_num,
-                    'partner_id': prod_id,
-                    'role': INTERPRETER,
-                    'condition': condition,
-                    'item_nr': item_nr,
-                    'image': image,
-                    'sentences': '[]',
-                    'rewards': ''
-                })
-            except: continue
-        elif 'id' in r or 'ID' in r:
-            try:
-                pid = int(float(r.get('id') or r.get('ID') or 0)) + 1
-                partner_pid = int(float(r.get('partner_id', 0))) + 1
-                data_by_id[pid].append({
-                    'sort_key': (exp_num, rnd_num),
-                    'batch': exp_num,
-                    'partner_id': partner_pid,
-                    'role': str(r.get('role', '')).strip(),
-                    'condition': condition,
-                    'item_nr': item_nr,
-                    'image': image,
-                    'sentences': r.get('sentences', '[]'),
-                    'rewards': ''
-                })
+                # Assign Interpreter Data
+                # If Producer is 0 (Bot), COPY SENTENCES DIRECTLY
+                interp_sentences = sentences_json if prod_id == 0 else '[]'
+                
+                if interp_id > 0:
+                    data_by_id[interp_id].append({
+                        'sort_key': (exp_num, rnd_num),
+                        'batch': exp_num,
+                        'partner_id': prod_id,
+                        'role': INTERPRETER,
+                        'condition': condition,
+                        'item_nr': item_nr,
+                        'image': image,
+                        'sentences': interp_sentences, # Copied if Bot, empty if Human
+                        'rewards': ''
+                    })
             except: continue
 
+    # Assign to oTree Players (P1 gets ID 1, P2 gets ID 2...)
     for p in players:
+        # P1 -> data_by_id[1], P2 -> data_by_id[2]
+        # This effectively skips ID 0 (Bot)
         my_items = data_by_id.get(p.id_in_subsession, [])
         my_items.sort(key=lambda x: x['sort_key'])
+        
         final_history = []
         for i, item in enumerate(my_items):
             item['round_number'] = i + 1 
             final_history.append(item)
+            
         p.participant.vars['batch_history'] = json.dumps(final_history)
 
 # ----------------------------------------------------------------------------
@@ -296,9 +297,12 @@ class Q(Page):
         if player.batch_history == "[]" and 'batch_history' in player.participant.vars:
             player.batch_history = player.participant.vars['batch_history']
         data = player.get_current_batch_data()
+        
+        # If no data (e.g. Bot ID 0 was assigned to human by mistake), mark faulty
         if not data:
             if player.round_number == 1: player.faulty = True
             return False
+
         player.inner_role = data.get('role', '')
         if player.start_decision_time == 0:
             player.start_decision_time = time.time()
