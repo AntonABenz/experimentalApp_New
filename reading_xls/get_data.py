@@ -159,7 +159,19 @@ def get_data(filename: str):
         raise Exception(f"Worksheet '{DATA_WS}' not found")
 
     # 1. Load Data (preserving "None" as text)
-    df = xl.parse(DATA_WS, dtype={"Condition": str}, keep_default_na=False)
+    df = xl.parse(
+    DATA_WS,
+    dtype=str,
+    keep_default_na=False,
+    na_filter=False,
+)
+
+    logger.info(f"Excel columns found: {list(df.columns)}")
+    logger.info(f"First row sample: {df.iloc[0].to_dict() if len(df) else 'EMPTY'}")
+    if "Item" in df.columns:
+        logger.info(f"Unique Item sample(10): {df['Item'].drop_duplicates().head(10).tolist()}")
+        logger.info(f"Total rows={len(df)} unique Item count={df['Item'].nunique()}")
+
 
     # 2. Fix empty strings -> NaN (CRITICAL for sentences to load correctly)
     df.replace("", np.nan, inplace=True)
