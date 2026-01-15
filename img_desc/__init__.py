@@ -165,13 +165,13 @@ def is_valid_real_image(img: str) -> bool:
     low = img.lower()
     if low in {"na_x", "na", "nan", "none", "x"}:
         return False
-    # reject practice placeholders like D_5_...
-    if img.startswith("D_") or img.startswith("d_"):
+    # reject practice placeholders like D_5_... (underscore after d)
+    if img.startswith("D_") or (img.startswith("d_") and not img.startswith("d-")):
         return False
-    # your real images are like d-A-B-...
-    if not img.startswith("d-"):
-        return False
-    return True
+    # accept real images like d-A-B-... (hyphen after d)
+    if img.startswith("d-") or img.startswith("D-"):
+        return True
+    return False
 
 def extract_sentences_from_row(r: dict) -> str:
     """
@@ -206,247 +206,266 @@ def creating_session(subsession: Subsession):
     if subsession.round_number != 1:
         return
 
-    filename = session.config.get("filename")
-    if not filename:
-        raise RuntimeError("No filename in session config")
+    try:
+        filename = session.config.get("filename")
+        if not filename:
+            raise RuntimeError("No filename in session config")
 
-    from reading_xls.get_data import get_data
-    excel_payload = get_data(filename)
-    raw_data = excel_payload.get("data")
-    settings = excel_payload.get("settings") or {}
+        logger.info(f"Starting session creation with filename: {filename}")
 
-    # raw_data might be DF or list-of-dicts
-    if hasattr(raw_data, "to_dict"):
-        rows = raw_data.to_dict(orient="records")
-    else:
-        rows = list(raw_data or [])
+        from reading_xls.get_data import get_data
+        excel_payload = get_data(filename)
+        raw_data = excel_payload.get("data")
+        settings = excel_payload.get("settings") or {}
 
-    # ---------------- settings -> session.vars ----------------
-    clean_settings = {normalize_key(k): clean_str(v) for k, v in settings.items()}
-    s3_raw = clean_settings.get("s3path") or clean_settings.get("s3path_base") or ""
-    session.vars["s3path_base"] = fix_s3_url(s3_raw)
-    session.vars["extension"] = clean_settings.get("extension") or "png"
-    session.vars["prefix"] = clean_settings.get("prefix") or ""
-    session.vars["interpreter_title"] = clean_settings.get("interpreter_title") or "Buy medals:"
-    session.vars["caseflag"] = _truthy(clean_settings.get("caseflag"))
-    session.vars["instructions_url"] = clean_settings.get("instructions_url") or "https://google.com"
+        logger.info(f"Excel data loaded. Settings keys: {list(settings.keys())}")
 
-    suffixes = []
-    for i in range(1, 11):
-        v = clean_settings.get(f"suffix_{i}")
-        if v:
-            suffixes.append(v)
-    session.vars["suffixes"] = suffixes
-
-    ic = settings.get("interpreter_choices")
-    if isinstance(ic, str):
-        session.vars["interpreter_choices"] = [x.strip() for x in ic.split(";") if x.strip()]
-    elif isinstance(ic, list):
-        session.vars["interpreter_choices"] = ic
-    else:
-        session.vars["interpreter_choices"] = []
-
-    session.vars["allowed_values"] = settings.get("allowed_values", []) or []
-    session.vars["allowed_regexes"] = settings.get("allowed_regex", []) or []
-
-    if session.config.get("completion_code"):
-        session.vars["completion_code"] = str(session.config["completion_code"])
-
-    # ---------------- determine Excel slot universe ----------------
-    slot_ids = set()
-    for r in rows:
-        p = safe_int(r.get("Producer"), 0)
-        i = safe_int(r.get("Interpreter"), 0)
-        if p != 0 and p != 9:  # exclude Producer=9
-            slot_ids.add(p)
-        if i != 0:
-            slot_ids.add(i)
-
-    if not slot_ids:
-        raise RuntimeError("No Producer/Interpreter IDs found in Excel rows.")
-
-    K = max(slot_ids)
-    players = subsession.get_players()
-
-    # Map excel slots 1..K to first K participants
-    slot_to_pid = {}
-    pid_to_slot = {}
-    for idx, pl in enumerate(players, start=1):
-        if idx <= K:
-            slot_to_pid[idx] = pl.id_in_subsession
-            pid_to_slot[pl.id_in_subsession] = idx
-
-    logger.info(f"Excel slot universe: 1..{K}. slot_to_pid={slot_to_pid}")
-
-    # ---------------- valid image pool (only from real producer rows, exclude Producer=9) ----------------
-    valid_pool = []
-    for r in rows:
-        producer_slot = safe_int(r.get("Producer"), 0)
-        img = clean_str(r.get("Item"))
-        if producer_slot != 0 and producer_slot != 9 and is_valid_real_image(img):
-            valid_pool.append(img)
-
-    if not valid_pool:
-        valid_pool = ["d-A-B-BC-3"]
-
-    logger.info(f"Valid image pool size: {len(valid_pool)}")
-
-    # ---------------- build schedule for each participant ----------------
-    from collections import defaultdict
-    data_by_pid = defaultdict(list)
-
-    for idx, r in enumerate(rows):
-        exp_num = safe_int(r.get("Exp"), 0)
-        round_in_excel = safe_int(r.get("Round"), 0)
-        trial = safe_int(r.get("Trial"), 0)
-        condition = clean_str(r.get("Condition"))
-        item_nr = clean_str(r.get("Item.Nr"))
-        image_raw = clean_str(r.get("Item"))
-        producer_slot = safe_int(r.get("Producer"), 0)
-        interpreter_slot = safe_int(r.get("Interpreter"), 0)
-
-        if interpreter_slot == 0:
-            continue  # unusable row
-
-        sentences_json = extract_sentences_from_row(r)
-
-        # translate slots -> participant ids
-        interp_pid = slot_to_pid.get(interpreter_slot)
-        prod_pid = slot_to_pid.get(producer_slot) if (producer_slot != 0 and producer_slot != 9) else None
-
-        # If interpreter slot isn't mapped, skip
-        if not interp_pid:
-            continue
-
-        sort_key = (exp_num, round_in_excel, trial, idx)
-
-        # Handle Producer=9 case: skip image from this producer, pick random from pool
-        if producer_slot == 9:
-            picked_image = random.choice(valid_pool)
-            # Only interpreter entry for Producer=9
-            data_by_pid[interp_pid].append({
-                "sort_key": sort_key,
-                "role": INTERPRETER,
-                "partner_id": 0,  # virtual producer
-                "exp": exp_num,
-                "round_in_excel": round_in_excel,
-                "trial": trial,
-                "condition": condition,
-                "item_nr": item_nr,
-                "image": picked_image,
-                "producer_sentences": sentences_json,
-                "interpreter_rewards": "",
-            })
-        elif producer_slot != 0 and prod_pid:
-            # Normal producer case
-            prod_image = image_raw if is_valid_real_image(image_raw) else random.choice(valid_pool)
-            
-            # Producer entry
-            data_by_pid[prod_pid].append({
-                "sort_key": sort_key,
-                "role": PRODUCER,
-                "partner_id": interp_pid,
-                "exp": exp_num,
-                "round_in_excel": round_in_excel,
-                "trial": trial,
-                "condition": condition,
-                "item_nr": item_nr,
-                "image": prod_image,
-                "producer_sentences": "",
-                "interpreter_rewards": "",
-            })
-
-            # Interpreter entry paired with producer
-            data_by_pid[interp_pid].append({
-                "sort_key": sort_key,
-                "role": INTERPRETER,
-                "partner_id": prod_pid,
-                "exp": exp_num,
-                "round_in_excel": round_in_excel,
-                "trial": trial,
-                "condition": condition,
-                "item_nr": item_nr,
-                "image": prod_image,
-                "producer_sentences": sentences_json,
-                "interpreter_rewards": "",
-            })
+        # raw_data might be DF or list-of-dicts
+        if hasattr(raw_data, "to_dict"):
+            rows = raw_data.to_dict(orient="records")
         else:
-            # Producer==0 row
-            picked = random.choice(valid_pool)
-            data_by_pid[interp_pid].append({
-                "sort_key": sort_key,
-                "role": INTERPRETER,
-                "partner_id": 0,
-                "exp": exp_num,
-                "round_in_excel": round_in_excel,
-                "trial": trial,
-                "condition": condition,
-                "item_nr": item_nr,
-                "image": picked,
-                "producer_sentences": sentences_json,
-                "interpreter_rewards": "",
-            })
+            rows = list(raw_data or [])
 
-    # ---------------- finalize with 3P + 5I pattern repeating ----------------
-    empty = []
-    for p in players:
-        my_items = data_by_pid.get(p.id_in_subsession, [])
-        my_items.sort(key=lambda x: x["sort_key"])
+        logger.info(f"Total rows in Excel: {len(rows)}")
 
-        # Separate by role
-        producer_items = [it for it in my_items if it.get("role") == PRODUCER]
-        interpreter_items = [it for it in my_items if it.get("role") == INTERPRETER]
+        # ---------------- settings -> session.vars ----------------
+        clean_settings = {normalize_key(k): clean_str(v) for k, v in settings.items()}
+        s3_raw = clean_settings.get("s3path") or clean_settings.get("s3path_base") or ""
+        session.vars["s3path_base"] = fix_s3_url(s3_raw)
+        session.vars["extension"] = clean_settings.get("extension") or "png"
+        session.vars["prefix"] = clean_settings.get("prefix") or ""
+        session.vars["interpreter_title"] = clean_settings.get("interpreter_title") or "Buy medals:"
+        session.vars["caseflag"] = _truthy(clean_settings.get("caseflag"))
+        session.vars["instructions_url"] = clean_settings.get("instructions_url") or "https://google.com"
 
-        # Build pattern: 3P + 5I repeating
-        final_history = []
-        round_counter = 1
-        p_idx = 0
-        i_idx = 0
+        suffixes = []
+        for i in range(1, 11):
+            v = clean_settings.get(f"suffix_{i}")
+            if v:
+                suffixes.append(v)
+        session.vars["suffixes"] = suffixes
 
-        while round_counter <= Constants.num_rounds:
-            # Add 3 producer rounds
-            for _ in range(3):
-                if p_idx < len(producer_items) and round_counter <= Constants.num_rounds:
-                    item = producer_items[p_idx].copy()
-                    item.pop("sort_key", None)
-                    item["round_number"] = round_counter
-                    final_history.append(item)
-                    p_idx += 1
-                    round_counter += 1
+        ic = settings.get("interpreter_choices")
+        if isinstance(ic, str):
+            session.vars["interpreter_choices"] = [x.strip() for x in ic.split(";") if x.strip()]
+        elif isinstance(ic, list):
+            session.vars["interpreter_choices"] = ic
+        else:
+            session.vars["interpreter_choices"] = []
 
-            # Add 5 interpreter rounds
-            for _ in range(5):
-                if i_idx < len(interpreter_items) and round_counter <= Constants.num_rounds:
-                    item = interpreter_items[i_idx].copy()
-                    item.pop("sort_key", None)
-                    item["round_number"] = round_counter
-                    final_history.append(item)
-                    i_idx += 1
-                    round_counter += 1
+        session.vars["allowed_values"] = settings.get("allowed_values", []) or []
+        session.vars["allowed_regexes"] = settings.get("allowed_regex", []) or []
 
-        p.batch_history = json.dumps(final_history)
-        p.participant.vars["batch_history"] = p.batch_history
-        if not final_history:
-            empty.append(p.id_in_subsession)
+        if session.config.get("completion_code"):
+            session.vars["completion_code"] = str(session.config["completion_code"])
 
-    if empty:
-        logger.warning(f"EMPTY schedules for participants: {empty}")
+        # ---------------- determine Excel slot universe ----------------
+        slot_ids = set()
+        for r in rows:
+            p = safe_int(r.get("Producer"), 0)
+            i = safe_int(r.get("Interpreter"), 0)
+            if p != 0 and p != 9:  # exclude Producer=9
+                slot_ids.add(p)
+            if i != 0:
+                slot_ids.add(i)
 
-    # Debug log
-    if players:
-        try:
-            h = json.loads(players[0].batch_history or "[]")
-            logger.info(f"Sample schedule p1 first 10: {h[:10]}")
-            producer_rounds = sum(1 for x in h if x.get("role") == PRODUCER)
-            interpreter_rounds = sum(1 for x in h if x.get("role") == INTERPRETER)
-            logger.info(f"p1 role distribution: {producer_rounds} producer, {interpreter_rounds} interpreter")
-        except Exception:
-            pass
+        if not slot_ids:
+            logger.error("No Producer/Interpreter IDs found in Excel rows!")
+            raise RuntimeError("No Producer/Interpreter IDs found in Excel rows.")
 
-    logger.info(
-        f"Schedule built. players={len(players)} "
-        f"valid_pool={len(valid_pool)} rows_in_excel={len(rows)}"
-    )
+        K = max(slot_ids)
+        players = subsession.get_players()
+
+        logger.info(f"Number of players: {len(players)}, Max slot ID: {K}")
+
+        # Map excel slots 1..K to first K participants
+        slot_to_pid = {}
+        pid_to_slot = {}
+        for idx, pl in enumerate(players, start=1):
+            if idx <= K:
+                slot_to_pid[idx] = pl.id_in_subsession
+                pid_to_slot[pl.id_in_subsession] = idx
+
+        logger.info(f"Excel slot universe: 1..{K}. slot_to_pid={slot_to_pid}")
+
+        # ---------------- valid image pool (only from real producer rows, exclude Producer=9) ----------------
+        valid_pool = []
+        for r in rows:
+            producer_slot = safe_int(r.get("Producer"), 0)
+            img = clean_str(r.get("Item"))
+            if producer_slot != 0 and producer_slot != 9 and is_valid_real_image(img):
+                valid_pool.append(img)
+
+        if not valid_pool:
+            logger.warning("No valid images found! Using fallback.")
+            valid_pool = ["d-A-B-BC-3"]
+
+        logger.info(f"Valid image pool size: {len(valid_pool)}, sample: {valid_pool[:5]}")
+
+        # ---------------- build schedule for each participant ----------------
+        from collections import defaultdict
+        data_by_pid = defaultdict(list)
+
+        for idx, r in enumerate(rows):
+            exp_num = safe_int(r.get("Exp"), 0)
+            round_in_excel = safe_int(r.get("Round"), 0)
+            trial = safe_int(r.get("Trial"), 0)
+            condition = clean_str(r.get("Condition"))
+            item_nr = clean_str(r.get("Item.Nr"))
+            image_raw = clean_str(r.get("Item"))
+            producer_slot = safe_int(r.get("Producer"), 0)
+            interpreter_slot = safe_int(r.get("Interpreter"), 0)
+
+            if interpreter_slot == 0:
+                continue  # unusable row
+
+            sentences_json = extract_sentences_from_row(r)
+
+            # translate slots -> participant ids
+            interp_pid = slot_to_pid.get(interpreter_slot)
+            prod_pid = slot_to_pid.get(producer_slot) if (producer_slot != 0 and producer_slot != 9) else None
+
+            # If interpreter slot isn't mapped, skip
+            if not interp_pid:
+                continue
+
+            sort_key = (exp_num, round_in_excel, trial, idx)
+
+            # Handle Producer=9 case: skip image from this producer, pick random from pool
+            if producer_slot == 9:
+                picked_image = random.choice(valid_pool)
+                # Only interpreter entry for Producer=9
+                data_by_pid[interp_pid].append({
+                    "sort_key": sort_key,
+                    "role": INTERPRETER,
+                    "partner_id": 0,  # virtual producer
+                    "exp": exp_num,
+                    "round_in_excel": round_in_excel,
+                    "trial": trial,
+                    "condition": condition,
+                    "item_nr": item_nr,
+                    "image": picked_image,
+                    "producer_sentences": sentences_json,
+                    "interpreter_rewards": "",
+                })
+            elif producer_slot != 0 and prod_pid:
+                # Normal producer case
+                prod_image = image_raw if is_valid_real_image(image_raw) else random.choice(valid_pool)
+                
+                # Producer entry
+                data_by_pid[prod_pid].append({
+                    "sort_key": sort_key,
+                    "role": PRODUCER,
+                    "partner_id": interp_pid,
+                    "exp": exp_num,
+                    "round_in_excel": round_in_excel,
+                    "trial": trial,
+                    "condition": condition,
+                    "item_nr": item_nr,
+                    "image": prod_image,
+                    "producer_sentences": "",
+                    "interpreter_rewards": "",
+                })
+
+                # Interpreter entry paired with producer
+                data_by_pid[interp_pid].append({
+                    "sort_key": sort_key,
+                    "role": INTERPRETER,
+                    "partner_id": prod_pid,
+                    "exp": exp_num,
+                    "round_in_excel": round_in_excel,
+                    "trial": trial,
+                    "condition": condition,
+                    "item_nr": item_nr,
+                    "image": prod_image,
+                    "producer_sentences": sentences_json,
+                    "interpreter_rewards": "",
+                })
+            else:
+                # Producer==0 row
+                picked = random.choice(valid_pool)
+                data_by_pid[interp_pid].append({
+                    "sort_key": sort_key,
+                    "role": INTERPRETER,
+                    "partner_id": 0,
+                    "exp": exp_num,
+                    "round_in_excel": round_in_excel,
+                    "trial": trial,
+                    "condition": condition,
+                    "item_nr": item_nr,
+                    "image": picked,
+                    "producer_sentences": sentences_json,
+                    "interpreter_rewards": "",
+                })
+
+        # ---------------- finalize with 3P + 5I pattern repeating ----------------
+        empty = []
+        for p in players:
+            my_items = data_by_pid.get(p.id_in_subsession, [])
+            my_items.sort(key=lambda x: x["sort_key"])
+
+            # Separate by role
+            producer_items = [it for it in my_items if it.get("role") == PRODUCER]
+            interpreter_items = [it for it in my_items if it.get("role") == INTERPRETER]
+
+            logger.info(f"Player {p.id_in_subsession}: {len(producer_items)} producer, {len(interpreter_items)} interpreter items")
+
+            # Build pattern: 3P + 5I repeating
+            final_history = []
+            round_counter = 1
+            p_idx = 0
+            i_idx = 0
+
+            while round_counter <= Constants.num_rounds:
+                # Add 3 producer rounds
+                for _ in range(3):
+                    if p_idx < len(producer_items) and round_counter <= Constants.num_rounds:
+                        item = producer_items[p_idx].copy()
+                        item.pop("sort_key", None)
+                        item["round_number"] = round_counter
+                        final_history.append(item)
+                        p_idx += 1
+                        round_counter += 1
+
+                # Add 5 interpreter rounds
+                for _ in range(5):
+                    if i_idx < len(interpreter_items) and round_counter <= Constants.num_rounds:
+                        item = interpreter_items[i_idx].copy()
+                        item.pop("sort_key", None)
+                        item["round_number"] = round_counter
+                        final_history.append(item)
+                        i_idx += 1
+                        round_counter += 1
+
+            p.batch_history = json.dumps(final_history)
+            p.participant.vars["batch_history"] = p.batch_history
+            if not final_history:
+                empty.append(p.id_in_subsession)
+
+        if empty:
+            logger.warning(f"EMPTY schedules for participants: {empty}")
+
+        # Debug log
+        if players:
+            try:
+                h = json.loads(players[0].batch_history or "[]")
+                logger.info(f"Sample schedule p1 first 10 rounds:")
+                for i, item in enumerate(h[:10]):
+                    logger.info(f"  Round {item.get('round_number')}: {item.get('role')} - {item.get('image')}")
+                producer_rounds = sum(1 for x in h if x.get("role") == PRODUCER)
+                interpreter_rounds = sum(1 for x in h if x.get("role") == INTERPRETER)
+                logger.info(f"p1 total: {producer_rounds} producer, {interpreter_rounds} interpreter")
+            except Exception as e:
+                logger.error(f"Error in debug log: {e}")
+
+        logger.info(
+            f"Schedule built successfully. players={len(players)} "
+            f"valid_pool={len(valid_pool)} rows_in_excel={len(rows)}"
+        )
+
+    except Exception as e:
+        logger.error(f"ERROR in creating_session: {e}", exc_info=True)
+        raise
 
 # ----------------------------------------------------------------------------
 # PAGES
