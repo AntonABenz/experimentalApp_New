@@ -1,5 +1,4 @@
 # img_desc/__init__.py
-
 from otree.api import *
 import json
 import logging
@@ -14,17 +13,14 @@ PRODUCER = "P"
 INTERPRETER = "I"
 STUBURL = "https://app.prolific.co/submissions/complete?cc="
 
-
 class Constants(BaseConstants):
     name_in_url = "img_desc"
     players_per_group = None
     num_rounds = 80
-
     PLACEMENT_ERR = "ERROR_BATCH_PLACEMENT"
     API_ERR = "API_ERROR"
     FALLBACK_URL = STUBURL + PLACEMENT_ERR
     API_ERR_URL = STUBURL + API_ERR
-
 
 # ----------------------------------------------------------------------------
 # MODELS
@@ -32,26 +28,20 @@ class Constants(BaseConstants):
 class Subsession(BaseSubsession):
     pass
 
-
 class Group(BaseGroup):
     pass
-
 
 class Player(BasePlayer):
     # per-participant schedule (list[dict]) stored as JSON
     batch_history = models.LongStringField(initial="[]")
-
     inner_role = models.StringField()
     faulty = models.BooleanField(initial=False)
     feedback = models.LongStringField(label="")
-
     producer_decision = models.LongStringField()
     interpreter_decision = models.LongStringField()
-
     start_decision_time = models.FloatField(initial=0)
     end_decision_time = models.FloatField(initial=0)
     decision_seconds = models.FloatField(initial=0)
-
     full_return_url = models.StringField(blank=True)
 
     # -------------------------
@@ -91,21 +81,16 @@ class Player(BasePlayer):
     def get_image_url(self):
         data = self.get_current_batch_data()
         img = clean_str(data.get("image", ""))
-
         if not img or img.lower() in {"nan", "na", "na_x", "none", "", "x"}:
             return ""
-
         base = (self.session.vars.get("s3path_base") or "").rstrip("/")
         ext = self.session.vars.get("extension") or "png"
-
         # keep your prior behavior: strip "/practice" if present in AWS URLs
         if "amazonaws" in base:
             base = base.replace("/practice", "")
-
         clean_name = img.replace(" ", "_")
         if not clean_name.lower().endswith(f".{ext}"):
             clean_name = f"{clean_name}.{ext}"
-
         return f"{base}/{clean_name}"
 
     def get_sentences_data(self):
@@ -117,11 +102,9 @@ class Player(BasePlayer):
         data = self.get_current_batch_data()
         if not data:
             return []
-
         role = data.get("role", "")
         if role == PRODUCER:
             return []
-
         raw = data.get("producer_sentences") or data.get("sentences") or "[]"
         try:
             return json.loads(raw) if raw else []
@@ -133,7 +116,6 @@ class Player(BasePlayer):
         suffixes = self.session.vars.get("suffixes") or []
         sentences = self.get_sentences_data() or []
         sentences = [s for s in sentences if isinstance(s, list)]
-
         res = []
         for sentence in sentences:
             parts = []
@@ -151,7 +133,6 @@ class Player(BasePlayer):
             res.append(" ".join([p for p in parts if p is not None and str(p).strip() != ""]))
         return res
 
-
 # ----------------------------------------------------------------------------
 # UTIL
 # ----------------------------------------------------------------------------
@@ -161,7 +142,6 @@ def safe_int(x, default=0) -> int:
     except Exception:
         return default
 
-
 def clean_str(x) -> str:
     if x is None:
         return ""
@@ -170,16 +150,13 @@ def clean_str(x) -> str:
         return ""
     return s
 
-
 def normalize_key(key):
     if not key:
         return ""
     return re.sub(r"[\s_]+", "_", str(key).lower().strip())
 
-
 def _truthy(v) -> bool:
     return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
-
 
 def is_valid_real_image(img: str) -> bool:
     img = clean_str(img)
@@ -196,8 +173,7 @@ def is_valid_real_image(img: str) -> bool:
         return False
     return True
 
-
-def extract_sentences_json(r: dict) -> str:
+def extract_sentences_from_row(r: dict) -> str:
     """
     Your new Excel has Sentence_1_1, Sentence_1_2, ..., Sentence_5_2.
     We convert them into JSON list of pairs.
@@ -210,7 +186,6 @@ def extract_sentences_json(r: dict) -> str:
             pairs.append([a, b])
     return json.dumps(pairs)
 
-
 def fix_s3_url(raw_s3: str) -> str:
     raw_s3 = clean_str(raw_s3)
     # convert AWS console bucket URL to public-ish bucket endpoint (best-effort)
@@ -222,7 +197,6 @@ def fix_s3_url(raw_s3: str) -> str:
         except Exception:
             return raw_s3
     return raw_s3
-
 
 # ----------------------------------------------------------------------------
 # SESSION CREATION
@@ -238,7 +212,6 @@ def creating_session(subsession: Subsession):
 
     from reading_xls.get_data import get_data
     excel_payload = get_data(filename)
-
     raw_data = excel_payload.get("data")
     settings = excel_payload.get("settings") or {}
 
@@ -284,7 +257,7 @@ def creating_session(subsession: Subsession):
     for r in rows:
         p = safe_int(r.get("Producer"), 0)
         i = safe_int(r.get("Interpreter"), 0)
-        if p != 0:
+        if p != 0 and p != 9:  # exclude Producer=9
             slot_ids.add(p)
         if i != 0:
             slot_ids.add(i)
@@ -292,11 +265,10 @@ def creating_session(subsession: Subsession):
     if not slot_ids:
         raise RuntimeError("No Producer/Interpreter IDs found in Excel rows.")
 
-    K = max(slot_ids)  # e.g. 4
+    K = max(slot_ids)
     players = subsession.get_players()
 
     # Map excel slots 1..K to first K participants
-    # (extra participants beyond K will have empty schedule -> mark faulty)
     slot_to_pid = {}
     pid_to_slot = {}
     for idx, pl in enumerate(players, start=1):
@@ -306,15 +278,18 @@ def creating_session(subsession: Subsession):
 
     logger.info(f"Excel slot universe: 1..{K}. slot_to_pid={slot_to_pid}")
 
-    # ---------------- valid image pool ----------------
+    # ---------------- valid image pool (only from real producer rows, exclude Producer=9) ----------------
     valid_pool = []
     for r in rows:
         producer_slot = safe_int(r.get("Producer"), 0)
         img = clean_str(r.get("Item"))
-        if producer_slot != 0 and is_valid_real_image(img):
+        if producer_slot != 0 and producer_slot != 9 and is_valid_real_image(img):
             valid_pool.append(img)
+
     if not valid_pool:
         valid_pool = ["d-A-B-BC-3"]
+
+    logger.info(f"Valid image pool size: {len(valid_pool)}")
 
     # ---------------- build schedule for each participant ----------------
     from collections import defaultdict
@@ -324,31 +299,49 @@ def creating_session(subsession: Subsession):
         exp_num = safe_int(r.get("Exp"), 0)
         round_in_excel = safe_int(r.get("Round"), 0)
         trial = safe_int(r.get("Trial"), 0)
-
         condition = clean_str(r.get("Condition"))
         item_nr = clean_str(r.get("Item.Nr"))
         image_raw = clean_str(r.get("Item"))
-
         producer_slot = safe_int(r.get("Producer"), 0)
         interpreter_slot = safe_int(r.get("Interpreter"), 0)
 
         if interpreter_slot == 0:
             continue  # unusable row
 
-        sentences_json = extract_sentences_json(r)
+        sentences_json = extract_sentences_from_row(r)
 
         # translate slots -> participant ids
         interp_pid = slot_to_pid.get(interpreter_slot)
-        prod_pid = slot_to_pid.get(producer_slot) if producer_slot != 0 else None
+        prod_pid = slot_to_pid.get(producer_slot) if (producer_slot != 0 and producer_slot != 9) else None
 
+        # If interpreter slot isn't mapped, skip
         if not interp_pid:
             continue
 
         sort_key = (exp_num, round_in_excel, trial, idx)
 
-        if producer_slot != 0 and prod_pid:
-            # Producer entry
+        # Handle Producer=9 case: skip image from this producer, pick random from pool
+        if producer_slot == 9:
+            picked_image = random.choice(valid_pool)
+            # Only interpreter entry for Producer=9
+            data_by_pid[interp_pid].append({
+                "sort_key": sort_key,
+                "role": INTERPRETER,
+                "partner_id": 0,  # virtual producer
+                "exp": exp_num,
+                "round_in_excel": round_in_excel,
+                "trial": trial,
+                "condition": condition,
+                "item_nr": item_nr,
+                "image": picked_image,
+                "producer_sentences": sentences_json,
+                "interpreter_rewards": "",
+            })
+        elif producer_slot != 0 and prod_pid:
+            # Normal producer case
             prod_image = image_raw if is_valid_real_image(image_raw) else random.choice(valid_pool)
+            
+            # Producer entry
             data_by_pid[prod_pid].append({
                 "sort_key": sort_key,
                 "role": PRODUCER,
@@ -378,7 +371,7 @@ def creating_session(subsession: Subsession):
                 "interpreter_rewards": "",
             })
         else:
-            # Producer==0 row (Bot)
+            # Producer==0 row
             picked = random.choice(valid_pool)
             data_by_pid[interp_pid].append({
                 "sort_key": sort_key,
@@ -394,37 +387,66 @@ def creating_session(subsession: Subsession):
                 "interpreter_rewards": "",
             })
 
-    # ---------------- FINALIZE AND SORT BY ROLE ----------------
+    # ---------------- finalize with 3P + 5I pattern repeating ----------------
     empty = []
     for p in players:
         my_items = data_by_pid.get(p.id_in_subsession, [])
-        
-        # --- NEW SORT LOGIC ---
-        # 1. Producers First (role == 'P')
-        # 2. Then Interpreters (role == 'I')
-        # 3. Within role, sort by original Excel order (sort_key)
-        my_items.sort(key=lambda x: (
-            0 if x['role'] == PRODUCER else 1, # P=0, I=1 -> P comes first
-            x['sort_key']
-        ))
+        my_items.sort(key=lambda x: x["sort_key"])
 
+        # Separate by role
+        producer_items = [it for it in my_items if it.get("role") == PRODUCER]
+        interpreter_items = [it for it in my_items if it.get("role") == INTERPRETER]
+
+        # Build pattern: 3P + 5I repeating
         final_history = []
-        for i, it in enumerate(my_items[:Constants.num_rounds]):
-            it.pop("sort_key", None)
-            it["round_number"] = i + 1
-            final_history.append(it)
+        round_counter = 1
+        p_idx = 0
+        i_idx = 0
+
+        while round_counter <= Constants.num_rounds:
+            # Add 3 producer rounds
+            for _ in range(3):
+                if p_idx < len(producer_items) and round_counter <= Constants.num_rounds:
+                    item = producer_items[p_idx].copy()
+                    item.pop("sort_key", None)
+                    item["round_number"] = round_counter
+                    final_history.append(item)
+                    p_idx += 1
+                    round_counter += 1
+
+            # Add 5 interpreter rounds
+            for _ in range(5):
+                if i_idx < len(interpreter_items) and round_counter <= Constants.num_rounds:
+                    item = interpreter_items[i_idx].copy()
+                    item.pop("sort_key", None)
+                    item["round_number"] = round_counter
+                    final_history.append(item)
+                    i_idx += 1
+                    round_counter += 1
 
         p.batch_history = json.dumps(final_history)
         p.participant.vars["batch_history"] = p.batch_history
-
         if not final_history:
             empty.append(p.id_in_subsession)
 
     if empty:
         logger.warning(f"EMPTY schedules for participants: {empty}")
 
-    logger.info(f"Schedule built. Sorted Producers first, then Interpreters.")
+    # Debug log
+    if players:
+        try:
+            h = json.loads(players[0].batch_history or "[]")
+            logger.info(f"Sample schedule p1 first 10: {h[:10]}")
+            producer_rounds = sum(1 for x in h if x.get("role") == PRODUCER)
+            interpreter_rounds = sum(1 for x in h if x.get("role") == INTERPRETER)
+            logger.info(f"p1 role distribution: {producer_rounds} producer, {interpreter_rounds} interpreter")
+        except Exception:
+            pass
 
+    logger.info(
+        f"Schedule built. players={len(players)} "
+        f"valid_pool={len(valid_pool)} rows_in_excel={len(rows)}"
+    )
 
 # ----------------------------------------------------------------------------
 # PAGES
@@ -437,7 +459,6 @@ class FaultyCatcher(Page):
     def get(self):
         return redirect(Constants.FALLBACK_URL)
 
-
 class Q(Page):
     form_model = "player"
 
@@ -446,6 +467,7 @@ class Q(Page):
         if player.round_number > Constants.num_rounds:
             return False
 
+        # hydrate from participant vars (first time)
         if (player.batch_history == "[]" or not player.batch_history) and "batch_history" in player.participant.vars:
             player.batch_history = player.participant.vars["batch_history"]
 
@@ -456,7 +478,6 @@ class Q(Page):
             return False
 
         player.inner_role = data.get("role", "")
-
         if player.start_decision_time == 0:
             player.start_decision_time = time.time()
 
@@ -511,7 +532,6 @@ class Q(Page):
             player.update_current_batch_data(updates)
             player.participant.vars["batch_history"] = player.batch_history
 
-
 class Feedback(Page):
     form_model = "player"
     form_fields = ["feedback"]
@@ -519,7 +539,6 @@ class Feedback(Page):
     @staticmethod
     def is_displayed(player):
         return player.round_number == Constants.num_rounds
-
 
 class FinalForProlific(Page):
     @staticmethod
@@ -531,7 +550,6 @@ class FinalForProlific(Page):
         if not cc:
             return redirect(Constants.API_ERR_URL)
         return redirect(STUBURL + str(cc))
-
 
 # ----------------------------------------------------------------------------
 # EXPORT
@@ -563,6 +581,7 @@ def custom_export(players):
         except Exception:
             history = []
 
+        # timing + feedback from Player rows
         timing_map = {}
         feedback_str = ""
         for sub_p in p.participant.get_players():
