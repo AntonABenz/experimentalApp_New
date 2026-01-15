@@ -1,19 +1,17 @@
+# img_desc/__init__.py
+
 from otree.api import *
 import json
 import logging
-import re
 import time
-import os
-import hashlib
-from pathlib import Path
-import pandas as pd
+import random
+import re
 from django.shortcuts import redirect
 
 logger = logging.getLogger("benzapp.img_desc")
 
 PRODUCER = "P"
 INTERPRETER = "I"
-
 STUBURL = "https://app.prolific.co/submissions/complete?cc="
 
 
@@ -28,99 +26,9 @@ class Constants(BaseConstants):
     API_ERR_URL = STUBURL + API_ERR
 
 
-# =============================================================================
-# Helpers
-# =============================================================================
-
-def normalize_key(k: str) -> str:
-    return re.sub(r"[\s_]+", "_", str(k or "").strip().lower())
-
-
-def _truthy(v) -> bool:
-    return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
-
-
-def _sha256_file(path: Path, max_bytes: int = 50_000_000) -> str:
-    # fast enough for your file sizes; capped for safety
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        remaining = max_bytes
-        while remaining > 0:
-            chunk = f.read(min(1024 * 1024, remaining))
-            if not chunk:
-                break
-            h.update(chunk)
-            remaining -= len(chunk)
-    return h.hexdigest()
-
-
-def _resolve_excel_path(filename: str) -> Path:
-    # Match what you logged on Heroku
-    candidates = [
-        Path("/app") / filename,
-        Path("/app/start/data") / filename,
-        Path("/app/data") / filename,
-        Path(filename),
-        Path("start/data") / filename,
-        Path("data") / filename,
-    ]
-
-    logger.info(f"Excel filename requested: {filename}")
-    logger.info(f"Excel candidates: {[str(p) for p in candidates]}")
-
-    for p in candidates:
-        if p.exists():
-            stat = p.stat()
-            fp = {
-                "path": str(p),
-                "size_bytes": stat.st_size,
-                "mtime_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
-                "sha256": _sha256_file(p),
-            }
-            logger.info(f"Using Excel file fingerprint: {fp}")
-            return p
-
-    raise FileNotFoundError(f"Excel file not found: {filename}")
-
-
-def _clean_cell(x) -> str:
-    if x is None:
-        return ""
-    s = str(x).strip()
-    # keep "None" as literal string if it is literally "None" in Excel
-    # but remove pandas nan-like
-    if s.lower() == "nan":
-        return ""
-    return s
-
-
-def _parse_sentences_from_row(row: dict) -> str:
-    """
-    Your new file has Sentence_1_1, Sentence_1_2 ... Sentence_5_2
-    We store them as JSON list-of-lists:
-      [["Some","the A"], ["None","the C"], ...]
-    """
-    out = []
-    for i in range(1, 6):
-        a = _clean_cell(row.get(f"Sentence_{i}_1"))
-        b = _clean_cell(row.get(f"Sentence_{i}_2"))
-        if a or b:
-            out.append([a, b])
-    return json.dumps(out)
-
-
-def _safe_int(x, default=0) -> int:
-    try:
-        # handles "2", "2.0"
-        return int(float(str(x).strip()))
-    except Exception:
-        return default
-
-
-# =============================================================================
-# Models
-# =============================================================================
-
+# ----------------------------------------------------------------------------
+# MODELS
+# ----------------------------------------------------------------------------
 class Subsession(BaseSubsession):
     pass
 
@@ -130,145 +38,195 @@ class Group(BaseGroup):
 
 
 class Player(BasePlayer):
-    # who am I in the Excel file? (0-based integer)
-    excel_id = models.IntegerField(initial=-1)
-
-    # schedule + state per round for this participant (JSON list)
+    # per-participant schedule (list[dict]) stored as JSON
     batch_history = models.LongStringField(initial="[]")
 
     inner_role = models.StringField()
-    feedback = models.LongStringField(blank=True)
+    faulty = models.BooleanField(initial=False)
+    feedback = models.LongStringField(label="")
 
-    producer_decision = models.LongStringField(blank=True)
-    interpreter_decision = models.LongStringField(blank=True)
+    producer_decision = models.LongStringField()
+    interpreter_decision = models.LongStringField()
 
     start_decision_time = models.FloatField(initial=0)
     end_decision_time = models.FloatField(initial=0)
     decision_seconds = models.FloatField(initial=0)
 
-    faulty = models.BooleanField(initial=False)
     full_return_url = models.StringField(blank=True)
 
-    # -----------------------------
-    # Core schedule access
-    # -----------------------------
+    # -------------------------
+    # schedule helpers
+    # -------------------------
     def _history(self):
         try:
             return json.loads(self.batch_history or "[]")
         except Exception:
             return []
 
-    def current_item(self) -> dict:
-        hist = self._history()
-        idx = self.round_number - 1
-        if idx < 0 or idx >= len(hist):
-            return {}
-        return hist[idx]
+    def get_current_batch_data(self):
+        rnd = int(self.round_number or 0)
+        for item in self._history():
+            if int(item.get("round_number", 0)) == rnd:
+                return item
+        return {}
 
-    def update_current_item(self, updates: dict):
-        hist = self._history()
-        idx = self.round_number - 1
-        if 0 <= idx < len(hist):
-            hist[idx].update(updates)
-            self.batch_history = json.dumps(hist)
-
-    # -----------------------------
-    # Sentences / image URL
-    # -----------------------------
-    def get_sentences_data(self):
-        item = self.current_item()
-        # Interpreters see sentences from the row (preloaded).
-        # Producers do not need sentences.
+    def update_current_batch_data(self, updates: dict):
         try:
-            raw = item.get("sentences", "[]") if self.inner_role == INTERPRETER else "[]"
-            return json.loads(raw or "[]")
+            hist = self._history()
+            rnd = int(self.round_number or 0)
+            changed = False
+            for item in hist:
+                if int(item.get("round_number", 0)) == rnd:
+                    item.update(updates)
+                    changed = True
+                    break
+            if changed:
+                self.batch_history = json.dumps(hist)
         except Exception:
-            return []
+            pass
 
-    def get_full_sentences(self):
-        prefix = self.session.vars.get("prefix", "") or ""
-        suffixes = self.session.vars.get("suffixes") or []
-
-        sentences = self.get_sentences_data() or []
-        sentences = [s for s in sentences if isinstance(s, list)]
-
-        res = []
-        for sentence in sentences:
-            expansion = []
-            if prefix:
-                expansion.append(prefix)
-            for val, suf in zip(sentence, suffixes):
-                expansion.append(str(val))
-                expansion.append(str(suf))
-            res.append(" ".join([x for x in expansion if x != ""]))
-        return res
-
+    # -------------------------
+    # content helpers used by template
+    # -------------------------
     def get_image_url(self):
-        item = self.current_item()
-        img = _clean_cell(item.get("image"))
+        data = self.get_current_batch_data()
+        img = clean_str(data.get("image", ""))
 
-        # Excel uses NA_x sometimes
-        if img == "NA_x":
-            img = self.session.vars.get("fallback_image", "") or ""
-
-        # if still empty or NA-like, show nothing
-        if not img or img.lower() in {"none", "nan", "na", "x"}:
+        if not img or img.lower() in {"nan", "na", "na_x", "none", "", "x"}:
             return ""
 
         base = (self.session.vars.get("s3path_base") or "").rstrip("/")
-        ext = self.session.vars.get("extension", "png") or "png"
+        ext = self.session.vars.get("extension") or "png"
 
-        # if someone pasted console URL in settings, you should *not* use it as base
-        # (we just use what's in settings; you can keep your console->public fix in reading_xls if needed)
+        # keep your prior behavior: strip "/practice" if present in AWS URLs
+        if "amazonaws" in base:
+            base = base.replace("/practice", "")
 
         clean_name = img.replace(" ", "_")
         if not clean_name.lower().endswith(f".{ext}"):
             clean_name = f"{clean_name}.{ext}"
 
-        # your old adjustment
-        if "amazonaws.com" in base:
-            base = base.replace("/practice", "")
-
         return f"{base}/{clean_name}"
 
-    # -----------------------------
-    # Excel ID assignment
-    # -----------------------------
-    def assign_excel_id_if_needed(self):
-        if self.excel_id >= 0:
-            return
+    def get_sentences_data(self):
+        """
+        For PRODUCER: show nothing (they produce).
+        For INTERPRETER: use producer_sentences from schedule (already resolved),
+        including for Producer=0 rows (virtual producer).
+        """
+        data = self.get_current_batch_data()
+        if not data:
+            return []
 
-        session = self.session
-        pool = session.vars.get("excel_id_pool") or []
-        assigned = session.vars.get("assigned_excel_ids") or []
+        role = data.get("role", "")
+        if role == PRODUCER:
+            return []
 
-        # pick smallest free id deterministically
-        free = [x for x in pool if x not in assigned]
-        if not free:
-            self.faulty = True
-            return
+        raw = data.get("producer_sentences") or data.get("sentences") or "[]"
+        try:
+            return json.loads(raw) if raw else []
+        except Exception:
+            return []
 
-        chosen = sorted(free)[0]
-        assigned.append(chosen)
-        session.vars["assigned_excel_ids"] = assigned
+    def get_full_sentences(self):
+        prefix = self.session.vars.get("prefix") or ""
+        suffixes = self.session.vars.get("suffixes") or []
+        sentences = self.get_sentences_data() or []
+        sentences = [s for s in sentences if isinstance(s, list)]
 
-        self.excel_id = chosen
+        res = []
+        for sentence in sentences:
+            parts = []
+            if prefix:
+                parts.append(str(prefix))
+            # pair each value with suffix_1, suffix_2, ...
+            for val, suf in zip(sentence, suffixes):
+                parts.append(str(val))
+                if suf:
+                    parts.append(str(suf))
+            # if sentence longer than suffixes, append remaining values
+            if len(sentence) > len(suffixes):
+                for extra in sentence[len(suffixes):]:
+                    parts.append(str(extra))
+            res.append(" ".join([p for p in parts if p is not None and str(p).strip() != ""]))
+        return res
 
-        histories = session.vars.get("histories_by_excel_id") or {}
-        my_hist = histories.get(str(chosen)) or []
-        self.batch_history = json.dumps(my_hist)
 
-        # sanity check
-        if len(my_hist) != Constants.num_rounds:
-            logger.warning(f"Excel ID {chosen} has {len(my_hist)} rounds (expected {Constants.num_rounds})")
-            # you can mark faulty if you want strictness:
-            # self.faulty = True
+# ----------------------------------------------------------------------------
+# UTIL
+# ----------------------------------------------------------------------------
+def safe_int(x, default=0) -> int:
+    try:
+        return int(float(x))
+    except Exception:
+        return default
 
 
-# =============================================================================
-# Session creation
-# =============================================================================
+def clean_str(x) -> str:
+    if x is None:
+        return ""
+    s = str(x).strip()
+    if s.lower() in {"nan", "none"}:
+        return ""
+    return s
 
+
+def normalize_key(key):
+    if not key:
+        return ""
+    return re.sub(r"[\s_]+", "_", str(key).lower().strip())
+
+
+def _truthy(v) -> bool:
+    return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
+def is_valid_real_image(img: str) -> bool:
+    img = clean_str(img)
+    if not img:
+        return False
+    low = img.lower()
+    if low in {"na_x", "na", "nan", "none", "x"}:
+        return False
+    # reject practice placeholders like D_5_...
+    if img.startswith("D_") or img.startswith("d_"):
+        return False
+    # your real images are like d-A-B-...
+    if not img.startswith("d-"):
+        return False
+    return True
+
+
+def extract_sentences_from_row(r: dict) -> str:
+    """
+    Your new Excel has Sentence_1_1, Sentence_1_2, ..., Sentence_5_2.
+    We convert them into JSON list of pairs.
+    """
+    pairs = []
+    for i in range(1, 6):
+        a = clean_str(r.get(f"Sentence_{i}_1"))
+        b = clean_str(r.get(f"Sentence_{i}_2"))
+        if a or b:
+            pairs.append([a, b])
+    return json.dumps(pairs)
+
+
+def fix_s3_url(raw_s3: str) -> str:
+    raw_s3 = clean_str(raw_s3)
+    # convert AWS console bucket URL to public-ish bucket endpoint (best-effort)
+    if "console.aws.amazon.com" in raw_s3 and "buckets/" in raw_s3:
+        try:
+            bucket = raw_s3.split("buckets/")[1].split("?")[0].strip("/")
+            # keep your eu-central-1 assumption (change if needed)
+            return f"https://{bucket}.s3.eu-central-1.amazonaws.com"
+        except Exception:
+            return raw_s3
+    return raw_s3
+
+
+# ----------------------------------------------------------------------------
+# SESSION CREATION
+# ----------------------------------------------------------------------------
 def creating_session(subsession: Subsession):
     session = subsession.session
     if subsession.round_number != 1:
@@ -276,201 +234,200 @@ def creating_session(subsession: Subsession):
 
     filename = session.config.get("filename")
     if not filename:
-        raise RuntimeError("Missing filename in session config")
+        raise RuntimeError("No filename in session config")
 
-    # --- Load Excel (and log fingerprint) ---
-    xlsx_path = _resolve_excel_path(filename)
-    xl = pd.ExcelFile(xlsx_path, engine="openpyxl")
+    # reading_xls/get_data.py should return dict(data=..., settings=..., ...)
+    from reading_xls.get_data import get_data
+    excel_payload = get_data(filename)
 
-    # Pick sheet: if "data" exists use it, else first sheet
-    sheet_names_lower = [s.lower().strip() for s in xl.sheet_names]
-    if "data" in sheet_names_lower:
-        data_sheet = xl.sheet_names[sheet_names_lower.index("data")]
+    raw_data = excel_payload.get("data")
+    settings = excel_payload.get("settings") or {}
+
+    # raw_data might be a DataFrame (old path) or a list-of-dicts (new path)
+    if hasattr(raw_data, "to_dict"):
+        raw_records = raw_data.to_dict(orient="records")
+    elif isinstance(raw_data, list):
+        raw_records = raw_data
     else:
-        data_sheet = xl.sheet_names[0]
+        # last resort
+        raw_records = []
 
-    df = xl.parse(
-        data_sheet,
-        dtype=str,
-        keep_default_na=False,
-        na_filter=False,
-    )
-    df.columns = [str(c).strip() for c in df.columns]
-    logger.info(f"Excel columns found: {list(df.columns)}")
-    if len(df) > 0:
-        logger.info(f"First row sample: {df.iloc[0].to_dict()}")
+    # ---- SETTINGS INTO session.vars (normalize keys) ----
+    clean_settings = {normalize_key(k): clean_str(v) for k, v in settings.items()}
 
-    # --- Normalize columns we will use ---
-    # Your sample has: Trial, Round, Producer, Interpreter, Condition, Item.Nr, Item, Sentence_1_1...
-    # Some files might have slightly different names; be defensive:
-    colmap = {normalize_key(c): c for c in df.columns}
+    s3_raw = clean_settings.get("s3path") or clean_settings.get("s3path_base") or ""
+    s3_fixed = fix_s3_url(s3_raw)
 
-    def C(name, fallback=None):
-        return colmap.get(normalize_key(name)) or fallback
-
-    exp_col = C("exp", fallback=df.columns[0])  # first column often is Exp-like
-    trial_col = C("trial", fallback=C("round"))  # if missing, trial isn't used
-    round_col = C("round", fallback=C("group_enumeration"))
-    prod_col = C("producer")
-    interp_col = C("interpreter")
-    cond_col = C("condition")
-    itemnr_col = C("item.nr")
-    item_col = C("item")
-
-    if not prod_col or not interp_col or not round_col or not item_col:
-        raise RuntimeError(
-            f"Missing required columns. Need at least Producer, Interpreter, Round, Item. "
-            f"Found: {list(df.columns)}"
-        )
-
-    # --- Build fallback image from valid items ---
-    valid_images = []
-    for _, r in df.iterrows():
-        img = _clean_cell(r.get(item_col))
-        if img and img not in {"NA_x"} and not img.lower().startswith("na"):
-            valid_images.append(img)
-    fallback_image = valid_images[0] if valid_images else "d-A-B-BC-3"
-    session.vars["fallback_image"] = fallback_image
-
-    # --- Load settings from reading_xls (if you still use it) OR from a "settings" sheet ---
-    # If your pipeline already uses reading_xls/get_data.py for settings, keep using it:
-    try:
-        from reading_xls.get_data import get_data
-        payload = get_data(filename)
-        settings = payload.get("settings") or {}
-    except Exception as e:
-        logger.warning(f"Could not read settings via reading_xls.get_data: {e}")
-        settings = {}
-
-    # Normalize settings keys
-    clean_settings = {normalize_key(k): v for k, v in settings.items()}
-
-    # Core settings used by template + url builder
-    session.vars["s3path_base"] = clean_settings.get("s3path_base") or clean_settings.get("s3path") or ""
+    session.vars["s3path_base"] = s3_fixed
     session.vars["extension"] = clean_settings.get("extension") or "png"
     session.vars["prefix"] = clean_settings.get("prefix") or ""
     session.vars["interpreter_title"] = clean_settings.get("interpreter_title") or "Buy medals:"
     session.vars["caseflag"] = _truthy(clean_settings.get("caseflag"))
-    session.vars["instructions_url"] = clean_settings.get("instructions_url") or ""
 
-    # Suffixes (suffix_1, suffix_2...)
+    # suffix_1..suffix_10 (keep order)
     suffixes = []
-    for i in range(1, 21):
+    for i in range(1, 11):
         v = clean_settings.get(f"suffix_{i}")
-        if v is not None and str(v).strip() != "":
-            suffixes.append(str(v).strip())
+        if v:
+            suffixes.append(v)
     session.vars["suffixes"] = suffixes
 
-    # Allowed values/regex
-    allowed_values = []
-    allowed_regexes = []
-    for i in range(1, 21):
-        v = clean_settings.get(f"allowed_values_{i}")
-        r = clean_settings.get(f"allowed_regex_{i}") or clean_settings.get(f"allowed_regex_{i}".replace("_", ""))
-        if v or r:
-            allowed_values.append([x.strip() for x in str(v).split(";") if x.strip()] if v else [])
-            allowed_regexes.append(str(r).strip() if r else "")
-    session.vars["allowed_values"] = allowed_values
-    session.vars["allowed_regexes"] = allowed_regexes
-
-    # Interpreter choices
-    raw_choices = clean_settings.get("interpreter_choices") or ""
-    if isinstance(raw_choices, list):
-        session.vars["interpreter_choices"] = raw_choices
+    # interpreter_choices can be a semicolon string or list (get_data often converts)
+    ic = settings.get("interpreter_choices")
+    if isinstance(ic, str):
+        interpreter_choices = [x.strip() for x in ic.split(";") if x.strip()]
+    elif isinstance(ic, list):
+        interpreter_choices = ic
     else:
-        session.vars["interpreter_choices"] = [x.strip() for x in str(raw_choices).split(";") if x.strip()]
+        interpreter_choices = []
+    session.vars["interpreter_choices"] = interpreter_choices
 
-    # Prolific completion code
+    # allowed values/regex from get_data normalization
+    session.vars["allowed_values"] = settings.get("allowed_values", []) or []
+    session.vars["allowed_regexes"] = settings.get("allowed_regex", []) or []
+
+    session.vars["instructions_url"] = clean_settings.get("instructions_url") or "https://google.com"
+
     if session.config.get("completion_code"):
         session.vars["completion_code"] = str(session.config["completion_code"])
 
-    # --- Build histories by excel_id ---
-    # Each row produces 2 schedule entries:
-    #   producer_id gets a PRODUCER entry
-    #   interpreter_id gets an INTERPRETER entry
-    histories = {}
+    # ---- BUILD VALID IMAGE POOL: only real producer rows Producer != 0 ----
+    valid_pool = []
+    for r in raw_records:
+        prod_excel_id = safe_int(r.get("Producer"), 0)
+        img = clean_str(r.get("Item"))
+        if prod_excel_id != 0 and is_valid_real_image(img):
+            valid_pool.append(img)
 
-    def add(excel_id: int, entry: dict):
-        histories.setdefault(str(excel_id), []).append(entry)
+    if not valid_pool:
+        valid_pool = ["d-A-B-BC-3"]  # hard fallback
 
-    for _, r in df.iterrows():
-        row = r.to_dict()
+    # ---- BUILD SCHEDULE: each row creates Producer entry + Interpreter entry,
+    #      unless Producer==0, then only Interpreter entry (with image from pool),
+    #      but interpreter still uses THIS row's sentences. ----
+    from collections import defaultdict
+    data_by_excel_id = defaultdict(list)
 
-        exp = _safe_int(row.get(exp_col), 0)
-        rnd = _safe_int(row.get(round_col), 0)
-        trial = _safe_int(row.get(trial_col), 0) if trial_col else 0
+    for r in raw_records:
+        exp_num = safe_int(r.get("Exp"), 0)
+        round_in_excel = safe_int(r.get("Round"), 0)
+        trial = safe_int(r.get("Trial"), 0)
 
-        prod_id = _safe_int(row.get(prod_col), -1)
-        int_id = _safe_int(row.get(interp_col), -1)
+        condition = clean_str(r.get("Condition"))
+        item_nr = clean_str(r.get("Item.Nr"))
+        image_raw = clean_str(r.get("Item"))
 
-        condition = _clean_cell(row.get(cond_col))
-        item_nr = _clean_cell(row.get(itemnr_col))
-        image = _clean_cell(row.get(item_col))
+        producer_excel_id = safe_int(r.get("Producer"), 0)
+        interpreter_excel_id = safe_int(r.get("Interpreter"), 0)
 
-        # Sentence columns into JSON
-        sent_json = _parse_sentences_from_row(row)
+        # if interpreter missing, row is useless for 3P/5I design
+        if interpreter_excel_id == 0:
+            continue
 
-        sort_key = (exp, rnd, trial)
+        # interpreter sentences come from the row always
+        sentences_json = extract_sentences_from_row(r)
 
-        if prod_id >= 0:
-            add(prod_id, dict(
-                sort_key=sort_key,
-                role=PRODUCER,
-                partner_excel_id=int_id,
-                exp=exp,
-                round_in_excel=rnd,
-                trial=trial,
-                condition=condition,
-                item_nr=item_nr,
-                image=image,
-                sentences="[]",  # producers don't need sentence display
-                producer_sentences="",  # will be filled when they submit
-                interpreter_rewards="",
-            ))
+        # Producer schedule entry exists only if Producer != 0
+        if producer_excel_id != 0:
+            # PRODUCER gets the row image as-is (even if it's weird);
+            # BUT if it's not a real image, swap to a valid one.
+            prod_image = image_raw
+            if not is_valid_real_image(prod_image):
+                prod_image = random.choice(valid_pool)
 
-        if int_id >= 0:
-            add(int_id, dict(
-                sort_key=sort_key,
-                role=INTERPRETER,
-                partner_excel_id=prod_id,
-                exp=exp,
-                round_in_excel=rnd,
-                trial=trial,
-                condition=condition,
-                item_nr=item_nr,
-                image=image,        # interpreter row keeps image for reference/export
-                sentences=sent_json,  # interpreters display this
-                producer_sentences="",
-                interpreter_rewards="",
-            ))
+            data_by_excel_id[producer_excel_id].append(
+                {
+                    "role": PRODUCER,
+                    "partner_excel_id": interpreter_excel_id,
+                    "exp": exp_num,
+                    "round_in_excel": round_in_excel,
+                    "trial": trial,
+                    "condition": condition,
+                    "item_nr": item_nr,
+                    "image": prod_image,
+                    "sentences": "[]",
+                    "producer_sentences": "",
+                    "interpreter_rewards": "",
+                }
+            )
 
-    # Sort and then renumber to 1..N
-    for k, lst in histories.items():
-        lst.sort(key=lambda x: x["sort_key"])
-        for i, entry in enumerate(lst):
-            entry["round_number"] = i + 1
-            entry.pop("sort_key", None)
+            # INTERPRETER entry paired with producer
+            data_by_excel_id[interpreter_excel_id].append(
+                {
+                    "role": INTERPRETER,
+                    "partner_excel_id": producer_excel_id,
+                    "exp": exp_num,
+                    "round_in_excel": round_in_excel,
+                    "trial": trial,
+                    "condition": condition,
+                    "item_nr": item_nr,
+                    "image": prod_image,
+                    "sentences": sentences_json,
+                    "producer_sentences": sentences_json,
+                    "interpreter_rewards": "",
+                }
+            )
+        else:
+            # Producer==0 case:
+            # - ignore image from this row
+            # - use ANY valid real image from pool
+            # - interpreter still uses THIS row's sentences_json
+            picked = random.choice(valid_pool)
 
-    # Pool of IDs (0-based)
-    excel_id_pool = sorted([int(k) for k in histories.keys()])
-    session.vars["excel_id_pool"] = excel_id_pool
-    session.vars["assigned_excel_ids"] = []
-    session.vars["histories_by_excel_id"] = histories
+            data_by_excel_id[interpreter_excel_id].append(
+                {
+                    "role": INTERPRETER,
+                    "partner_excel_id": 0,
+                    "exp": exp_num,
+                    "round_in_excel": round_in_excel,
+                    "trial": trial,
+                    "condition": condition,
+                    "item_nr": item_nr,
+                    "image": picked,
+                    "sentences": sentences_json,
+                    "producer_sentences": sentences_json,
+                    "interpreter_rewards": "",
+                }
+            )
 
-    # Debug sanity
-    logger.info(f"Excel ID pool: {excel_id_pool}")
-    if excel_id_pool:
-        sample_id = str(excel_id_pool[0])
-        logger.info(f"Rounds for first excel_id={sample_id}: {len(histories.get(sample_id, []))}")
+    # ---- ASSIGN EACH PARTICIPANT A SEQUENTIAL ROUND SCHEDULE ----
+    # IMPORTANT: this assumes participant id_in_subsession == excel_id (i.e., 1..N),
+    # and your excel ids are also 1..N (NOT 0..N-1).
+    # If your Excel uses 0..N-1, then you must +1 everywhere above.
+    players = subsession.get_players()
+
+    for p in players:
+        excel_id = p.id_in_subsession
+
+        my_items = data_by_excel_id.get(excel_id, [])
+        # this ordering is what controls “round 3 is interpreter”
+        my_items.sort(key=lambda x: (safe_int(x.get("exp")), safe_int(x.get("round_in_excel")), safe_int(x.get("trial"))))
+
+        final_history = []
+        for i, item in enumerate(my_items):
+            item["round_number"] = i + 1
+            final_history.append(item)
+
+        p.batch_history = json.dumps(final_history)
+        p.participant.vars["batch_history"] = p.batch_history
+
+        if len(final_history) == 0:
+            logger.warning(f"Participant excel_id={excel_id} got EMPTY schedule.")
+
+    logger.info(
+        "Schedule built. "
+        f"players={len(players)} "
+        f"valid_pool={len(valid_pool)} "
+        f"rows_in_excel={len(raw_records)}"
+    )
 
 
-# =============================================================================
-# Pages
-# =============================================================================
-
+# ----------------------------------------------------------------------------
+# PAGES
+# ----------------------------------------------------------------------------
 class FaultyCatcher(Page):
     @staticmethod
-    def is_displayed(player: Player):
+    def is_displayed(player):
         return player.faulty
 
     def get(self):
@@ -481,21 +438,21 @@ class Q(Page):
     form_model = "player"
 
     @staticmethod
-    def is_displayed(player: Player):
+    def is_displayed(player):
         if player.round_number > Constants.num_rounds:
             return False
 
-        # assign excel_id + load schedule on first displayed round
-        player.assign_excel_id_if_needed()
-        if player.faulty:
+        # hydrate from participant vars (first time)
+        if (player.batch_history == "[]" or not player.batch_history) and "batch_history" in player.participant.vars:
+            player.batch_history = player.participant.vars["batch_history"]
+
+        data = player.get_current_batch_data()
+        if not data:
+            if player.round_number == 1:
+                player.faulty = True
             return False
 
-        item = player.current_item()
-        if not item:
-            player.faulty = True
-            return False
-
-        player.inner_role = item.get("role", "")
+        player.inner_role = data.get("role", "")
 
         if player.start_decision_time == 0:
             player.start_decision_time = time.time()
@@ -503,7 +460,7 @@ class Q(Page):
         return True
 
     @staticmethod
-    def get_form_fields(player: Player):
+    def get_form_fields(player):
         if player.inner_role == PRODUCER:
             return ["producer_decision"]
         if player.inner_role == INTERPRETER:
@@ -511,42 +468,46 @@ class Q(Page):
         return []
 
     @staticmethod
-    def vars_for_template(player: Player):
-        item = player.current_item()
-
-        raw_choices = player.session.vars.get("interpreter_choices") or []
+    def vars_for_template(player):
+        raw_choices = player.session.vars.get("interpreter_choices") or ""
         if isinstance(raw_choices, str):
             interpreter_choices = [x.strip() for x in raw_choices.split(";") if x.strip()]
-        else:
+        elif isinstance(raw_choices, list):
             interpreter_choices = raw_choices
+        else:
+            interpreter_choices = []
+
+        interpreter_title = player.session.vars.get("interpreter_title") or "Buy medals:"
 
         return dict(
-            d=item,
+            d=player.get_current_batch_data(),
             allowed_values=player.session.vars.get("allowed_values", []),
             allowed_regexes=player.session.vars.get("allowed_regexes", []),
             suffixes=player.session.vars.get("suffixes", []),
             prefix=player.session.vars.get("prefix", ""),
             interpreter_choices=interpreter_choices,
-            interpreter_title=player.session.vars.get("interpreter_title") or "Buy medals:",
-            instructions_url=player.session.vars.get("instructions_url") or "",
+            interpreter_title=interpreter_title,
+            instructions_url=player.session.vars.get("instructions_url"),
+            # template can use player.get_image_url directly, but keeping this is handy too
             server_image_url=player.get_image_url(),
-            excel_id=player.excel_id,
+            caseflag=player.session.vars.get("caseflag"),
         )
 
     @staticmethod
-    def before_next_page(player: Player, timeout_happened):
+    def before_next_page(player, timeout_happened):
         player.end_decision_time = time.time()
         if player.start_decision_time:
             player.decision_seconds = player.end_decision_time - player.start_decision_time
 
-        # write decisions into history item
+        updates = {}
         if player.inner_role == PRODUCER:
-            player.update_current_item({"producer_sentences": player.producer_decision or ""})
+            updates["producer_sentences"] = player.producer_decision
         elif player.inner_role == INTERPRETER:
-            player.update_current_item({"interpreter_rewards": player.interpreter_decision or ""})
+            updates["interpreter_rewards"] = player.interpreter_decision
 
-        # reset timer for next round
-        player.start_decision_time = 0
+        if updates:
+            player.update_current_batch_data(updates)
+            player.participant.vars["batch_history"] = player.batch_history
 
 
 class Feedback(Page):
@@ -554,89 +515,79 @@ class Feedback(Page):
     form_fields = ["feedback"]
 
     @staticmethod
-    def is_displayed(player: Player):
+    def is_displayed(player):
         return player.round_number == Constants.num_rounds
 
 
 class FinalForProlific(Page):
     @staticmethod
-    def is_displayed(player: Player):
+    def is_displayed(player):
         return player.session.config.get("for_prolific") and player.round_number == Constants.num_rounds
 
     def get(self):
-        cc = (self.player.session.vars.get("completion_code")
-              or self.player.session.config.get("completion_code"))
+        cc = self.player.session.vars.get("completion_code") or self.player.session.config.get("completion_code")
         if not cc:
             return redirect(Constants.API_ERR_URL)
         return redirect(STUBURL + str(cc))
 
 
-# =============================================================================
-# Export
-# =============================================================================
-
+# ----------------------------------------------------------------------------
+# EXPORT
+# ----------------------------------------------------------------------------
 def custom_export(players):
     yield [
         "session_code",
         "participant_code",
-        "excel_id",
         "round_number",
         "role",
-        "partner_excel_id",
-        "exp",
-        "round_in_excel",
-        "trial",
         "condition",
         "item_nr",
         "image",
-        "producer_decision",
-        "interpreter_decision",
+        "producer_sentences",
+        "interpreter_rewards",
         "decision_seconds",
         "feedback",
     ]
 
-    seen = set()
+    processed = set()
     for p in players:
-        if p.participant.code in seen:
+        if p.participant.code in processed:
             continue
-        seen.add(p.participant.code)
+        processed.add(p.participant.code)
 
-        # pull per-round timing from Player model rows
-        timing_by_round = {}
-        fb = ""
-        for pr in p.participant.get_players():
-            timing_by_round[pr.round_number] = pr.decision_seconds
-            if pr.round_number == Constants.num_rounds:
-                fb = pr.feedback or ""
-
-        # schedule state lives in p.batch_history (for this participant)
+        history_json = p.participant.vars.get("batch_history", "[]")
         try:
-            hist = json.loads(p.batch_history or "[]")
+            history = json.loads(history_json)
         except Exception:
-            hist = []
+            history = []
 
-        for item in hist:
-            rnd = _safe_int(item.get("round_number"), 0)
+        # timing + feedback from Player rows
+        timing_map = {}
+        feedback_str = ""
+        for sub_p in p.participant.get_players():
+            timing_map[sub_p.round_number] = sub_p.decision_seconds
+            if sub_p.round_number == Constants.num_rounds:
+                feedback_str = sub_p.feedback or ""
+
+        history.sort(key=lambda x: safe_int(x.get("round_number"), 0))
+
+        for item in history:
+            rnd = safe_int(item.get("round_number"), 0)
             if rnd < 1 or rnd > Constants.num_rounds:
                 continue
 
             yield [
                 p.session.code,
                 p.participant.code,
-                p.excel_id,
                 rnd,
                 item.get("role", ""),
-                item.get("partner_excel_id", ""),
-                item.get("exp", ""),
-                item.get("round_in_excel", ""),
-                item.get("trial", ""),
                 item.get("condition", ""),
                 item.get("item_nr", ""),
                 item.get("image", ""),
                 item.get("producer_sentences", ""),
                 item.get("interpreter_rewards", ""),
-                timing_by_round.get(rnd, 0),
-                fb if rnd == Constants.num_rounds else "",
+                timing_map.get(rnd, 0),
+                feedback_str if rnd == Constants.num_rounds else "",
             ]
 
 
