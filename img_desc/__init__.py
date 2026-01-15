@@ -2,6 +2,7 @@ from otree.api import *
 import json
 import logging
 import time
+import re
 import random
 from django.shortcuts import redirect
 
@@ -32,14 +33,18 @@ class Group(BaseGroup):
 
 class Player(BasePlayer):
     batch_history = models.LongStringField(initial="[]")
+    
     inner_role = models.StringField()
     faulty = models.BooleanField(initial=False)
     feedback = models.LongStringField(label="")
+    
     producer_decision = models.LongStringField()
     interpreter_decision = models.LongStringField()
+    
     start_decision_time = models.FloatField(initial=0)
     end_decision_time = models.FloatField(initial=0)
     decision_seconds = models.FloatField(initial=0)
+    
     full_return_url = models.StringField(blank=True)
 
     def get_current_batch_data(self):
@@ -69,35 +74,45 @@ class Player(BasePlayer):
     def get_image_url(self):
         data = self.get_current_batch_data()
         img = str(data.get('image', '')).strip()
+        
         if not img or img.lower() in ['nan', 'na', 'na_x', 'none', '', 'x']:
             return ""
+            
         base = self.session.vars.get('s3path_base', '').rstrip('/')
         ext = self.session.vars.get('extension', 'png')
+        
+        # Clean up path if needed
         if "amazonaws" in base:
             base = base.replace("/practice", "")
+            
         clean_name = img.replace(" ", "_")
         if not clean_name.lower().endswith(f".{ext}"):
             clean_name = f"{clean_name}.{ext}"
+            
         return f"{base}/{clean_name}"
 
     def get_sentences_data(self):
         data = self.get_current_batch_data()
         my_role = data.get('role', '')
+        
         if my_role == PRODUCER:
             raw = data.get('sentences', '[]')
             return json.loads(raw) if raw else []
+
         partner_id_in_group = int(data.get('partner_id', 0))
         if partner_id_in_group == 0:
             return []
+
         partner = None
         for p in self.subsession.get_players():
             if p.id_in_subsession == partner_id_in_group:
                 partner = p
                 break
+        
         if not partner:
             return []
+
         p_data = partner.get_current_batch_data()
-        # Even if partner hasn't played, we load the pre-filled sentences from history
         raw = p_data.get('sentences', '[]')
         return json.loads(raw) if raw else []
 
@@ -105,7 +120,9 @@ class Player(BasePlayer):
         prefix = self.session.vars.get("prefix", "") or ""
         suffixes = self.session.vars.get("suffixes") or []
         sentences = self.get_sentences_data() or []
+        
         sentences = [s for s in sentences if isinstance(s, list)]
+
         res = []
         for sentence in sentences:
             expansion = []
@@ -132,10 +149,26 @@ def creating_session(subsession: Subsession):
 
     from reading_xls.get_data import get_data
     excel_payload = get_data(filename)
+    
     raw_records = excel_payload['data']
     settings = excel_payload['settings']
     
-    session.vars["s3path_base"] = settings.get("s3path_base", "")
+    # --- FIX S3 PATH ---
+    # 1. Try 's3path' (from your excel) OR 's3path_base'
+    raw_s3 = settings.get("s3path") or settings.get("s3path_base") or ""
+    
+    # 2. Fix AWS Console URLs (convert to public link)
+    if "console.aws.amazon.com" in raw_s3 and "buckets/" in raw_s3:
+        try:
+            # Extract bucket name from console URL
+            # Format: .../buckets/BUCKET_NAME?region=...
+            parts = raw_s3.split("buckets/")[1].split("?")[0]
+            raw_s3 = f"https://{parts}.s3.eu-central-1.amazonaws.com"
+            logger.info(f"Fixed S3 URL to: {raw_s3}")
+        except:
+            pass # Use as-is if parsing fails
+
+    session.vars["s3path_base"] = raw_s3
     session.vars["extension"] = settings.get("extension", "png")
     session.vars["prefix"] = settings.get("prefix", "")
     session.vars["interpreter_title"] = settings.get("interpreter_title", "Buy medals:")
@@ -148,15 +181,15 @@ def creating_session(subsession: Subsession):
     if session.config.get("completion_code"):
         session.vars["completion_code"] = str(session.config["completion_code"])
 
-    # 1. Build Pool of Valid Images for Repair
+    # Build Valid Image Pool
     valid_pool = []
     for r in raw_records:
         img = str(r.get('Item', '')).strip()
         if img.startswith('d-') and 'NA' not in img and 'ABC' not in img:
             valid_pool.append(img)
-    if not valid_pool: valid_pool = ["d-A-B-BC-3"] # Fallback
+    if not valid_pool: valid_pool = ["d-A-B-BC-3"]
 
-    # 2. Assign Players
+    # Assign Players
     players = subsession.get_players()
     from collections import defaultdict
     data_by_id = defaultdict(list)
@@ -171,15 +204,13 @@ def creating_session(subsession: Subsession):
         item_nr = str(r.get('Item.Nr', '')).strip()
         image = str(r.get('Item', '')).strip()
 
-        # --- REPAIR LOGIC START ---
-        # If Producer is 0 or image is broken, swap it with a valid one
+        # REPAIR: If Producer 0 or broken image, swap
         prod_val = str(r.get('Producer', ''))
         is_prod0 = (prod_val == '0' or prod_val == '0.0')
         is_broken = (image == 'NA_x' or image == 'nan' or image == '' or 'D_' in image)
         
         if is_prod0 or is_broken:
             image = random.choice(valid_pool)
-        # --- REPAIR LOGIC END ---
 
         # Parse Sentences
         sentences = []
