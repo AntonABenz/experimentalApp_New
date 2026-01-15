@@ -13,7 +13,7 @@ STUBURL = "https://app.prolific.co/submissions/complete?cc="
 class Constants(BaseConstants):
     name_in_url = "img_desc"
     players_per_group = None
-    num_rounds = 80  # This fixes the "End of Intro" skipping issue
+    num_rounds = 80
 
     PLACEMENT_ERR = "ERROR_BATCH_PLACEMENT"
     API_ERR = "API_ERROR"
@@ -30,8 +30,7 @@ class Group(BaseGroup):
     pass
 
 class Player(BasePlayer):
-    # We store the entire 80-round schedule here as JSON
-    # This prevents the "Database Column Missing" errors entirely.
+    # Store schedule as JSON to avoid DB errors
     batch_history = models.LongStringField(initial="[]")
     
     inner_role = models.StringField()
@@ -50,11 +49,9 @@ class Player(BasePlayer):
     full_return_url = models.StringField(blank=True)
 
     def get_current_batch_data(self):
-        """Helper to get the dictionary for the current round from JSON."""
         if not self.batch_history: return {}
         try:
             history = json.loads(self.batch_history)
-            # Find the row where round_number matches the current round
             for item in history:
                 if int(item.get('round_number', 0)) == self.round_number:
                     return item
@@ -63,7 +60,6 @@ class Player(BasePlayer):
         return {}
 
     def update_current_batch_data(self, updates: dict):
-        """Saves player decisions back into the JSON history."""
         try:
             history = json.loads(self.batch_history)
             found = False
@@ -86,7 +82,6 @@ class Player(BasePlayer):
         base = self.session.vars.get('s3path_base', '').rstrip('/')
         ext = self.session.vars.get('extension', 'png')
         
-        # Clean up path if needed
         if "amazonaws" in base:
             base = base.replace("/practice", "")
             
@@ -97,25 +92,17 @@ class Player(BasePlayer):
         return f"{base}/{clean_name}"
 
     def get_sentences_data(self):
-        """
-        Retrieves sentences.
-        If Producer: shows previous sentences for this item.
-        If Interpreter: finds the Partner's data and shows it.
-        """
         data = self.get_current_batch_data()
         my_role = data.get('role', '')
         
-        # 1. If Producer, just show what's in the data (or empty)
         if my_role == PRODUCER:
             raw = data.get('sentences', '[]')
             return json.loads(raw) if raw else []
 
-        # 2. If Interpreter, we need to find the Partner
         partner_id_in_group = int(data.get('partner_id', 0))
         if partner_id_in_group == 0:
             return []
 
-        # Find the specific player object for the partner
         partner = None
         for p in self.subsession.get_players():
             if p.id_in_subsession == partner_id_in_group:
@@ -125,16 +112,36 @@ class Player(BasePlayer):
         if not partner:
             return []
 
-        # Look at the Partner's history for this specific item
-        # (Assuming partner played this item in the same round or previously)
         p_data = partner.get_current_batch_data()
-        
-        # Security check: Ensure partner was actually a Producer
         if p_data.get('role') == PRODUCER:
             raw = p_data.get('sentences', '[]')
             return json.loads(raw) if raw else []
             
         return []
+
+    # --- ADDED THIS METHOD BACK TO FIX THE ERROR ---
+    def get_full_sentences(self):
+        prefix = self.session.vars.get("prefix", "") or ""
+        suffixes = self.session.vars.get("suffixes") or []
+        sentences = self.get_sentences_data() or []
+        
+        # Filter for valid lists only
+        sentences = [s for s in sentences if isinstance(s, list)]
+
+        res = []
+        for sentence in sentences:
+            # Combine values and suffixes
+            expansion = []
+            if prefix:
+                expansion.append(prefix)
+            
+            # Pair up value with suffix
+            for val, suffix in zip(sentence, suffixes):
+                expansion.append(str(val))
+                expansion.append(str(suffix))
+            
+            res.append(" ".join(expansion))
+        return res
 
 # ----------------------------------------------------------------------------
 # SESSION CREATION
@@ -144,23 +151,18 @@ def _truthy(v) -> bool:
 
 def creating_session(subsession: Subsession):
     session = subsession.session
-    
-    # Run only once at start of session
     if subsession.round_number != 1:
         return
 
     filename = session.config.get("filename")
-    if not filename: 
-        raise RuntimeError("No filename in session config")
+    if not filename: raise RuntimeError("No filename in session config")
 
-    # 1. Load Data (Using your fixed get_data.py)
     from reading_xls.get_data import get_data
     excel_payload = get_data(filename)
     
-    records = excel_payload['data'] # This is a list of dicts
+    records = excel_payload['data']
     settings = excel_payload['settings']
     
-    # 2. Store Settings in Session
     session.vars["s3path_base"] = settings.get("s3path_base", "")
     session.vars["extension"] = settings.get("extension", "png")
     session.vars["prefix"] = settings.get("prefix", "")
@@ -174,29 +176,22 @@ def creating_session(subsession: Subsession):
     if session.config.get("completion_code"):
         session.vars["completion_code"] = str(session.config["completion_code"])
 
-    # 3. LOGIC: Assign Rows to Players
-    # We group rows by 'id' from Excel, sort them, and assign to Players 1..N
+    # Distribute Data
     players = subsession.get_players()
     from collections import defaultdict
-    
     data_by_id = defaultdict(list)
     
     for r in records:
-        # Resolve ID (handle various column names)
         try:
             raw_id = float(r.get('id') or r.get('ID') or r.get('id_in_group') or 0)
-            # CRITICAL FIX: Excel 0 -> oTree 1
             pid = int(raw_id) + 1 
         except: continue
 
-        # Resolve Partner ID
         try:
             raw_partner = float(r.get('partner_id') or r.get('Partner_ID') or 0)
-            # CRITICAL FIX: Excel 0 -> oTree 1
             partner_pid = int(raw_partner) + 1
         except: partner_pid = 0
         
-        # Sort Keys (Exp number, then Round number)
         try: exp_num = int(float(r.get('Exp', 0)))
         except: exp_num = 0
         try: rnd_num = int(float(r.get('group_enumeration') or r.get('Round') or 0))
@@ -214,20 +209,15 @@ def creating_session(subsession: Subsession):
             'rewards': ''
         })
 
-    # Assign history to each player
     for p in players:
         my_items = data_by_id.get(p.id_in_subsession, [])
-        
-        # Sort: Exp 0 (Practice) -> Exp 1 (Main)
         my_items.sort(key=lambda x: x['sort_key'])
         
         final_history = []
         for i, item in enumerate(my_items):
-            # Renumber rounds to be 1, 2, 3 ... 80
             item['round_number'] = i + 1 
             final_history.append(item)
             
-        # Store as JSON string (No database table needed!)
         p.participant.vars['batch_history'] = json.dumps(final_history)
 
 # ----------------------------------------------------------------------------
@@ -248,21 +238,17 @@ class Q(Page):
     def is_displayed(player):
         if player.round_number > Constants.num_rounds: return False
         
-        # Load data from participant vars if needed
         if player.batch_history == "[]" and 'batch_history' in player.participant.vars:
             player.batch_history = player.participant.vars['batch_history']
 
         data = player.get_current_batch_data()
         
-        # If no data found for this round:
         if not data:
-            # Only mark faulty if it's round 1 (prevents crashes at end of game)
             if player.round_number == 1: player.faulty = True
             return False
 
         player.inner_role = data.get('role', '')
         
-        # Start Timer
         if player.start_decision_time == 0:
             player.start_decision_time = time.time()
             
@@ -295,7 +281,6 @@ class Q(Page):
         if player.start_decision_time:
             player.decision_seconds = player.end_decision_time - player.start_decision_time
         
-        # Save decisions to local history
         updates = {}
         if player.inner_role == PRODUCER:
             updates['sentences'] = player.producer_decision
@@ -303,8 +288,6 @@ class Q(Page):
             updates['rewards'] = player.interpreter_decision
             
         player.update_current_batch_data(updates)
-        
-        # Save back to participant so it persists
         player.participant.vars['batch_history'] = player.batch_history
 
 class Feedback(Page):
@@ -327,10 +310,9 @@ class FinalForProlific(Page):
         return redirect(STUBURL + str(cc))
 
 # ----------------------------------------------------------------------------
-# EXPORT (Simplified & Robust)
+# EXPORT
 # ----------------------------------------------------------------------------
 def custom_export(players):
-    # Header
     yield [
         "session_code", "participant_code", "round_number", "role",
         "condition", "item_nr", "image", "producer_sentences",
@@ -344,22 +326,20 @@ def custom_export(players):
             continue
         processed_participants.add(p.participant.code)
         
-        # Get the full 80-round history from the participant
         history_json = p.participant.vars.get('batch_history', '[]')
         try:
             history = json.loads(history_json)
         except:
             history = []
             
-        # Get timing from the actual played rounds
         timing_map = {}
         feedback_str = ""
+        
         for sub_p in p.participant.get_players():
             timing_map[sub_p.round_number] = sub_p.decision_seconds
             if sub_p.round_number == Constants.num_rounds:
                 feedback_str = sub_p.feedback or ""
 
-        # Sort by round
         history.sort(key=lambda x: int(x.get('round_number', 0)))
         
         for item in history:
