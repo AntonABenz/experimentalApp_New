@@ -91,10 +91,12 @@ def get_single_batch_by_id(batch_id):
     engine = get_engine()
     sql = text("SELECT * FROM img_desc_batch WHERE id = :bid")
     with engine.connect() as conn:
-        result = conn.execute(sql, {"bid": batch_id}).fetchone()
-        if result:
-            return dict(zip(result.keys(), result))
-    return None
+        result = conn.execute(sql, {"bid": batch_id})
+        row = result.fetchone()
+        if not row:
+            return None
+        return dict(zip(result.keys(), row))
+
 
 def sql_update_batch(batch_id, **kwargs):
     if not kwargs:
@@ -105,12 +107,10 @@ def sql_update_batch(batch_id, **kwargs):
     for k, v in kwargs.items():
         set_clauses.append(f"{k} = :{k}")
         params[k] = v
-    sql_str = f"UPDATE img_desc_batch SET {', '.join(set_clauses)} WHERE id = :id"
-    sql = text(sql_str)
-    with engine.connect() as conn:
+
+    sql = text(f"UPDATE img_desc_batch SET {', '.join(set_clauses)} WHERE id = :id")
+    with engine.begin() as conn:     # ✅ commits on exit
         conn.execute(sql, params)
-        if hasattr(conn, "commit"):
-            conn.commit()
 
 def normalize_key(key):
     if not key:
@@ -333,14 +333,32 @@ class Player(BasePlayer):
         self.inner_role = my_row["role"]
         self.inner_sentences = json.dumps(self.get_sentences_data())
 
+def delete_batches_for_session(session_code: str):
+    engine = get_engine()
+    sql = text("DELETE FROM img_desc_batch WHERE session_code = :sc")
+    with engine.begin() as conn:     # ✅ commits on exit
+        conn.execute(sql, {"sc": session_code})
+
+
+
+def _to_int(v, default=0):
+    try:
+        if v is None or str(v).strip() == "":
+            return default
+        return int(float(v))
+    except Exception:
+        return default
+
+def _to_str(v):
+    return "" if v is None else str(v).strip()
+
 def creating_session(subsession: Subsession):
     session = subsession.session
-
-    if subsession.field_maybe_none("active_batch") is None:
-        subsession.active_batch = 1
-
     if subsession.round_number != 1:
         return
+
+    # ✅ wipe stale rows
+    delete_batches_for_session(session.code)
 
     subsession.active_batch = 1
     session.vars["active_batch"] = 1
@@ -352,40 +370,10 @@ def creating_session(subsession: Subsession):
     from reading_xls.get_data import get_data
     excel_data = get_data(filename)
     df = excel_data.get("data")
-    session.vars["user_data"] = df
-
-    def clean_str(val):
-        if val is None:
-            return ""
-        s = str(val).strip()
-        if s.lower() == "nan":
-            return ""
-        return s
-    
-    if "Condition" in df.columns: df["Condition"] = df["Condition"].apply(clean_str)
-    if "Item.Nr" in df.columns: df["Item.Nr"] = df["Item.Nr"].apply(clean_str)
-    if "Item" in df.columns: df["Item"] = df["Item"].apply(clean_str)
-
-    records = df.to_dict(orient="records")
-    for r in records:
-        Batch.create(
-            session_code=session.code,
-            owner_code="",
-            batch=r.get("Exp"),
-            item_nr=r.get("Item.Nr"),
-            condition=r.get("Condition"),
-            image=r.get("Item"),
-            round_number=r.get("group_enumeration"),
-            role=r.get("role"),
-            id_in_group=r.get("id"),
-            partner_id=r.get("partner_id"),
-            sentences=r.get("sentences"),
-        )
-
     settings = excel_data.get("settings") or {}
-    clean_settings = {}
-    for k, v in settings.items():
-        clean_settings[normalize_key(k)] = v
+
+    # ✅ load settings into session.vars (you were missing this)
+    clean_settings = {normalize_key(k): v for k, v in settings.items()}
     session.vars["user_settings"] = clean_settings
 
     for k in ["s3path_base", "extension", "prefix", "interpreter_choices", "interpreter_title"]:
@@ -402,23 +390,43 @@ def creating_session(subsession: Subsession):
         v_val = clean_settings.get(normalize_key(v_key))
         r_val = clean_settings.get(normalize_key(r_key))
         if v_val or r_val:
-            if v_val:
-                allowed_values.append([x.strip() for x in str(v_val).split(";") if x.strip()])
-            else:
-                allowed_values.append([])
+            allowed_values.append([x.strip() for x in str(v_val).split(";") if x.strip()] if v_val else [])
             allowed_regexes.append(str(r_val).strip() if r_val else "")
-            i += 1
-            continue
-        if i > 10:
-            break
+        else:
+            if i > 10:
+                break
         i += 1
 
     session.vars["allowed_values"] = allowed_values
     session.vars["allowed_regexes"] = allowed_regexes
 
     default_url = "https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
-    url_from_settings = clean_settings.get(normalize_key("instructions_url"))
-    session.vars["instructions_url"] = url_from_settings if url_from_settings else default_url
+    session.vars["instructions_url"] = clean_settings.get(normalize_key("instructions_url")) or default_url
+
+    # ✅ insert rows
+    records = df.to_dict(orient="records")
+    for r in records:
+        Batch.create(
+            session_code=session.code,
+            owner_code="",
+            batch=_to_int(r.get("Exp"), 0),
+            item_nr=_to_str(r.get("Item.Nr")),
+            condition=_to_str(r.get("Condition")),
+            image=_to_str(r.get("Item")),
+            round_number=_to_int(r.get("group_enumeration"), 0),
+            role=_to_str(r.get("role")),
+            id_in_group=_to_int(r.get("id"), 0),
+            partner_id=_to_int(r.get("partner_id"), 0),
+            sentences=_to_str(r.get("sentences")) or "[]",
+        )
+
+    # ✅ logs INSIDE function
+    try:
+        items = set(_to_str(x) for x in df["Item"].tolist()) if "Item" in df.columns else set()
+        logger.info(f"Loaded {len(df)} rows from Excel. Unique Item count={len(items)}")
+        logger.info(f"Old image present? {'d-A-B-AB-BC-ABC-3' in items}")
+    except Exception:
+        logger.info(f"Loaded {len(df)} rows from Excel.")
 
 class FaultyCatcher(Page):
     @staticmethod
@@ -518,56 +526,45 @@ class FinalForProlific(Page):
         return redirect("https://cnn.com")
 
 def custom_export(players):
-    """
-    Optimized Export using Django ORM to prevent memory spikes and SQL errors.
-    Works on both SQLite (Local) and Postgres (Heroku).
-    """
-    # 1. YIELD HEADER IMMEDIATELY
     yield [
-        "session", "participant_code", "round", "role", "condition", 
-        "item_nr", "image", "producer_sentences", "interpreter_rewards", 
-        "decision_seconds"
+        "session_code", "participant_code", "round_number", "role", "condition",
+        "item_nr", "image", "producer_sentences", "interpreter_rewards", "decision_seconds"
     ]
 
-    # 2. Get unique session codes efficiently
-    if hasattr(players, 'values_list'):
-        session_codes = list(players.values_list('session__code', flat=True).distinct())
+    # If players is a queryset, stream minimal fields
+    if hasattr(players, "values_list"):
+        pq = players.values_list("session__code", "participant__code", "round_number", "decision_seconds").iterator(chunk_size=2000)
+        session_codes = set(players.values_list("session__code", flat=True).distinct())
     else:
-        session_codes = list(set(p.session.code for p in players))
+        pq = [(p.session.code, p.participant.code, p.round_number, p.decision_seconds) for p in players]
+        session_codes = set(p.session.code for p in players)
 
-    if not session_codes:
-        return
-
-    # 3. Build timing map efficiently
+    # Build timing map (small)
     timing_map = {}
-    # Fetch only necessary fields to save memory
-    timing_data = Player.objects.filter(
-        session__code__in=session_codes
-    ).values_list('session__code', 'participant__code', 'round_number', 'decision_seconds').iterator()
+    for s_code, p_code, rnd, secs in pq:
+        timing_map[(s_code, p_code, int(rnd))] = secs
 
-    for s_code, p_code, r_num, seconds in timing_data:
-        timing_map[(s_code, p_code, r_num)] = seconds
-
-    # 4. Stream Batch data using ORM iterator (Database Agnostic)
-    columns = [
-        'session_code', 'owner_code', 'round_number', 'role', 
-        'condition', 'item_nr', 'image', 'sentences', 'rewards'
-    ]
-    
-    batches = Batch.objects.filter(
-        session_code__in=session_codes
-    ).order_by('session_code', 'batch', 'id_in_group').values_list(*columns).iterator(chunk_size=2000)
-
-    for row in batches:
-        s_code, o_code, r_num, role, cond, item, img, sent, rew = row
-        
-        ds = ""
-        if o_code:
-            ds = timing_map.get((s_code, o_code, r_num), "")
-
-        yield [
-            s_code, o_code, r_num, role, cond, item, img, sent, rew, ds
-        ]
-
+    # Pull batches per session via SQL (stream-ish)
+    # NOTE: still loads per session; if huge, fetch per session_code
+    for s_code in session_codes:
+        rows = get_batches_filtered(s_code)  # all rows for that session
+        for b in rows:
+            p_code = b.get("owner_code") or ""
+            rnd = int(b.get("round_number") or 0)
+            if rnd < 1 or rnd > Constants.num_rounds:
+                continue
+            ds = timing_map.get((s_code, p_code, rnd), "") if p_code else ""
+            yield [
+                s_code,
+                p_code,
+                rnd,
+                b.get("role") or "",
+                b.get("condition") or "",
+                b.get("item_nr") or "",
+                b.get("image") or "",
+                b.get("sentences") or "",
+                b.get("rewards") or "",
+                "" if ds is None else ds,
+            ]
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
