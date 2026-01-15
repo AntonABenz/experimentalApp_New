@@ -197,7 +197,7 @@ def is_valid_real_image(img: str) -> bool:
     return True
 
 
-def extract_sentences_from_row(r: dict) -> str:
+def extract_sentences_json(r: dict) -> str:
     """
     Your new Excel has Sentence_1_1, Sentence_1_2, ..., Sentence_5_2.
     We convert them into JSON list of pairs.
@@ -249,32 +249,6 @@ def creating_session(subsession: Subsession):
         rows = list(raw_data or [])
 
     # ---------------- settings -> session.vars ----------------
-    def normalize_key(key):
-        if not key:
-            return ""
-        return re.sub(r"[\s_]+", "_", str(key).lower().strip())
-
-    def clean_str(x):
-        if x is None:
-            return ""
-        s = str(x).strip()
-        if s.lower() in {"nan", "none"}:
-            return ""
-        return s
-
-    def _truthy(v) -> bool:
-        return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
-
-    def fix_s3_url(raw_s3: str) -> str:
-        raw_s3 = clean_str(raw_s3)
-        if "console.aws.amazon.com" in raw_s3 and "buckets/" in raw_s3:
-            try:
-                bucket = raw_s3.split("buckets/")[1].split("?")[0].strip("/")
-                return f"https://{bucket}.s3.eu-central-1.amazonaws.com"
-            except Exception:
-                return raw_s3
-        return raw_s3
-
     clean_settings = {normalize_key(k): clean_str(v) for k, v in settings.items()}
     s3_raw = clean_settings.get("s3path") or clean_settings.get("s3path_base") or ""
     session.vars["s3path_base"] = fix_s3_url(s3_raw)
@@ -305,38 +279,7 @@ def creating_session(subsession: Subsession):
     if session.config.get("completion_code"):
         session.vars["completion_code"] = str(session.config["completion_code"])
 
-    # ---------------- helpers ----------------
-    def safe_int(x, default=0):
-        try:
-            return int(float(x))
-        except Exception:
-            return default
-
-    def is_valid_real_image(img: str) -> bool:
-        img = clean_str(img)
-        if not img:
-            return False
-        low = img.lower()
-        if low in {"na_x", "na", "nan", "none", "x"}:
-            return False
-        # reject D_... placeholders
-        if img.startswith("D_") or img.startswith("d_"):
-            return False
-        # accept true stimuli like d-A-B-...
-        return img.startswith("d-")
-
-    def extract_sentences_json(r: dict) -> str:
-        pairs = []
-        for i in range(1, 6):
-            a = clean_str(r.get(f"Sentence_{i}_1"))
-            b = clean_str(r.get(f"Sentence_{i}_2"))
-            if a or b:
-                pairs.append([a, b])
-        return json.dumps(pairs)
-
     # ---------------- determine Excel slot universe ----------------
-    # New sheet uses Producer/Interpreter like 0..4 (NOT participant ids).
-    # We'll map slots 1..K to actual participants.
     slot_ids = set()
     for r in rows:
         p = safe_int(r.get("Producer"), 0)
@@ -363,7 +306,7 @@ def creating_session(subsession: Subsession):
 
     logger.info(f"Excel slot universe: 1..{K}. slot_to_pid={slot_to_pid}")
 
-    # ---------------- valid image pool (only from real producer rows) ----------------
+    # ---------------- valid image pool ----------------
     valid_pool = []
     for r in rows:
         producer_slot = safe_int(r.get("Producer"), 0)
@@ -377,8 +320,6 @@ def creating_session(subsession: Subsession):
     from collections import defaultdict
     data_by_pid = defaultdict(list)
 
-    # Keep stable ordering even if Trial has ties:
-    # we include row index as final tie-breaker
     for idx, r in enumerate(rows):
         exp_num = safe_int(r.get("Exp"), 0)
         round_in_excel = safe_int(r.get("Round"), 0)
@@ -400,7 +341,6 @@ def creating_session(subsession: Subsession):
         interp_pid = slot_to_pid.get(interpreter_slot)
         prod_pid = slot_to_pid.get(producer_slot) if producer_slot != 0 else None
 
-        # If interpreter slot isn't mapped (more slots than participants), skip
         if not interp_pid:
             continue
 
@@ -434,15 +374,11 @@ def creating_session(subsession: Subsession):
                 "condition": condition,
                 "item_nr": item_nr,
                 "image": prod_image,
-                # interpreter should see producer sentences from THIS row
                 "producer_sentences": sentences_json,
                 "interpreter_rewards": "",
             })
         else:
-            # Producer==0 row:
-            # - ignore row image
-            # - pick any valid real image
-            # - interpreter still uses THIS row sentences
+            # Producer==0 row (Bot)
             picked = random.choice(valid_pool)
             data_by_pid[interp_pid].append({
                 "sort_key": sort_key,
@@ -458,11 +394,19 @@ def creating_session(subsession: Subsession):
                 "interpreter_rewards": "",
             })
 
-    # finalize into batch_history with sequential round_number
+    # ---------------- FINALIZE AND SORT BY ROLE ----------------
     empty = []
     for p in players:
         my_items = data_by_pid.get(p.id_in_subsession, [])
-        my_items.sort(key=lambda x: x["sort_key"])
+        
+        # --- NEW SORT LOGIC ---
+        # 1. Producers First (role == 'P')
+        # 2. Then Interpreters (role == 'I')
+        # 3. Within role, sort by original Excel order (sort_key)
+        my_items.sort(key=lambda x: (
+            0 if x['role'] == PRODUCER else 1, # P=0, I=1 -> P comes first
+            x['sort_key']
+        ))
 
         final_history = []
         for i, it in enumerate(my_items[:Constants.num_rounds]):
@@ -477,20 +421,10 @@ def creating_session(subsession: Subsession):
             empty.append(p.id_in_subsession)
 
     if empty:
-        logger.warning(f"EMPTY schedules for participants: {empty} (likely extra participants > excel slots)")
+        logger.warning(f"EMPTY schedules for participants: {empty}")
 
-    # quick debug: first 6 rows for participant 1 (if exists)
-    if players:
-        try:
-            h = json.loads(players[0].batch_history or "[]")
-            logger.info(f"Sample schedule p1 first 6: {h[:6]}")
-        except Exception:
-            pass
+    logger.info(f"Schedule built. Sorted Producers first, then Interpreters.")
 
-    logger.info(
-        f"Schedule built. players={len(players)} "
-        f"valid_pool={len(valid_pool)} rows_in_excel={len(rows)}"
-    )
 
 # ----------------------------------------------------------------------------
 # PAGES
@@ -512,7 +446,6 @@ class Q(Page):
         if player.round_number > Constants.num_rounds:
             return False
 
-        # hydrate from participant vars (first time)
         if (player.batch_history == "[]" or not player.batch_history) and "batch_history" in player.participant.vars:
             player.batch_history = player.participant.vars["batch_history"]
 
@@ -558,7 +491,6 @@ class Q(Page):
             interpreter_choices=interpreter_choices,
             interpreter_title=interpreter_title,
             instructions_url=player.session.vars.get("instructions_url"),
-            # template can use player.get_image_url directly, but keeping this is handy too
             server_image_url=player.get_image_url(),
             caseflag=player.session.vars.get("caseflag"),
         )
@@ -631,7 +563,6 @@ def custom_export(players):
         except Exception:
             history = []
 
-        # timing + feedback from Player rows
         timing_map = {}
         feedback_str = ""
         for sub_p in p.participant.get_players():
@@ -659,6 +590,5 @@ def custom_export(players):
                 timing_map.get(rnd, 0),
                 feedback_str if rnd == Constants.num_rounds else "",
             ]
-
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
