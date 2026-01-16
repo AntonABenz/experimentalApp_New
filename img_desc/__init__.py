@@ -32,7 +32,6 @@ class Group(BaseGroup):
     pass
 
 # PERMANENT STORAGE for the Transmission Chain
-# This survives across sessions so Gen 2 can see Gen 1's data.
 class ChainData(ExtraModel):
     chain_id = models.StringField()  # Key: "Condition_ItemNr"
     round_number = models.IntegerField()
@@ -83,30 +82,23 @@ class Player(BasePlayer):
     def get_image_url(self):
         data = self.get_current_batch_data()
         img = str(data.get('image', '')).strip()
-        
-        # Security check for bad images
         if not img or img.lower() in ['nan', 'na', 'na_x', 'none', '', 'x']:
             return ""
-            
         base = self.session.vars.get('s3path_base', '').rstrip('/')
         ext = self.session.vars.get('extension', 'png')
         if "amazonaws" in base:
             base = base.replace("/practice", "")
-            
         clean_name = img.replace(" ", "_")
         if not clean_name.lower().endswith(f".{ext}"):
             clean_name = f"{clean_name}.{ext}"
-            
         return f"{base}/{clean_name}"
 
     def get_sentences_data(self):
         """
-        Smart Retrieval Logic for Interpreters:
-        1. If I am Producer -> Return empty (or previous input).
-        2. If I am Interpreter:
-           a. Check if I already have sentences saved locally (e.g. page reload).
-           b. Check 'ChainData' DB for valid human output from a previous session.
-           c. If no human data, fall back to 'bot_fallback' (Excel data from Producer 0).
+        Robust Retrieval Logic:
+        1. Local Cache
+        2. ChainData DB (Wrapped in Try/Except)
+        3. Bot Fallback
         """
         data = self.get_current_batch_data()
         my_role = data.get('role', '')
@@ -117,30 +109,34 @@ class Player(BasePlayer):
 
         # -- INTERPRETER LOGIC --
         
-        # 1. Local Cache (Page Reload)
+        # 1. Local Cache
         raw_local = data.get('sentences', '[]')
         if raw_local and raw_local != '[]':
-            return json.loads(raw_local)
+            try:
+                return json.loads(raw_local)
+            except: pass
 
         # 2. Transmission Chain (DB Lookup)
-        # Identify this "message chain" by Condition + Item Number
         chain_key = f"{data.get('condition', '')}_{data.get('item_nr', '')}"
         
-        # Look for the LATEST valid human submission
-        # We exclude the current participant to prevent self-loops in testing
-        recent_human_data = ChainData.objects.filter(
-            chain_id=chain_key
-        ).exclude(
-            participant_code=self.participant.code
-        ).order_by('-timestamp').first()
+        try:
+            # Look for LATEST valid human submission
+            recent_human_data = ChainData.objects.filter(
+                chain_id=chain_key
+            ).exclude(
+                participant_code=self.participant.code
+            ).order_by('-timestamp').first()
 
-        if recent_human_data:
-            # FOUND HUMAN DATA! Use it.
-            self.update_current_batch_data({'sentences': recent_human_data.sentences})
-            return json.loads(recent_human_data.sentences)
+            if recent_human_data:
+                # Validate JSON content before returning
+                json.loads(recent_human_data.sentences) # Test parse
+                self.update_current_batch_data({'sentences': recent_human_data.sentences})
+                return json.loads(recent_human_data.sentences)
+        except Exception as e:
+            logger.error(f"ChainData Lookup Failed: {e}")
+            # Fall through to fallback
 
-        # 3. Bot Fallback (Producer 0)
-        # If no human data exists, use the sentences from Excel (stored in bot_fallback)
+        # 3. Bot Fallback
         bot_sentences = data.get('bot_fallback', '[]')
         if bot_sentences and bot_sentences != '[]':
              self.update_current_batch_data({'sentences': bot_sentences})
@@ -149,38 +145,46 @@ class Player(BasePlayer):
         return []
 
     def get_full_sentences(self):
-        prefix = self.session.vars.get("prefix", "") or ""
-        suffixes = self.session.vars.get("suffixes") or []
-        sentences = self.get_sentences_data() or []
-        
-        sentences = [s for s in sentences if isinstance(s, list)]
+        try:
+            prefix = self.session.vars.get("prefix", "") or ""
+            suffixes = self.session.vars.get("suffixes") or []
+            sentences = self.get_sentences_data() or []
+            
+            # Ensure it is a list
+            if not isinstance(sentences, list):
+                sentences = []
+                
+            # Filter for valid sub-lists
+            sentences = [s for s in sentences if isinstance(s, list)]
 
-        res = []
-        for sentence in sentences:
-            expansion = []
-            if prefix: expansion.append(prefix)
-            for val, suffix in zip(sentence, suffixes):
-                expansion.append(str(val))
-                expansion.append(str(suffix))
-            res.append(" ".join(expansion))
-        return res
+            res = []
+            for sentence in sentences:
+                expansion = []
+                if prefix: expansion.append(prefix)
+                for val, suffix in zip(sentence, suffixes):
+                    expansion.append(str(val))
+                    expansion.append(str(suffix))
+                res.append(" ".join(expansion))
+            return res
+        except Exception as e:
+            logger.error(f"get_full_sentences crashed: {e}")
+            return []
 
     def save_to_chain(self):
-        """
-        If I am a Producer, save my output to the DB so future 
-        participants can see it.
-        """
         if self.inner_role == PRODUCER and self.producer_decision:
-            data = self.get_current_batch_data()
-            chain_key = f"{data.get('condition', '')}_{data.get('item_nr', '')}"
-            
-            ChainData.create(
-                chain_id=chain_key,
-                round_number=self.round_number,
-                sentences=self.producer_decision,
-                participant_code=self.participant.code,
-                timestamp=time.time()
-            )
+            try:
+                data = self.get_current_batch_data()
+                chain_key = f"{data.get('condition', '')}_{data.get('item_nr', '')}"
+                
+                ChainData.create(
+                    chain_id=chain_key,
+                    round_number=self.round_number,
+                    sentences=self.producer_decision,
+                    participant_code=self.participant.code,
+                    timestamp=time.time()
+                )
+            except Exception as e:
+                logger.error(f"Failed to save to Chain: {e}")
 
 # ----------------------------------------------------------------------------
 # SESSION CREATION
@@ -221,23 +225,20 @@ def creating_session(subsession: Subsession):
     if session.config.get("completion_code"):
         session.vars["completion_code"] = str(session.config["completion_code"])
 
-    # 1. Build Image Pool (Valid Only)
-    # We use this to repair broken images from "Producer 0" rows
+    # 1. Build Image Pool
     valid_pool = []
     for r in raw_records:
         img = str(r.get('Item', '')).strip()
-        # Must start with d- and NOT contain NA or ABC
         if img.startswith('d-') and 'NA' not in img and 'ABC' not in img:
             valid_pool.append(img)
-    if not valid_pool: valid_pool = ["d-A-B-BC-3"] # Fallback
+    if not valid_pool: valid_pool = ["d-A-B-BC-3"]
 
-    # 2. Build Data Structure
+    # 2. Build Data
     players = subsession.get_players()
     from collections import defaultdict
     data_by_id = defaultdict(list)
     
     for r in raw_records:
-        # Basic Fields
         try: exp_num = int(float(r.get('Exp', 0)))
         except: exp_num = 0
         try: rnd_num = int(float(r.get('group_enumeration') or r.get('Round') or 0))
@@ -247,16 +248,14 @@ def creating_session(subsession: Subsession):
         item_nr = str(r.get('Item.Nr', '')).strip()
         image = str(r.get('Item', '')).strip()
 
-        # REPAIR LOGIC:
-        # If Producer is 0 (Bot), or image is NA/broken -> Swap with random valid image
+        # REPAIR LOGIC
         prod_val = str(r.get('Producer', ''))
         is_bot = (prod_val == '0' or prod_val == '0.0')
         is_broken = (image == 'NA_x' or image == 'nan' or image == '' or 'D_' in image)
-        
         if is_bot or is_broken:
             image = random.choice(valid_pool)
 
-        # Parse Sentences (Json)
+        # Parse Sentences
         sentences = []
         for i in range(1, 6):
             p1 = str(r.get(f'Sentence_{i}_1', '')).strip()
@@ -267,15 +266,12 @@ def creating_session(subsession: Subsession):
 
         if 'Producer' in r and 'Interpreter' in r:
             try:
-                # Use IDs from Excel
                 prod_id = int(float(r['Producer']))
                 interp_id = int(float(r['Interpreter']))
                 
-                # --- PRODUCER ASSIGNMENT ---
-                # Only assign to Human Producers (ID > 0)
                 if prod_id > 0:
                     data_by_id[prod_id].append({
-                        'sort_key': (exp_num, rnd_num), # Original Order
+                        'sort_key': (exp_num, rnd_num),
                         'batch': exp_num,
                         'role': PRODUCER,
                         'condition': condition,
@@ -287,12 +283,8 @@ def creating_session(subsession: Subsession):
                         'rewards': ''
                     })
                 
-                # --- INTERPRETER ASSIGNMENT ---
-                # Only assign to Human Interpreters (ID > 0)
                 if interp_id > 0:
-                    # If Producer was Bot (0), the sentences_json IS the fallback data
                     fallback = sentences_json if prod_id == 0 else '[]'
-                    
                     data_by_id[interp_id].append({
                         'sort_key': (exp_num, rnd_num),
                         'batch': exp_num,
@@ -300,50 +292,37 @@ def creating_session(subsession: Subsession):
                         'condition': condition,
                         'item_nr': item_nr,
                         'image': image,
-                        'sentences': '[]', # Start empty, fetch dynamically from chain
+                        'sentences': '[]', 
                         'bot_fallback': fallback, 
                         'partner_id': prod_id,
                         'rewards': ''
                     })
             except: continue
 
-    # 3. Assign to Players + FORCE 3P/5I STRUCTURE
+    # 3. Assign + Force Structure
     for p in players:
-        # Player 1 gets Excel ID 1, Player 2 gets Excel ID 2, etc.
         my_items = data_by_id.get(p.id_in_subsession, [])
-        
-        # Split by Role
         producers = [x for x in my_items if x['role'] == PRODUCER]
         interpreters = [x for x in my_items if x['role'] == INTERPRETER]
         
-        # Sort internally by original round number
         producers.sort(key=lambda x: x['sort_key'])
         interpreters.sort(key=lambda x: x['sort_key'])
         
-        # --- SAFEGUARD: FORCE ROLE MIX ---
-        # If a player has NO Producer rounds (e.g. Player 1), 
-        # convert their first 3 Interpreter rounds into Producer rounds.
+        # SAFEGUARD: If 0 producers, force 3 I->P
         if len(producers) == 0 and len(interpreters) >= 3:
-            logger.info(f"Player {p.id_in_subsession} has 0 Producer rounds. Converting first 3 I -> P.")
             for _ in range(3):
-                # Take from Interpreter list
                 item = interpreters.pop(0) 
-                # Convert to Producer
                 item['role'] = PRODUCER
-                item['producer_sentences'] = "" # They must write this
-                # Keep image, condition, etc.
+                item['producer_sentences'] = ""
                 producers.append(item)
         
-        # --- BUILD BLOCK SCHEDULE ---
-        # 3 Producer -> 5 Interpreter -> Repeat
+        # Build 3P / 5I
         final_history = []
         p_idx = 0
         i_idx = 0
         current_round = 1
         
         while current_round <= Constants.num_rounds:
-            
-            # Add 3 Producer Rounds
             for _ in range(3):
                 if current_round > Constants.num_rounds: break
                 if p_idx < len(producers):
@@ -353,9 +332,8 @@ def creating_session(subsession: Subsession):
                     final_history.append(item)
                     p_idx += 1
                     current_round += 1
-                else: break # Run out of Producer tasks
+                else: break 
             
-            # Add 5 Interpreter Rounds
             for _ in range(5):
                 if current_round > Constants.num_rounds: break
                 if i_idx < len(interpreters):
@@ -365,11 +343,9 @@ def creating_session(subsession: Subsession):
                     final_history.append(item)
                     i_idx += 1
                     current_round += 1
-                else: break # Run out of Interpreter tasks
+                else: break 
             
-            # Break if we run out of both
-            if p_idx >= len(producers) and i_idx >= len(interpreters):
-                break
+            if p_idx >= len(producers) and i_idx >= len(interpreters): break
             
         p.participant.vars['batch_history'] = json.dumps(final_history)
 
@@ -387,16 +363,10 @@ class Q(Page):
     @staticmethod
     def is_displayed(player):
         if player.round_number > Constants.num_rounds: return False
-        
         if player.batch_history == "[]" and 'batch_history' in player.participant.vars:
             player.batch_history = player.participant.vars['batch_history']
-            
         data = player.get_current_batch_data()
-        
-        # End of valid rounds for this player
-        if not data:
-            return False
-
+        if not data: return False
         player.inner_role = data.get('role', '')
         if player.start_decision_time == 0: player.start_decision_time = time.time()
         return True
@@ -431,7 +401,6 @@ class Q(Page):
         updates = {}
         if player.inner_role == PRODUCER:
             updates['sentences'] = player.producer_decision
-            # SAVE TO CHAIN DB
             player.save_to_chain()
         elif player.inner_role == INTERPRETER:
             updates['rewards'] = player.interpreter_decision
@@ -444,7 +413,6 @@ class Feedback(Page):
     form_fields = ["feedback"]
     @staticmethod
     def is_displayed(player):
-        # Only show on actual last round
         try:
             hist = json.loads(player.batch_history)
             return player.round_number == len(hist)
