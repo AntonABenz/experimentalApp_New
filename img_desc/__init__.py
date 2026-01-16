@@ -306,6 +306,11 @@ def creating_session(subsession: Subsession):
         from collections import defaultdict
         data_by_pid = defaultdict(list)
 
+        rows_processed = 0
+        producer_9_count = 0
+        producer_0_count = 0
+        normal_producer_count = 0
+
         for idx, r in enumerate(rows):
             exp_num = safe_int(r.get("Exp"), 0)
             round_in_excel = safe_int(r.get("Round"), 0)
@@ -330,9 +335,11 @@ def creating_session(subsession: Subsession):
                 continue
 
             sort_key = (exp_num, round_in_excel, trial, idx)
+            rows_processed += 1
 
             # Handle Producer=9 case: skip image from this producer, pick random from pool
             if producer_slot == 9:
+                producer_9_count += 1
                 picked_image = random.choice(valid_pool)
                 # Only interpreter entry for Producer=9
                 data_by_pid[interp_pid].append({
@@ -348,8 +355,26 @@ def creating_session(subsession: Subsession):
                     "producer_sentences": sentences_json,
                     "interpreter_rewards": "",
                 })
-            elif producer_slot != 0 and prod_pid:
+            elif producer_slot == 0:
+                # Producer==0 row
+                producer_0_count += 1
+                picked = random.choice(valid_pool)
+                data_by_pid[interp_pid].append({
+                    "sort_key": sort_key,
+                    "role": INTERPRETER,
+                    "partner_id": 0,
+                    "exp": exp_num,
+                    "round_in_excel": round_in_excel,
+                    "trial": trial,
+                    "condition": condition,
+                    "item_nr": item_nr,
+                    "image": picked,
+                    "producer_sentences": sentences_json,
+                    "interpreter_rewards": "",
+                })
+            elif prod_pid:
                 # Normal producer case
+                normal_producer_count += 1
                 prod_image = image_raw if is_valid_real_image(image_raw) else random.choice(valid_pool)
                 
                 # Producer entry
@@ -381,22 +406,8 @@ def creating_session(subsession: Subsession):
                     "producer_sentences": sentences_json,
                     "interpreter_rewards": "",
                 })
-            else:
-                # Producer==0 row
-                picked = random.choice(valid_pool)
-                data_by_pid[interp_pid].append({
-                    "sort_key": sort_key,
-                    "role": INTERPRETER,
-                    "partner_id": 0,
-                    "exp": exp_num,
-                    "round_in_excel": round_in_excel,
-                    "trial": trial,
-                    "condition": condition,
-                    "item_nr": item_nr,
-                    "image": picked,
-                    "producer_sentences": sentences_json,
-                    "interpreter_rewards": "",
-                })
+
+        logger.info(f"Rows processed: {rows_processed} (Producer=0: {producer_0_count}, Producer=9: {producer_9_count}, Normal: {normal_producer_count})")
 
         # ---------------- finalize with 3P + 5I pattern repeating ----------------
         empty = []
@@ -408,7 +419,7 @@ def creating_session(subsession: Subsession):
             producer_items = [it for it in my_items if it.get("role") == PRODUCER]
             interpreter_items = [it for it in my_items if it.get("role") == INTERPRETER]
 
-            logger.info(f"Player {p.id_in_subsession}: {len(producer_items)} producer, {len(interpreter_items)} interpreter items")
+            logger.info(f"Player {p.id_in_subsession} (slot {pid_to_slot.get(p.id_in_subsession, 'N/A')}): {len(producer_items)} producer, {len(interpreter_items)} interpreter items BEFORE pattern building")
 
             # Build pattern: 3P + 5I repeating
             final_history = []
@@ -451,6 +462,11 @@ def creating_session(subsession: Subsession):
                 if p_idx >= len(producer_items) and i_idx >= len(interpreter_items):
                     logger.warning(f"Player {p.id_in_subsession}: Ran out of items at round {round_counter}")
                     break
+
+            # Count final roles
+            final_p_count = sum(1 for x in final_history if x.get("role") == PRODUCER)
+            final_i_count = sum(1 for x in final_history if x.get("role") == INTERPRETER)
+            logger.info(f"Player {p.id_in_subsession} FINAL schedule: {final_p_count} producer, {final_i_count} interpreter rounds (total {len(final_history)})")
 
             p.batch_history = json.dumps(final_history)
             p.participant.vars["batch_history"] = p.batch_history
