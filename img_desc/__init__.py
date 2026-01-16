@@ -31,13 +31,8 @@ class Subsession(BaseSubsession):
 class Group(BaseGroup):
     pass
 
-# PERMANENT STORAGE for the Transmission Chain
-class ChainData(ExtraModel):
-    chain_id = models.StringField()  # Key: "Condition_ItemNr"
-    round_number = models.IntegerField()
-    sentences = models.LongStringField() # The text produced
-    participant_code = models.StringField() # Who produced it
-    timestamp = models.FloatField()
+# We removed the ChainData model to simplify.
+# We will rely on Pre-Loaded Excel Data (Bot) for now to ensure stability.
 
 class Player(BasePlayer):
     batch_history = models.LongStringField(initial="[]")
@@ -82,109 +77,59 @@ class Player(BasePlayer):
     def get_image_url(self):
         data = self.get_current_batch_data()
         img = str(data.get('image', '')).strip()
-        if not img or img.lower() in ['nan', 'na', 'na_x', 'none', '', 'x']:
-            return ""
+        if not img or img.lower() in ['nan', 'na', 'na_x', 'none', '', 'x']: return ""
+        
         base = self.session.vars.get('s3path_base', '').rstrip('/')
         ext = self.session.vars.get('extension', 'png')
-        if "amazonaws" in base:
-            base = base.replace("/practice", "")
+        if "amazonaws" in base: base = base.replace("/practice", "")
         clean_name = img.replace(" ", "_")
-        if not clean_name.lower().endswith(f".{ext}"):
-            clean_name = f"{clean_name}.{ext}"
+        if not clean_name.lower().endswith(f".{ext}"): clean_name = f"{clean_name}.{ext}"
         return f"{base}/{clean_name}"
 
     def get_sentences_data(self):
         """
-        Robust Retrieval Logic:
-        1. Local Cache
-        2. ChainData DB (Wrapped in Try/Except)
-        3. Bot Fallback
+        Retrieves sentences for the Interpreter.
+        It uses the 'bot_fallback' field which contains the Excel sentences.
         """
         data = self.get_current_batch_data()
         my_role = data.get('role', '')
 
+        # Producers see nothing
         if my_role == PRODUCER:
             raw = data.get('sentences', '[]')
+            # If they previously entered something, show it (e.g. back button)
             return json.loads(raw) if raw and raw != '[]' else []
 
-        # -- INTERPRETER LOGIC --
-        
-        # 1. Local Cache
-        raw_local = data.get('sentences', '[]')
-        if raw_local and raw_local != '[]':
-            try:
-                return json.loads(raw_local)
-            except: pass
+        # INTERPRETERS
+        # 1. Check if we already have final sentences (e.g. from human partner)
+        raw_final = data.get('sentences', '[]')
+        if raw_final and raw_final != '[]':
+            return json.loads(raw_final)
 
-        # 2. Transmission Chain (DB Lookup)
-        chain_key = f"{data.get('condition', '')}_{data.get('item_nr', '')}"
-        
-        try:
-            # Look for LATEST valid human submission
-            recent_human_data = ChainData.objects.filter(
-                chain_id=chain_key
-            ).exclude(
-                participant_code=self.participant.code
-            ).order_by('-timestamp').first()
-
-            if recent_human_data:
-                # Validate JSON content before returning
-                json.loads(recent_human_data.sentences) # Test parse
-                self.update_current_batch_data({'sentences': recent_human_data.sentences})
-                return json.loads(recent_human_data.sentences)
-        except Exception as e:
-            logger.error(f"ChainData Lookup Failed: {e}")
-            # Fall through to fallback
-
-        # 3. Bot Fallback
+        # 2. Use Bot Fallback (Excel Data)
+        # This guarantees sentences always appear
         bot_sentences = data.get('bot_fallback', '[]')
         if bot_sentences and bot_sentences != '[]':
+             # Auto-fill 'sentences' with bot data so it's recorded
              self.update_current_batch_data({'sentences': bot_sentences})
              return json.loads(bot_sentences)
 
         return []
 
     def get_full_sentences(self):
-        try:
-            prefix = self.session.vars.get("prefix", "") or ""
-            suffixes = self.session.vars.get("suffixes") or []
-            sentences = self.get_sentences_data() or []
-            
-            # Ensure it is a list
-            if not isinstance(sentences, list):
-                sentences = []
-                
-            # Filter for valid sub-lists
-            sentences = [s for s in sentences if isinstance(s, list)]
-
-            res = []
-            for sentence in sentences:
-                expansion = []
-                if prefix: expansion.append(prefix)
-                for val, suffix in zip(sentence, suffixes):
-                    expansion.append(str(val))
-                    expansion.append(str(suffix))
-                res.append(" ".join(expansion))
-            return res
-        except Exception as e:
-            logger.error(f"get_full_sentences crashed: {e}")
-            return []
-
-    def save_to_chain(self):
-        if self.inner_role == PRODUCER and self.producer_decision:
-            try:
-                data = self.get_current_batch_data()
-                chain_key = f"{data.get('condition', '')}_{data.get('item_nr', '')}"
-                
-                ChainData.create(
-                    chain_id=chain_key,
-                    round_number=self.round_number,
-                    sentences=self.producer_decision,
-                    participant_code=self.participant.code,
-                    timestamp=time.time()
-                )
-            except Exception as e:
-                logger.error(f"Failed to save to Chain: {e}")
+        prefix = self.session.vars.get("prefix", "") or ""
+        suffixes = self.session.vars.get("suffixes") or []
+        sentences = self.get_sentences_data() or []
+        sentences = [s for s in sentences if isinstance(s, list)]
+        res = []
+        for sentence in sentences:
+            expansion = []
+            if prefix: expansion.append(prefix)
+            for val, suffix in zip(sentence, suffixes):
+                expansion.append(str(val))
+                expansion.append(str(suffix))
+            res.append(" ".join(expansion))
+        return res
 
 # ----------------------------------------------------------------------------
 # SESSION CREATION
@@ -284,7 +229,9 @@ def creating_session(subsession: Subsession):
                     })
                 
                 if interp_id > 0:
-                    fallback = sentences_json if prod_id == 0 else '[]'
+                    # ALWAYS copy bot sentences to fallback so we have them
+                    fallback = sentences_json
+                    
                     data_by_id[interp_id].append({
                         'sort_key': (exp_num, rnd_num),
                         'batch': exp_num,
@@ -299,7 +246,7 @@ def creating_session(subsession: Subsession):
                     })
             except: continue
 
-    # 3. Assign + Force Structure
+    # 3. Assign + Force Structure (3P / 5I)
     for p in players:
         my_items = data_by_id.get(p.id_in_subsession, [])
         producers = [x for x in my_items if x['role'] == PRODUCER]
@@ -401,7 +348,6 @@ class Q(Page):
         updates = {}
         if player.inner_role == PRODUCER:
             updates['sentences'] = player.producer_decision
-            player.save_to_chain()
         elif player.inner_role == INTERPRETER:
             updates['rewards'] = player.interpreter_decision
             
