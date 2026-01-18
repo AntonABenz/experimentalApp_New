@@ -31,9 +31,6 @@ class Subsession(BaseSubsession):
 class Group(BaseGroup):
     pass
 
-# We removed the ChainData model to simplify.
-# We will rely on Pre-Loaded Excel Data (Bot) for now to ensure stability.
-
 class Player(BasePlayer):
     batch_history = models.LongStringField(initial="[]")
     
@@ -77,40 +74,36 @@ class Player(BasePlayer):
     def get_image_url(self):
         data = self.get_current_batch_data()
         img = str(data.get('image', '')).strip()
-        if not img or img.lower() in ['nan', 'na', 'na_x', 'none', '', 'x']: return ""
-        
+        if not img or img.lower() in ['nan', 'na', 'na_x', 'none', '', 'x']:
+            return ""
         base = self.session.vars.get('s3path_base', '').rstrip('/')
         ext = self.session.vars.get('extension', 'png')
-        if "amazonaws" in base: base = base.replace("/practice", "")
+        if "amazonaws" in base:
+            base = base.replace("/practice", "")
         clean_name = img.replace(" ", "_")
-        if not clean_name.lower().endswith(f".{ext}"): clean_name = f"{clean_name}.{ext}"
+        if not clean_name.lower().endswith(f".{ext}"):
+            clean_name = f"{clean_name}.{ext}"
         return f"{base}/{clean_name}"
 
     def get_sentences_data(self):
-        """
-        Retrieves sentences for the Interpreter.
-        It uses the 'bot_fallback' field which contains the Excel sentences.
-        """
+        """Retrieves sentences for the Interpreter."""
         data = self.get_current_batch_data()
         my_role = data.get('role', '')
 
         # Producers see nothing
         if my_role == PRODUCER:
             raw = data.get('sentences', '[]')
-            # If they previously entered something, show it (e.g. back button)
             return json.loads(raw) if raw and raw != '[]' else []
 
         # INTERPRETERS
-        # 1. Check if we already have final sentences (e.g. from human partner)
+        # 1. Check local cache (if they already saw it/reloaded)
         raw_final = data.get('sentences', '[]')
         if raw_final and raw_final != '[]':
             return json.loads(raw_final)
 
         # 2. Use Bot Fallback (Excel Data)
-        # This guarantees sentences always appear
         bot_sentences = data.get('bot_fallback', '[]')
         if bot_sentences and bot_sentences != '[]':
-             # Auto-fill 'sentences' with bot data so it's recorded
              self.update_current_batch_data({'sentences': bot_sentences})
              return json.loads(bot_sentences)
 
@@ -130,6 +123,10 @@ class Player(BasePlayer):
                 expansion.append(str(suffix))
             res.append(" ".join(expansion))
         return res
+
+    def save_to_chain(self):
+        # Placeholder for chain logic
+        pass
 
 # ----------------------------------------------------------------------------
 # SESSION CREATION
@@ -229,7 +226,6 @@ def creating_session(subsession: Subsession):
                     })
                 
                 if interp_id > 0:
-                    # ALWAYS copy bot sentences to fallback so we have them
                     fallback = sentences_json
                     
                     data_by_id[interp_id].append({
@@ -246,7 +242,7 @@ def creating_session(subsession: Subsession):
                     })
             except: continue
 
-    # 3. Assign + Force Structure (3P / 5I)
+    # 3. Assign + Force Structure
     for p in players:
         my_items = data_by_id.get(p.id_in_subsession, [])
         producers = [x for x in my_items if x['role'] == PRODUCER]
@@ -255,7 +251,7 @@ def creating_session(subsession: Subsession):
         producers.sort(key=lambda x: x['sort_key'])
         interpreters.sort(key=lambda x: x['sort_key'])
         
-        # SAFEGUARD: If 0 producers, force 3 I->P
+        # SAFEGUARD: Force 3P if none exist
         if len(producers) == 0 and len(interpreters) >= 3:
             for _ in range(3):
                 item = interpreters.pop(0) 
@@ -372,18 +368,57 @@ class FinalForProlific(Page):
             return player.session.config.get("for_prolific") and player.round_number == len(hist)
         except: return False
     def get(self):
-        cc = (player.session.vars.get("completion_code") or player.session.config.get("completion_code"))
+        # Use self.player to access session vars
+        cc = (self.player.session.vars.get("completion_code") or self.player.session.config.get("completion_code"))
         if not cc: return redirect(Constants.API_ERR_URL)
         return redirect(STUBURL + str(cc))
 
+# ----------------------------------------------------------------------------
+# EXPORT
+# ----------------------------------------------------------------------------
 def custom_export(players):
+    """
+    Exports 80 rows per participant with correct timing and response data.
+    Merging: JSON History (Role/Sentences) + DB Player (Time Taken).
+    """
     yield ["session", "participant", "round", "role", "condition", "item_nr", "image", "sentences", "rewards", "seconds"]
+    
+    processed_participants = set()
+    
     for p in players:
+        if p.participant.code in processed_participants:
+            continue
+        processed_participants.add(p.participant.code)
+        
+        # 1. Get the Schedule/Responses from JSON History
         history = json.loads(p.participant.vars.get('batch_history', '[]'))
+        
+        # 2. Get the Timing from DB (Player objects store the time for each round)
+        timing_map = {}
+        for sub_player in p.participant.get_players():
+            timing_map[sub_player.round_number] = sub_player.decision_seconds
+
+        # 3. Sort and Yield Merged Data
         history.sort(key=lambda x: int(x.get('round_number', 0)))
+        
         for item in history:
             rnd = int(item.get('round_number', 0))
             if rnd < 1 or rnd > Constants.num_rounds: continue
-            yield [p.session.code, p.participant.code, rnd, item.get('role'), item.get('condition'), item.get('item_nr'), item.get('image'), item.get('sentences'), item.get('rewards'), 0]
+            
+            # Lookup time for this specific round
+            seconds = timing_map.get(rnd, 0)
+            
+            yield [
+                p.session.code, 
+                p.participant.code, 
+                rnd, 
+                item.get('role'), 
+                item.get('condition'), 
+                item.get('item_nr'), 
+                item.get('image'), 
+                item.get('sentences'), 
+                item.get('rewards'), 
+                seconds # Accurate time taken
+            ]
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
