@@ -143,12 +143,18 @@ def safe_int(x, default=0) -> int:
         return default
 
 def clean_str(x) -> str:
+    # Only treat actual None / NaN as empty.
     if x is None:
         return ""
     s = str(x).strip()
-    if s.lower() in {"nan", "none"}:
+
+    # pandas-style NaNs
+    if s.lower() == "nan":
         return ""
+
+    # IMPORTANT: keep the literal "None" as a valid quantifier
     return s
+
 
 def normalize_key(key):
     if not key:
