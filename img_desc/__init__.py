@@ -4,7 +4,7 @@ import logging
 import time
 import re
 import random
-from django.shortcuts import redirect
+from django.http import HttpResponseRedirect # REQUIRED FIX
 
 logger = logging.getLogger("benzapp.img_desc")
 
@@ -86,22 +86,18 @@ class Player(BasePlayer):
         return f"{base}/{clean_name}"
 
     def get_sentences_data(self):
-        """Retrieves sentences for the Interpreter."""
         data = self.get_current_batch_data()
         my_role = data.get('role', '')
 
-        # Producers see nothing
         if my_role == PRODUCER:
             raw = data.get('sentences', '[]')
             return json.loads(raw) if raw and raw != '[]' else []
 
         # INTERPRETERS
-        # 1. Check local cache (if they already saw it/reloaded)
         raw_final = data.get('sentences', '[]')
         if raw_final and raw_final != '[]':
             return json.loads(raw_final)
 
-        # 2. Use Bot Fallback (Excel Data)
         bot_sentences = data.get('bot_fallback', '[]')
         if bot_sentences and bot_sentences != '[]':
              self.update_current_batch_data({'sentences': bot_sentences})
@@ -125,7 +121,6 @@ class Player(BasePlayer):
         return res
 
     def save_to_chain(self):
-        # Placeholder for chain logic
         pass
 
 # ----------------------------------------------------------------------------
@@ -146,7 +141,6 @@ def creating_session(subsession: Subsession):
     raw_records = excel_payload['data']
     settings = excel_payload['settings']
     
-    # Settings Setup
     raw_s3 = settings.get("s3path") or settings.get("s3path_base") or ""
     if "console.aws.amazon.com" in raw_s3:
         try:
@@ -167,7 +161,6 @@ def creating_session(subsession: Subsession):
     if session.config.get("completion_code"):
         session.vars["completion_code"] = str(session.config["completion_code"])
 
-    # 1. Build Image Pool
     valid_pool = []
     for r in raw_records:
         img = str(r.get('Item', '')).strip()
@@ -175,7 +168,6 @@ def creating_session(subsession: Subsession):
             valid_pool.append(img)
     if not valid_pool: valid_pool = ["d-A-B-BC-3"]
 
-    # 2. Build Data
     players = subsession.get_players()
     from collections import defaultdict
     data_by_id = defaultdict(list)
@@ -190,14 +182,12 @@ def creating_session(subsession: Subsession):
         item_nr = str(r.get('Item.Nr', '')).strip()
         image = str(r.get('Item', '')).strip()
 
-        # REPAIR LOGIC
         prod_val = str(r.get('Producer', ''))
         is_bot = (prod_val == '0' or prod_val == '0.0')
         is_broken = (image == 'NA_x' or image == 'nan' or image == '' or 'D_' in image)
         if is_bot or is_broken:
             image = random.choice(valid_pool)
 
-        # Parse Sentences
         sentences = []
         for i in range(1, 6):
             p1 = str(r.get(f'Sentence_{i}_1', '')).strip()
@@ -227,7 +217,6 @@ def creating_session(subsession: Subsession):
                 
                 if interp_id > 0:
                     fallback = sentences_json
-                    
                     data_by_id[interp_id].append({
                         'sort_key': (exp_num, rnd_num),
                         'batch': exp_num,
@@ -242,7 +231,6 @@ def creating_session(subsession: Subsession):
                     })
             except: continue
 
-    # 3. Assign + Force Structure
     for p in players:
         my_items = data_by_id.get(p.id_in_subsession, [])
         producers = [x for x in my_items if x['role'] == PRODUCER]
@@ -251,7 +239,6 @@ def creating_session(subsession: Subsession):
         producers.sort(key=lambda x: x['sort_key'])
         interpreters.sort(key=lambda x: x['sort_key'])
         
-        # SAFEGUARD: Force 3P if none exist
         if len(producers) == 0 and len(interpreters) >= 3:
             for _ in range(3):
                 item = interpreters.pop(0) 
@@ -259,7 +246,6 @@ def creating_session(subsession: Subsession):
                 item['producer_sentences'] = ""
                 producers.append(item)
         
-        # Build 3P / 5I
         final_history = []
         p_idx = 0
         i_idx = 0
@@ -298,7 +284,9 @@ def creating_session(subsession: Subsession):
 class FaultyCatcher(Page):
     @staticmethod
     def is_displayed(player): return player.faulty
-    def get(self): return redirect(Constants.FALLBACK_URL)
+    def get(self): 
+        # FIX: use HttpResponseRedirect
+        return HttpResponseRedirect(Constants.FALLBACK_URL)
 
 class Q(Page):
     form_model = "player"
@@ -344,6 +332,7 @@ class Q(Page):
         updates = {}
         if player.inner_role == PRODUCER:
             updates['sentences'] = player.producer_decision
+            player.save_to_chain()
         elif player.inner_role == INTERPRETER:
             updates['rewards'] = player.interpreter_decision
             
@@ -367,19 +356,22 @@ class FinalForProlific(Page):
             hist = json.loads(player.batch_history)
             return player.session.config.get("for_prolific") and player.round_number == len(hist)
         except: return False
+        
     def get(self):
-        # Use self.player to access session vars
+        # FIX: Using self.player and HttpResponseRedirect
         cc = (self.player.session.vars.get("completion_code") or self.player.session.config.get("completion_code"))
-        if not cc: return redirect(Constants.API_ERR_URL)
-        return redirect(STUBURL + str(cc))
+        if not cc: 
+            return HttpResponseRedirect(Constants.API_ERR_URL)
+        return HttpResponseRedirect(STUBURL + str(cc))
 
 # ----------------------------------------------------------------------------
 # EXPORT
 # ----------------------------------------------------------------------------
 def custom_export(players):
     """
-    Exports 80 rows per participant with correct timing and response data.
-    Merging: JSON History (Role/Sentences) + DB Player (Time Taken).
+    Robust Export:
+    - Wraps rows in try/except so one bad row doesn't kill the file.
+    - Matches time taken from Player table to responses from JSON history.
     """
     yield ["session", "participant", "round", "role", "condition", "item_nr", "image", "sentences", "rewards", "seconds"]
     
@@ -390,35 +382,40 @@ def custom_export(players):
             continue
         processed_participants.add(p.participant.code)
         
-        # 1. Get the Schedule/Responses from JSON History
-        history = json.loads(p.participant.vars.get('batch_history', '[]'))
-        
-        # 2. Get the Timing from DB (Player objects store the time for each round)
-        timing_map = {}
-        for sub_player in p.participant.get_players():
-            timing_map[sub_player.round_number] = sub_player.decision_seconds
-
-        # 3. Sort and Yield Merged Data
-        history.sort(key=lambda x: int(x.get('round_number', 0)))
-        
-        for item in history:
-            rnd = int(item.get('round_number', 0))
-            if rnd < 1 or rnd > Constants.num_rounds: continue
+        try:
+            # 1. Get History
+            history_json = p.participant.vars.get('batch_history', '[]')
+            history = json.loads(history_json)
             
-            # Lookup time for this specific round
-            seconds = timing_map.get(rnd, 0)
+            # 2. Get Timing
+            timing_map = {}
+            for sub in p.participant.get_players():
+                timing_map[sub.round_number] = sub.decision_seconds
             
-            yield [
-                p.session.code, 
-                p.participant.code, 
-                rnd, 
-                item.get('role'), 
-                item.get('condition'), 
-                item.get('item_nr'), 
-                item.get('image'), 
-                item.get('sentences'), 
-                item.get('rewards'), 
-                seconds # Accurate time taken
-            ]
+            # 3. Sort
+            history.sort(key=lambda x: int(x.get('round_number', 0)))
+            
+            # 4. Yield Rows
+            for item in history:
+                rnd = int(item.get('round_number', 0))
+                if rnd < 1 or rnd > Constants.num_rounds: continue
+                
+                seconds = timing_map.get(rnd, 0)
+                
+                yield [
+                    p.session.code, 
+                    p.participant.code, 
+                    rnd, 
+                    item.get('role'), 
+                    item.get('condition'), 
+                    item.get('item_nr'), 
+                    item.get('image'), 
+                    item.get('sentences'), 
+                    item.get('rewards'), 
+                    seconds
+                ]
+        except Exception:
+            # If a participant's data is corrupted, skip them but continue export
+            continue
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
