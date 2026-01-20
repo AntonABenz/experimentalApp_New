@@ -255,6 +255,67 @@ def creating_session(subsession: Subsession):
             rows = list(raw_data or [])
 
         logger.info(f"Total rows in Excel: {len(rows)}")
+        
+        # DEBUG: Check column names
+        if rows:
+            logger.info(f"Excel columns found: {list(rows[0].keys())}")
+        
+        # FLEXIBLE COLUMN MAPPING
+        # Sometimes "Exp" column is misnamed (e.g., "d111")
+        # Try to detect the correct column
+        exp_column = None
+        if rows:
+            first_row = rows[0]
+            # Try common names
+            for possible_name in ["Exp", "exp", "EXP", "Experiment", "experiment"]:
+                if possible_name in first_row:
+                    exp_column = possible_name
+                    logger.info(f"Using '{exp_column}' as Exp column")
+                    break
+            
+            # If not found, check if there's a column that looks like it contains exp numbers
+            if not exp_column:
+                for col_name, col_value in first_row.items():
+                    # Check if column contains numbers 0-9
+                    try:
+                        val = safe_int(col_value, -999)
+                        if 0 <= val <= 20:  # Reasonable exp number range
+                            logger.warning(f"Column '{col_name}' contains number {val}, might be Exp column")
+                            # Ask user or use heuristic
+                            if col_name.lower().startswith('d') and len(col_name) <= 5:
+                                exp_column = col_name
+                                logger.warning(f"⚠️ Using '{exp_column}' as Exp column (detected, but unusual name!)")
+                                break
+                    except:
+                        pass
+        
+        if not exp_column:
+            logger.error("❌ Could not find 'Exp' column in Excel!")
+            logger.error(f"Available columns: {list(rows[0].keys()) if rows else 'No rows'}")
+            raise RuntimeError(
+                "Cannot find 'Exp' column in Excel. "
+                "Please rename your experiment column to 'Exp' or check column names."
+            )
+        
+        # Helper function to get exp value
+        def get_exp(r):
+            return safe_int(r.get(exp_column), 0)
+        
+        # DEBUG: Check what Exp values exist
+        exp_values = set()
+        for r in rows:
+            exp_num = get_exp(r)
+            exp_values.add(exp_num)
+        logger.info(f"Exp values found in column '{exp_column}': {sorted(exp_values)}")
+        
+        if exp_values == {0}:
+            logger.error("⚠️ CRITICAL: Excel ONLY contains Exp=0! You need Exp 1, 2, 3, etc.")
+            logger.error("⚠️ Participants need Exp 1+ rows to play. Exp 0 is only for lookup!")
+            raise RuntimeError(
+                "Excel file only contains Exp=0 rows. "
+                "You must have Exp=1, Exp=2, Exp=3, etc. for participants to play. "
+                "Exp 0 is only a lookup table for bot sentences."
+            )
 
         # ---------------- settings -> session.vars ----------------
         clean_settings = {normalize_key(k): clean_str(v) for k, v in settings.items()}
