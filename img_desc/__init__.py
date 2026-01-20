@@ -123,14 +123,21 @@ class Player(BasePlayer):
                 parts.append(str(prefix))
             # pair each value with suffix_1, suffix_2, ...
             for val, suf in zip(sentence, suffixes):
-                parts.append(str(val))
+                val_str = str(val).strip() if val else ""
+                # If value is empty or literally "nan", display as "None"
+                if not val_str or val_str.lower() in ['nan', 'none']:
+                    val_str = "None"
+                parts.append(val_str)
                 if suf:
                     parts.append(str(suf))
             # if sentence longer than suffixes, append remaining values
             if len(sentence) > len(suffixes):
                 for extra in sentence[len(suffixes):]:
-                    parts.append(str(extra))
-            res.append(" ".join([p for p in parts if p is not None and str(p).strip() != ""]))
+                    extra_str = str(extra).strip() if extra else ""
+                    if not extra_str or extra_str.lower() in ['nan', 'none']:
+                        extra_str = "None"
+                    parts.append(extra_str)
+            res.append(" ".join(parts))
         return res
 
 # ----------------------------------------------------------------------------
@@ -143,18 +150,12 @@ def safe_int(x, default=0) -> int:
         return default
 
 def clean_str(x) -> str:
-    # Only treat actual None / NaN as empty.
     if x is None:
         return ""
     s = str(x).strip()
-
-    # pandas-style NaNs
-    if s.lower() == "nan":
+    if s.lower() in {"nan", "none"}:
         return ""
-
-    # IMPORTANT: keep the literal "None" as a valid quantifier
     return s
-
 
 def normalize_key(key):
     if not key:
@@ -219,7 +220,28 @@ def creating_session(subsession: Subsession):
 
         logger.info(f"Starting session creation with filename: {filename}")
 
-        from reading_xls.get_data import get_data
+        # Try multiple import methods
+        try:
+            from reading_xls.get_data import get_data
+        except ImportError:
+            try:
+                import sys
+                from pathlib import Path
+                # Add reading_xls to path
+                reading_xls_path = Path(__file__).parent.parent / "reading_xls"
+                sys.path.insert(0, str(reading_xls_path))
+                from get_data import get_data
+            except ImportError:
+                # Last resort: import the module
+                import importlib.util
+                spec = importlib.util.spec_from_file_location(
+                    "get_data", 
+                    Path(__file__).parent.parent / "reading_xls" / "get_data.py"
+                )
+                get_data_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(get_data_module)
+                get_data = get_data_module.get_data
+        
         excel_payload = get_data(filename)
         raw_data = excel_payload.get("data")
         settings = excel_payload.get("settings") or {}
@@ -611,70 +633,83 @@ class FinalForProlific(Page):
 # EXPORT
 # ----------------------------------------------------------------------------
 def custom_export(players):
-    yield [
-        "session_code",
-        "participant_code",
-        "round_number",
-        "role",
-        "condition",
-        "item_nr",
-        "image",
-        "producer_sentences",
-        "interpreter_rewards",
-        "decision_seconds",
-        "feedback",
-    ]
-
-    processed = set()
+    """
+    Exports one row per round per participant with timing, responses, and demographics.
+    Demographics from the 'start' app are included in every row for easy analysis.
+    """
+    yield ["session", "participant", "prolific_id", "excel_slot", "demographics", "round", "role", "condition", "item_nr", "image", "sentences", "rewards", "seconds", "feedback"]
+    
+    # Group players by participant
+    from collections import defaultdict
+    players_by_participant = defaultdict(list)
     for p in players:
-        if p.participant.code in processed:
-            continue
-        processed.add(p.participant.code)
-
-        history_json = p.participant.vars.get("batch_history", "[]")
+        players_by_participant[p.participant.code].append(p)
+    
+    # Process each participant once
+    for participant_code, participant_players in players_by_participant.items():
         try:
-            history = json.loads(history_json)
-        except Exception:
-            history = []
-
-        # Build timing map from all Player objects for this participant
-        timing_map = {}
-        feedback_str = ""
-        try:
-            # Get all players for this participant across all rounds
-            all_players = [pl for pl in players if pl.participant.code == p.participant.code]
-            for sub_p in all_players:
-                if sub_p.round_number:
-                    timing_map[sub_p.round_number] = sub_p.decision_seconds or 0
-                    # Get feedback from the last round
-                    if sub_p.round_number == Constants.num_rounds:
-                        feedback_str = sub_p.feedback or ""
-        except Exception as e:
-            logger.error(f"Error building timing map: {e}")
-
-        history.sort(key=lambda x: safe_int(x.get("round_number", 0), 0))
-
-        for item in history:
+            # Get any player object for this participant (to access session/vars)
+            first_player = participant_players[0]
+            
+            # Get Prolific ID and Excel slot
+            prolific_id = first_player.participant.vars.get('prolific_id', '')
+            excel_slot = first_player.id_in_subsession  # Their slot assignment (1-4, 5-8, etc.)
+            
+            # Get demographics from 'start' app
+            demographics = ""
             try:
-                rnd = safe_int(item.get("round_number", 0), 0)
-                if rnd < 1 or rnd > Constants.num_rounds:
-                    continue
-
-                yield [
-                    p.session.code,
-                    p.participant.code,
-                    rnd,
-                    item.get("role", ""),
-                    item.get("condition", ""),
-                    item.get("item_nr", ""),
-                    item.get("image", ""),
-                    item.get("producer_sentences", "") or item.get("sentences", ""),
-                    item.get("interpreter_rewards", "") or item.get("rewards", ""),
-                    timing_map.get(rnd, 0),
-                    feedback_str if rnd == Constants.num_rounds else "",
-                ]
+                # Try to get demographics from start app Player
+                start_players = [p for p in first_player.participant.get_players() 
+                                if hasattr(p, 'survey_data') and p.survey_data]
+                if start_players:
+                    demographics = start_players[0].survey_data or ""
             except Exception as e:
-                logger.error(f"Error exporting row: {e}")
-                continue
+                logger.warning(f"Could not retrieve demographics for {participant_code}: {e}")
+            
+            # 1. Get History from participant vars
+            history_json = first_player.participant.vars.get('batch_history', '[]')
+            history = json.loads(history_json)
+            
+            # 2. Build timing map from Player objects
+            timing_map = {}
+            feedback_map = {}
+            for p in participant_players:
+                if p.round_number:
+                    timing_map[p.round_number] = p.decision_seconds or 0
+                    if p.feedback:
+                        feedback_map[p.round_number] = p.feedback
+            
+            # 3. Sort and export
+            history.sort(key=lambda x: int(x.get('round_number', 0)))
+            
+            for item in history:
+                try:
+                    rnd = int(item.get('round_number', 0))
+                    if rnd < 1 or rnd > Constants.num_rounds:
+                        continue
+                    
+                    yield [
+                        first_player.session.code,
+                        participant_code,
+                        prolific_id,
+                        excel_slot,
+                        demographics,  # Same demographics on every row for this participant
+                        rnd,
+                        item.get('role', ''),
+                        item.get('condition', ''),
+                        item.get('item_nr', ''),
+                        item.get('image', ''),
+                        item.get('sentences', ''),
+                        item.get('rewards', ''),
+                        timing_map.get(rnd, 0),
+                        feedback_map.get(rnd, ''),
+                    ]
+                except Exception as e:
+                    logger.error(f"Error exporting row for {participant_code} round {rnd}: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Error exporting participant {participant_code}: {e}")
+            continue
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
