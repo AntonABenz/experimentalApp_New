@@ -633,83 +633,103 @@ class FinalForProlific(Page):
 # EXPORT
 # ----------------------------------------------------------------------------
 def custom_export(players):
-    """
-    Exports one row per round per participant with timing, responses, and demographics.
-    Demographics from the 'start' app are included in every row for easy analysis.
-    """
-    yield ["session", "participant", "prolific_id", "excel_slot", "demographics", "round", "role", "condition", "item_nr", "image", "sentences", "rewards", "seconds", "feedback"]
+    yield [
+        "session", "participant", "prolific_id", "demographics", 
+        "exp_num", "round", "role", "producer_id", "interpreter_id", 
+        "condition", "item_nr", "image", "sentences_formatted", "sentences_raw", 
+        "rewards", "seconds", "feedback"
+    ]
     
-    # Group players by participant
     from collections import defaultdict
     players_by_participant = defaultdict(list)
     for p in players:
         players_by_participant[p.participant.code].append(p)
     
-    # Process each participant once
     for participant_code, participant_players in players_by_participant.items():
         try:
-            # Get any player object for this participant (to access session/vars)
             first_player = participant_players[0]
             
-            # Get Prolific ID and Excel slot
+            # Metadata
             prolific_id = first_player.participant.vars.get('prolific_id', '')
-            excel_slot = first_player.id_in_subsession  # Their slot assignment (1-4, 5-8, etc.)
+            excel_slot = first_player.id_in_subsession # Used for calc, not exported
             
-            # Get demographics from 'start' app
+            # Demographics
             demographics = ""
             try:
-                # Try to get demographics from start app Player
-                start_players = [p for p in first_player.participant.get_players() 
-                                if hasattr(p, 'survey_data') and p.survey_data]
-                if start_players:
-                    demographics = start_players[0].survey_data or ""
-            except Exception as e:
-                logger.warning(f"Could not retrieve demographics for {participant_code}: {e}")
-            
-            # 1. Get History from participant vars
+                if 'demographics' in first_player.participant.vars:
+                    demographics = json.dumps(first_player.participant.vars['demographics'])
+                else:
+                    start_players = [p for p in first_player.participant.get_players() if hasattr(p, 'survey_data')]
+                    if start_players: demographics = start_players[0].survey_data or ""
+            except: pass
+
+            # History
             history_json = first_player.participant.vars.get('batch_history', '[]')
             history = json.loads(history_json)
             
-            # 2. Build timing map from Player objects
+            # Timing
             timing_map = {}
-            feedback_map = {}
+            feedback_str = ""
             for p in participant_players:
                 if p.round_number:
                     timing_map[p.round_number] = p.decision_seconds or 0
-                    if p.feedback:
-                        feedback_map[p.round_number] = p.feedback
+                    if p.round_number == Constants.num_rounds and p.feedback:
+                        feedback_str = p.feedback
             
-            # 3. Sort and export
+            # Sort
             history.sort(key=lambda x: int(x.get('round_number', 0)))
             
             for item in history:
+                rnd = int(item.get('round_number', 0))
+                if rnd < 1 or rnd > Constants.num_rounds: continue
+                
+                # Format Sentences
+                raw_sentences = item.get('producer_sentences') or item.get('sentences') or ""
+                formatted_sentences = raw_sentences
                 try:
-                    rnd = int(item.get('round_number', 0))
-                    if rnd < 1 or rnd > Constants.num_rounds:
-                        continue
-                    
-                    yield [
-                        first_player.session.code,
-                        participant_code,
-                        prolific_id,
-                        excel_slot,
-                        demographics,  # Same demographics on every row for this participant
-                        rnd,
-                        item.get('role', ''),
-                        item.get('condition', ''),
-                        item.get('item_nr', ''),
-                        item.get('image', ''),
-                        item.get('sentences', ''),
-                        item.get('rewards', ''),
-                        timing_map.get(rnd, 0),
-                        feedback_map.get(rnd, ''),
-                    ]
-                except Exception as e:
-                    logger.error(f"Error exporting row for {participant_code} round {rnd}: {e}")
-                    continue
-                    
-        except Exception as e:
-            logger.error(f"Error exporting participant {participant_code}: {e}")
-            continue
+                    if isinstance(raw_sentences, str) and raw_sentences.startswith('['):
+                        data = json.loads(raw_sentences)
+                        parts = []
+                        for pair in data:
+                            if isinstance(pair, list) and len(pair) >= 2:
+                                parts.append(f"{pair[0]} {pair[1]}")
+                        if parts:
+                            formatted_sentences = "; ".join(parts)
+                except: pass
 
+                # IDs
+                my_role = item.get('role', '')
+                partner_id = item.get('partner_id', 0)
+                
+                if my_role == PRODUCER:
+                    prod_id = excel_slot
+                    interp_id = partner_id
+                else:
+                    prod_id = partner_id
+                    interp_id = excel_slot
+
+                # FIX: Ensure we check "d111" or "Exp" for experiment number in export too
+                exp_num = item.get('exp', '') or item.get('d111', '')
+
+                yield [
+                    first_player.session.code, 
+                    participant_code, 
+                    prolific_id,
+                    demographics,
+                    exp_num,
+                    rnd, 
+                    my_role,
+                    prod_id,
+                    interp_id,
+                    item.get('condition', ''), 
+                    item.get('item_nr', ''), 
+                    item.get('image', ''), 
+                    formatted_sentences, 
+                    raw_sentences,
+                    item.get('interpreter_rewards', '') or item.get('rewards', ''), 
+                    timing_map.get(rnd, 0), 
+                    feedback_str if rnd == Constants.num_rounds else ""
+                ]
+        except Exception: continue
+            
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
