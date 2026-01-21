@@ -1,7 +1,7 @@
 from otree.api import *
 import logging
-import re
 import json
+import re
 
 # IMPORT THE ROBUST LOADER
 from reading_xls.get_data import get_data
@@ -21,6 +21,8 @@ class Group(BaseGroup):
 
 class Player(BasePlayer):
     survey_data = models.LongStringField(blank=True)
+    # Field to store practice answers (JSON) for validation
+    practice_response = models.LongStringField(blank=True)
 
 # -------------------------------------------------------------------
 #  HELPER FUNCTIONS
@@ -37,21 +39,116 @@ def build_image_url(player, filename: str) -> str:
     s3_base = player.session.vars.get('s3path_base', "")
     ext = player.session.vars.get('extension', "png")
 
-    # Clean filename
     filename = filename.strip()
     if not filename.lower().endswith(f".{ext}"):
         filename = f"{filename}.{ext}"
 
-    # Handle S3 base vs Practice subfolder
-    # Images in "start" app usually live in /practice folder
     if s3_base:
         base = s3_base.rstrip("/")
         if "amazonaws.com" in base:
-            # Ensure we point to the practice folder
             return f"{base}/practice/{filename}"
         return f"{base}/{filename}"
     
     return filename
+
+# --- VALIDATION HELPERS ---
+
+def validate_medals(player, value, practice_id):
+    """
+    For P1, P2, P3: Checks if user medals match right_answer_X in Excel.
+    Expected Excel format: right_answer_1=1, right_answer_2=0...
+    """
+    if not value: return "Please make a selection."
+    
+    try:
+        user_answers = json.loads(value) # e.g. [1, 0, 1, 0]
+    except:
+        return "Invalid data format."
+
+    key = f"Practice{practice_id}"
+    settings = player.session.vars["practice_settings"].get(key, {})
+    correct_answers = settings.get("right_answers", []) # e.g. [['1'], ['0'], ['1'], ['0']]
+
+    # Compare
+    for i, correct_set in enumerate(correct_answers):
+        if i >= len(user_answers): break
+        
+        # correct_set is a list like ['1'] or ['the A']
+        # user_answers[i] is raw int/string
+        correct_val = correct_set[0] if correct_set else ""
+        user_val = str(user_answers[i])
+        
+        if clean_str(user_val) != clean_str(correct_val):
+            return "Incorrect solution. Please try again."
+
+    return None
+
+def validate_sentences_exact(player, value, practice_id):
+    """
+    For P4: Checks if sentences match exact strings in Excel.
+    Expected Excel format: right_answer_1="3; the A"
+    """
+    if not value: return "Please complete the description."
+    
+    try:
+        user_sentences = json.loads(value) # e.g. [["3", "the A"], ["2", "the B"]]
+    except:
+        return "Invalid data format."
+
+    key = f"Practice{practice_id}"
+    settings = player.session.vars["practice_settings"].get(key, {})
+    correct_rows = settings.get("right_answers", []) # e.g. [['3', 'the A'], ['2', 'the B']]
+
+    if len(user_sentences) != len(correct_rows):
+        return f"Please produce exactly {len(correct_rows)} sentences."
+
+    for i, row in enumerate(correct_rows):
+        # row is e.g. ['3', 'the A']
+        user_row = user_sentences[i]
+        
+        # Check part 1 (Number/Quantifier)
+        if len(row) > 0 and clean_str(user_row[0]) != clean_str(row[0]):
+            return f"Sentence {i+1}: First part is incorrect."
+        
+        # Check part 2 (Object)
+        if len(row) > 1 and clean_str(user_row[1]) != clean_str(row[1]):
+            return f"Sentence {i+1}: Second part is incorrect."
+
+    return None
+
+def validate_sentences_regex(player, value):
+    """
+    For P6, P7: Checks if sentences match the Main Experiment Regex.
+    """
+    if not value: return "Please complete the description."
+    
+    try:
+        user_sentences = json.loads(value)
+    except:
+        return "Invalid data format."
+
+    # Fetch Regex from Session (loaded from Settings sheet)
+    regexes = player.session.vars.get("allowed_regex", [])
+    if len(regexes) < 2:
+        return None # No regex defined, skip validation
+
+    reg1 = re.compile(regexes[0], re.IGNORECASE)
+    reg2 = re.compile(regexes[1], re.IGNORECASE)
+
+    for i, row in enumerate(user_sentences):
+        # row is [part1, part2]
+        if not row or len(row) < 2: continue
+        
+        val1 = str(row[0]).strip()
+        val2 = str(row[1]).strip()
+
+        if not reg1.fullmatch(val1):
+            return f"Sentence {i+1}: '{val1}' is not a valid start."
+        
+        if not reg2.fullmatch(val2):
+            return f"Sentence {i+1}: '{val2}' is not a valid ending."
+
+    return None
 
 # -------------------------------------------------------------------
 #  SESSION CREATION
@@ -59,37 +156,27 @@ def build_image_url(player, filename: str) -> str:
 
 def creating_session(subsession: BaseSubsession):
     session = subsession.session
-    
-    # 1. Load Data using the shared robust loader
-    #    (This handles Google Sheet download automatically)
     filename = session.config.get("filename")
-    if not filename: 
-        raise RuntimeError("Session config must include 'filename'")
+    if not filename: raise RuntimeError("Session config must include 'filename'")
 
     payload = get_data(filename)
     settings = payload.get("settings", {})
 
-    # 2. Store Settings in Session
-    #    (Practice sheets are already dicts inside 'settings' from get_data)
+    # Store Settings
     session.vars['sheet_settings'] = settings
     
-    # Extract Practice Configs specifically for easy access
     practice_settings = {}
     for k, v in settings.items():
         if k.startswith("Practice") and isinstance(v, dict):
             practice_settings[k] = v
     session.vars["practice_settings"] = practice_settings
 
-    # 3. Process Config Lists (Suffixes, etc)
-    #    (get_data already processed allowed_values/regex into lists in settings)
     session.vars["allowed_values"] = settings.get("allowed_values", [])
+    session.vars["allowed_regex"] = settings.get("allowed_regex", []) # Crucial for P6/7
     session.vars["suffixes"] = settings.get("suffixes", ["solve/d", "exercises"])
     session.vars["interpreter_choices"] = settings.get("interpreter_choices", [])
-    
-    # Misc
     session.vars["EndOfIntroText"] = settings.get("EndOfIntroText", "")
     
-    # Global S3 Base
     raw_s3 = str(settings.get("s3path") or settings.get("s3path_base") or "")
     if "console.aws.amazon.com" in raw_s3 and "buckets/" in raw_s3:
         try:
@@ -98,9 +185,6 @@ def creating_session(subsession: BaseSubsession):
         except: pass
     session.vars['s3path_base'] = raw_s3
     session.vars['extension'] = settings.get("extension", "png")
-
-    print(f"Start App: Loaded {len(practice_settings)} practice pages.")
-
 
 # -------------------------------------------------------------------
 #  PAGES
@@ -112,30 +196,14 @@ class _BasePage(Page):
 class _PracticePage(_BasePage):
     practice_id = None
     template_name = None 
+    form_model = 'player'
+    form_fields = ['practice_response'] # Required for validation
 
     @classmethod
     def _settings(cls, player: Player):
-        # Look for "Practice1", "Practice2" (Capitalized, no underscore)
-        # matching the normalization in get_data.py
         key = f"Practice{cls.practice_id}"
-        
-        # Fallback for old naming styles just in case
-        if key not in player.session.vars["practice_settings"]:
-            # Try "Practice 1" or "practice_1" logic if needed
-            pass
-
         s = player.session.vars["practice_settings"].get(key, {}).copy()
-        
-        # Build image URL dynamically
-        img_name = s.get("image", "")
-        s["full_image_path"] = build_image_url(player, img_name)
-        
-        # Ensure right_answer is a list
-        # (get_data might supply a string, we might need to parse it if get_data didn't)
-        ra = s.get("right_answer")
-        if not isinstance(ra, list):
-             s["right_answer"] = [] # handled in template or JS
-             
+        s["full_image_path"] = build_image_url(player, s.get("image", ""))
         return s
 
     @classmethod
@@ -154,8 +222,6 @@ class Consent(_BasePage):
         if player.session.config.get("for_prolific"):
             p = player.participant
             p.vars["prolific_id"] = p.label
-            p.vars.setdefault("study_id", None)
-            p.vars.setdefault("prolific_session_id", None)
 
 class Demographics(_BasePage):
     form_model = "player"
@@ -167,50 +233,65 @@ class Instructions(_BasePage):
 class Practice1(_PracticePage):
     practice_id = 1
     template_name = "start/Practice1.html"
+    @staticmethod
+    def error_message(player, values):
+        return validate_medals(player, values['practice_response'], 1)
 
 class Practice2(_PracticePage):
     practice_id = 2
     template_name = "start/Practice1.html"
+    @staticmethod
+    def error_message(player, values):
+        return validate_medals(player, values['practice_response'], 2)
 
 class Practice3(_PracticePage):
     practice_id = 3
     template_name = "start/Practice1.html"
+    @staticmethod
+    def error_message(player, values):
+        return validate_medals(player, values['practice_response'], 3)
 
 class Practice4(_PracticePage):
     practice_id = 4
     template_name = "start/Practice4.html"
+    @staticmethod
+    def error_message(player, values):
+        return validate_sentences_exact(player, values['practice_response'], 4)
 
-class Practice5(_BasePage):
+class Practice5(_PracticePage):
+    practice_id = 5 # Used logic from PracticePage for loading
     template_name = "start/Practice5.html"
-
+    
     @staticmethod
     def vars_for_template(player: Player):
-        # reuse the same settings structure
-        key = "Practice5" # Note capitalization to match get_data
-        s = player.session.vars.get("practice_settings", {}).get(key, {}).copy()
-        
-        img = s.get("image", "")
-        full_image_path = build_image_url(player, img)
-
+        # Practice 5 is special (custom template vars) but we can use helper
+        s = _PracticePage._settings(player)
         allowed = player.session.vars.get("allowed_values", [])
-        vocab1 = allowed[0] if len(allowed) > 0 else []
-        vocab2 = allowed[1] if len(allowed) > 1 else []
-
         return dict(
             title=s.get("title", "Practice 5"),
             main_text=s.get("main_text", ""),
-            image_path=full_image_path,
-            vocab1=vocab1,
-            vocab2=vocab2,
+            image_path=s.get("full_image_path", ""),
+            vocab1=allowed[0] if len(allowed) > 0 else [],
+            vocab2=allowed[1] if len(allowed) > 1 else [],
         )
+    
+    @staticmethod
+    def error_message(player, values):
+        return validate_sentences_exact(player, values['practice_response'], 5)
 
 class Practice6(_PracticePage):
     practice_id = 6
     template_name = "start/Practice6.html"
+    @staticmethod
+    def error_message(player, values):
+        return validate_sentences_regex(player, values['practice_response'])
 
 class Practice7(_PracticePage):
     practice_id = 7
     template_name = "start/Practice7.html"
+    @staticmethod
+    def error_message(player, values):
+        return validate_sentences_regex(player, values['practice_response'])
 
 class EndOfIntro(_BasePage):
     def vars_for_template(self):
