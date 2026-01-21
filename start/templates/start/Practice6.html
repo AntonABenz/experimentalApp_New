@@ -6,7 +6,8 @@
   [v-cloak] { display: none; }
   .input-group { max-width: fit-content; }
   .input-kids  { min-width: 200px; }
-
+  
+  /* Shared Styles */
   .vocabulary-box {
     border: 1px solid #ccc;
     background-color: #f8f9fa;
@@ -14,36 +15,16 @@
     border-radius: 5px;
     margin-bottom: 25px;
   }
-
-  .vocab-column {
-    font-size: 1.1rem;
-    line-height: 1.6;
-    text-align: left;
-  }
-
-  .vocab-item {
-    display: block;
-    margin-bottom: 2px;
-  }
-
+  .vocab-column { font-size: 1.1rem; text-align: left; }
+  .vocab-item { display: block; margin-bottom: 2px; }
   @media (min-width: 768px) {
-    .vocab-column:first-child {
-      border-right: 2px solid #e9ecef;
-    }
+    .vocab-column:first-child { border-right: 2px solid #e9ecef; }
   }
-
   .image-placeholder-box {
-    width: 100%;
-    max-width: 600px;
-    height: 300px;
-    background-color: #f0f0f0;
-    border: 2px solid #ddd;
-    margin: 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    width: 100%; max-width: 600px; height: 300px;
+    background-color: #f0f0f0; border: 2px solid #ddd;
+    margin: 0 auto; display: flex; align-items: center; justify-content: center;
   }
-
   .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
 </style>
 
@@ -56,7 +37,6 @@
 </script>
 
 <div id="app" v-cloak>
-
   <h2 class="text-center my-3">[[ props.settings.title ]]</h2>
   <div v-html="props.settings.main_text"></div>
 
@@ -64,26 +44,20 @@
     <img v-if="props.settings.full_image_path"
          :src="props.settings.full_image_path"
          style="max-width: 100%; height: auto; max-height: 400px; border: 1px solid #ddd;">
-    <div v-else class="image-placeholder-box"></div>
+    <div v-else class="image-placeholder-box">Image Placeholder</div>
   </div>
 
   <div class="vocabulary-box text-center">
     <h5 class="mb-4">Allowed Vocabulary</h5>
-
     <div class="row justify-content-center">
       <div class="col-md-5 vocab-column px-4">
-        <div v-if="props.allowedValues[0] && props.allowedValues[0].length">
-          <div v-for="(val, idx) in props.allowedValues[0]" :key="'v1-'+idx" class="vocab-item">
-            [[ val ]]
-          </div>
+        <div v-if="props.allowedValues[0]">
+          <div v-for="(val, idx) in props.allowedValues[0]" :key="'v1-'+idx" class="vocab-item">[[ val ]]</div>
         </div>
       </div>
-
       <div class="col-md-5 vocab-column px-4">
-        <div v-if="props.allowedValues[1] && props.allowedValues[1].length">
-          <div v-for="(val, idx) in props.allowedValues[1]" :key="'v2-'+idx" class="vocab-item">
-            [[ val ]]
-          </div>
+        <div v-if="props.allowedValues[1]">
+          <div v-for="(val, idx) in props.allowedValues[1]" :key="'v2-'+idx" class="vocab-item">[[ val ]]</div>
         </div>
       </div>
     </div>
@@ -92,47 +66,22 @@
   <div class="text-center mt-4">
     <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
       <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
-
         <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
-          <input type="text"
-                 v-model="field.value"
-                 class="form-control input-kids"
-                 placeholder="..."
-                 autocomplete="off"
-                 @keydown.enter.prevent>
+          <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off">
           <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
         </div>
-
-        <button type="button"
-                class="btn btn-outline-secondary ml-2"
-                @click.prevent="addItem"
-                :disabled="items.length >= maxItems">
-          +
-        </button>
-
-        <button type="button"
-                class="btn btn-outline-danger ml-1"
-                @click.prevent="removeItem(itemIndex)"
-                :disabled="items.length <= 1">
-          -
-        </button>
-
+        <button class="btn btn-outline-secondary ml-2" @click.prevent="addItem" :disabled="items.length >= maxItems">+</button>
+        <button class="btn btn-outline-danger ml-1" @click.prevent="removeItem(itemIndex)" :disabled="items.length <= 1">-</button>
       </div>
     </div>
   </div>
 
-  <input type="hidden" name="producer_decision" :value="jsonPayload">
-
-  <p v-if="errorMsg" class="alert alert-danger text-center mt-3">
-    [[ errorMsg ]]
-  </p>
+  <input type="hidden" name="practice_response" :value="jsonPayload">
+  <p v-if="errorMsg" class="alert alert-danger text-center mt-3">[[ errorMsg ]]</p>
 
   <div class="text-center mt-5">
-    <button type="button" class="btn btn-primary btn-lg" @click.prevent="next">
-      Next
-    </button>
+    <button class="btn btn-primary btn-lg" @click.prevent="next">Next</button>
   </div>
-
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
@@ -147,52 +96,44 @@
         props: p,
         suffixes,
         items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
-        maxItems: 5,        // UI hard limit
-        requiredRows: 3,    // Practice6 requirement
+        maxItems: 5,
+        requiredRows: 3, // Practice 6 requirement
         errorMsg: ""
       };
     },
-
     computed: {
       jsonPayload() {
         return JSON.stringify(this.items.map(item => item.fields.map(f => f.value)));
       }
     },
-
     methods: {
       addItem() {
         if (this.items.length < this.maxItems) {
           this.items.push({ fields: this.suffixes.map(s => ({ value: "", suffix: s })) });
         }
       },
-
       removeItem(index) {
         if (this.items.length > 1) this.items.splice(index, 1);
       },
-
       next(e) {
         if (e) e.preventDefault();
         this.errorMsg = "";
-
+        
         if (this.items.length !== this.requiredRows) {
-          this.errorMsg = `You must produce exactly ${this.requiredRows} sentences. You currently have ${this.items.length}.`;
+          this.errorMsg = `You must produce exactly ${this.requiredRows} sentences.`;
           return;
         }
-
-        const hasEmpty = this.items.some(item =>
-          item.fields.some(f => !String(f.value || "").trim())
-        );
+        
+        const hasEmpty = this.items.some(item => item.fields.some(f => !String(f.value || "").trim()));
         if (hasEmpty) {
-          this.errorMsg = "Please fill in all text fields before continuing.";
+          this.errorMsg = "Please fill in all text fields.";
           return;
         }
-
-        const outerForm = document.querySelector("form");
-        if (outerForm) outerForm.submit();
+        
+        document.querySelector("form").submit();
       }
     }
   });
-
   app.config.compilerOptions.delimiters = ["[[", "]]"];
   app.mount("#app");
 </script>
