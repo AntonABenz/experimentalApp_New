@@ -10,15 +10,11 @@
 </script>
 
 <div id="app">
-
   <h1>[[ title ]]</h1>
-
   <div v-html="main_text"></div>
 
   <div class="text-center my-3">
-    <img v-if="image_path"
-         :src="image_path"
-         :alt="title"
+    <img v-if="image_path" :src="image_path" :alt="title"
          style="max-width: 600px; width: 100%; height: auto;">
   </div>
 
@@ -30,7 +26,6 @@
         <th>No</th>
       </tr>
     </thead>
-
     <tbody>
       <tr v-for="(row, idx) in rows" :key="idx">
         <td>[[ row.name ]]</td>
@@ -40,8 +35,8 @@
     </tbody>
   </table>
 
-  <!-- ✅ oTree field -->
-  <input type="hidden" name="practice_response" :value="practicePayload">
+  <!-- ✅ save answer into Player.practice_response -->
+  <input type="hidden" name="practice_response" :value="jsonPayload">
 
   <p v-if="error" class="alert alert-danger">
     Please check your answers.
@@ -55,27 +50,32 @@
       Next
     </button>
   </div>
-
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-
 <script>
 const app = Vue.createApp({
   data() {
     const S  = window.page_settings || {};
     const IC = window.interpreter_choices || [];
 
+    // right_answer_1..4 should be loaded into S.right_answer (list of "0"/"1")
+    const raw = Array.isArray(S.right_answer) ? S.right_answer : [];
+    const correct = raw.map(v => {
+      if (v === true || v === "true" || v === "True") return true;
+      if (v === false || v === "false" || v === "False") return false;
+      if (v === 1 || v === "1") return true;
+      if (v === 0 || v === "0") return false;
+      const n = parseInt(v); return !isNaN(n) ? Boolean(n) : false;
+    });
+
     return {
       title: S.title || "Practice",
       main_text: S.main_text || "",
       image_path: S.full_image_path || "",
-      interpreter_title: window.interpreter_title || "Interpretation",
-
+      interpreter_title: window.interpreter_title || "Buy medals:",
       rows: IC.map(label => ({ name: label, choice: null })),
-
-      // ✅ comes from Python: settings.right_answer = ["1","1","0","1"]
-      correct: (S.right_answer || []).map(x => Boolean(parseInt(x))),
+      correct,
       error: false,
     };
   },
@@ -84,25 +84,27 @@ const app = Vue.createApp({
     allChosen() {
       return this.rows.every(r => r.choice !== null);
     },
-    practicePayload() {
-      // send booleans to server
+    jsonPayload() {
+      // store the raw choices for debugging / exports
       return JSON.stringify(this.rows.map(r => r.choice));
     }
   },
 
   methods: {
     validate() {
-      if (!this.allChosen) { this.error = true; return; }
+      if (!this.allChosen) {
+        this.error = true;
+        return;
+      }
 
-      // client-side check (server-side also exists now)
       if (this.correct.length && this.correct.length === this.rows.length) {
         const ok = this.rows.every((r, i) => r.choice === this.correct[i]);
         this.error = !ok;
         if (!ok) return;
       }
 
-      // ✅ submit OUTER oTree form
-      const outerForm = document.querySelector('form');
+      // ✅ submit OUTER oTree form (not an inner nested form)
+      const outerForm = document.querySelector("form");
       if (outerForm) outerForm.submit();
     }
   }
