@@ -13,7 +13,7 @@ SESSION_CONFIGS = [
         display_name='Full study',
         app_sequence=['start', 'img_desc'],
         num_demo_participants=8,
-        filename='disjunctionExpTest8EN_1.xlsx',
+        filename="https://docs.google.com/spreadsheets/d/1IQiLSLk9LFt8EK9fr5l_Z8sx8-p9VotoHmlXP5s7mRs/edit?gid=1525060338#gid=1525060338",
 
         # used by img_desc + start.Consent
         for_prolific=True,
