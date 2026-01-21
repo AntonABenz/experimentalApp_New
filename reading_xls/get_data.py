@@ -123,7 +123,8 @@ def get_data(filename: str):
                         
                         k = str(row[name_col]).strip()
                         v = str(row[val_col]).strip()
-                        if k: practice_conf[k] = v
+                        if k: 
+                            practice_conf[k.strip().lower()] = v
                     
                     # --- KEY FIX: NORMALIZE KEY TO 'PracticeX' ---
                     # Converts "practice_1" -> "Practice1"
