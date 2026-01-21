@@ -14,7 +14,7 @@
   [v-cloak] { display: none; }
   .input-group { max-width: fit-content; }
   .input-kids  { min-width: 200px; }
-  
+
   .placeholder-img {
       width: 600px;
       height: 400px;
@@ -44,38 +44,38 @@
   </div>
 
   <div class="text-center">
-    
     <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
-        
-        <div class="input-group mb-3 d-flex align-items-baseline" style="flex-flow: nowrap;">
-          
-          <div v-for="(field, fieldIndex) in item.fields"
-               :key="fieldIndex"
-               class="align-items-baseline input-group mb-3 d-flex flex-nowrap">
+      <div class="input-group mb-3 d-flex align-items-baseline" style="flex-flow: nowrap;">
 
-            <input
-              type="text"
-              v-model.trim="field.value"
-              class="form-control input-kids"
-              :placeholder="`...`"
-              autocomplete="off"
-              @input="hideError"
-            >
-            <span class="input-group-text mx-2 text-nowrap" style="background:none; border:none; font-weight:bold;">
-              [[ field.suffix ]]
-            </span>
-          </div>
+        <div v-for="(field, fieldIndex) in item.fields"
+             :key="fieldIndex"
+             class="align-items-baseline input-group mb-3 d-flex flex-nowrap">
 
-          <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary ml-2" style="flex-basis: 40px;" :disabled="items.length === maxItems">+</button>
-          <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger ml-1" style="flex-basis: 40px;" :disabled="items.length === minItems">-</button>
+          <input
+            type="text"
+            v-model.trim="field.value"
+            class="form-control input-kids"
+            :placeholder="`...`"
+            autocomplete="off"
+            @input="hideError"
+          >
+          <span class="input-group-text mx-2 text-nowrap" style="background:none; border:none; font-weight:bold;">
+            [[ field.suffix ]]
+          </span>
         </div>
 
+        <button @click.prevent="addItem" type="button" class="btn btn-outline-secondary ml-2" style="flex-basis: 40px;" :disabled="items.length === maxItems">+</button>
+        <button @click.prevent="removeItem(itemIndex)" type="button" class="btn btn-outline-danger ml-1" style="flex-basis: 40px;" :disabled="items.length === minItems">-</button>
+      </div>
     </div>
 
     <p v-if="error" class="alert alert-danger mt-3">
       [[ errorMessage ]]
     </p>
   </div>
+
+  <!-- ✅ IMPORTANT: send to oTree -->
+  <input type="hidden" name="practice_response" :value="jsonPayload">
 
   <div class="text-center mt-4">
     <button :disabled="!isFormFilled" class="btn btn-primary btn-lg" type="button" @click="validateAndSubmit">
@@ -92,46 +92,38 @@ const app = Vue.createApp({
     const s           = window.page_settings   || {};
     const suffixes    = Array.isArray(window.suffixes)      ? window.suffixes      : [];
     const allowedVals = Array.isArray(window.allowedValues) ? window.allowedValues : [];
-    
-    // HELPER: Normalize strings to ignore extra spaces
+    const requiredRows = Number(s.required_rows) || (window.rightAnswers || []).length || 3;
+
     const cleanStr = (str) => String(str).toLowerCase().replace(/\s+/g, ' ').trim();
 
-    // 1. Process Answer Key (Normalize everything)
-    const correctAnswers = (window.rightAnswers || []).map(ans => 
-        ans.split(';').map(part => cleanStr(part)).join(';')
+    // normalize correct answers
+    const correctAnswers = (window.rightAnswers || []).map(ans =>
+      ans.split(';').map(part => cleanStr(part)).join(';')
     );
 
-    // 2. Helper to create a new blank row
     const createRow = () => ({
-        fields: suffixes.map((suffix, i) => ({
-            value: '',
-            suffix,
-            allowedLower: Array.isArray(allowedVals[i])
-                ? allowedVals[i].map(v => cleanStr(v))
-                : []
-        }))
+      fields: suffixes.map((suffix, i) => ({
+        value: '',
+        suffix,
+        allowedLower: Array.isArray(allowedVals[i]) ? allowedVals[i].map(v => cleanStr(v)) : []
+      }))
     });
 
-    // Image logic
-    let image_path = s.full_image_path || s.image_url || '';
-    if (!image_path && s.image) {
-      const name = (typeof s.image === 'string' && s.image.includes('.')) ? s.image : `${s.image}.png`;
-      if (!image_path) image_path = `/static/start/practice/${name}`;
-    }
-
+    let image_path = s.full_image_path || '';
     return {
       title: s.title || 'Practice Task',
       main_text: s.main_text || '',
       image_path,
       allowedValues: allowedVals,
       suffixes,
+      requiredRows,
       correctAnswers,
       items: [createRow()],
       maxItems: 5,
       minItems: 1,
       error: false,
       errorMessage: '',
-      cleanStr, // Expose helper
+      cleanStr,
     };
   },
 
@@ -141,80 +133,55 @@ const app = Vue.createApp({
         item.fields.every(f => f.value && f.value.trim() !== '')
       );
     },
+    jsonPayload() {
+      // ✅ what server expects for Practice 4/5 validation
+      return JSON.stringify(this.items.map(item => item.fields.map(f => f.value)));
+    }
   },
 
   methods: {
     validateAndSubmit() {
-      // 1. Validate Vocabulary (Optional - removing this check solves many issues)
-      // I have commented this out to be more lenient. 
-      /*
-      for (let i = 0; i < this.items.length; i++) {
-        const item = this.items[i];
-        for (let j = 0; j < item.fields.length; j++) {
-          const field = item.fields[j];
-          if (field.allowedLower.length > 0) {
-             const val = this.cleanStr(field.value);
-             if (!field.allowedLower.includes(val)) {
-                this.error = true;
-                this.errorMessage = `Row ${i+1}: "${field.value}" is not a known phrase.`;
-                return;
-             }
+      this.error = false;
+      this.errorMessage = '';
+
+      // enforce required rows (Practice4 should be 3)
+      if (this.items.length !== this.requiredRows) {
+        this.error = true;
+        this.errorMessage = `You need exactly ${this.requiredRows} sentences (rows). You currently have ${this.items.length}.`;
+        return;
+      }
+
+      // correct answer check
+      if (this.correctAnswers.length > 0) {
+        const userStrings = this.items.map(item =>
+          item.fields.map(f => this.cleanStr(f.value)).join(';')
+        );
+
+        const userSorted = [...userStrings].sort();
+        const correctSorted = [...this.correctAnswers].sort();
+
+        for (let i = 0; i < correctSorted.length; i++) {
+          if (userSorted[i] !== correctSorted[i]) {
+            this.error = true;
+            this.errorMessage = "Some answers are incorrect. Please check spelling and values.";
+            return;
           }
         }
       }
-      */
 
-      // 2. Validate Correct Answers
-      if (this.correctAnswers.length > 0) {
-          
-          // Check row count
-          if (this.items.length !== this.correctAnswers.length) {
-              this.error = true;
-              this.errorMessage = `You need exactly ${this.correctAnswers.length} sentences (rows). You currently have ${this.items.length}.`;
-              return;
-          }
-
-          // Normalize User Input
-          const userStrings = this.items.map(item => 
-              item.fields.map(f => this.cleanStr(f.value)).join(';')
-          );
-          
-          // Sort both to allow any order
-          const userSorted = [...userStrings].sort();
-          const correctSorted = [...this.correctAnswers].sort();
-
-          for (let i = 0; i < correctSorted.length; i++) {
-              if (userSorted[i] !== correctSorted[i]) {
-                  this.error = true;
-                  // Specific Error Message
-                  this.errorMessage = "Some answers are incorrect. Please check the spelling and values.";
-                  
-                  // DEBUG ALERT: Shows you exactly what failed
-                  alert(`DEBUGGING ERROR:\n\nExpected: "${correctSorted[i]}"\nYou wrote: "${userSorted[i]}"\n\n(Check for spelling, missing commas, or wrong numbers)`);
-                  return;
-              }
-          }
-      }
-
-      // Success
-      this.error = false;
       const outerForm = document.querySelector('form');
       if (outerForm) outerForm.submit();
     },
 
     addItem() {
       if (this.items.length >= this.maxItems) return;
-      
       const createRow = () => ({
         fields: this.suffixes.map((suffix, i) => ({
-            value: '',
-            suffix,
-            allowedLower: Array.isArray(this.allowedValues[i])
-                ? this.allowedValues[i].map(v => this.cleanStr(v))
-                : []
+          value: '',
+          suffix,
+          allowedLower: Array.isArray(this.allowedValues[i]) ? this.allowedValues[i].map(v => this.cleanStr(v)) : []
         }))
       });
-      
       this.items.push(createRow());
     },
 
@@ -226,6 +193,7 @@ const app = Vue.createApp({
 
     hideError() {
       this.error = false;
+      this.errorMessage = '';
     }
   }
 });
