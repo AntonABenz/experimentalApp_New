@@ -222,19 +222,22 @@ def creating_session(subsession: Subsession):
                 practice_data = v.copy()
                 
                 # Pre-calculate the full image URL for the template
-                img_name = practice_data.get('image', '')
+                img_name = (practice_data.get("image") or "").strip()
+                
                 if img_name:
-                    img_name = img_name.strip()
-                    # Ensure extension
-                    ext = session.vars["extension"]
-                    if not img_name.lower().endswith(f".{ext}"):
-                        img_name = f"{img_name}.{ext}"
-                    # Prepend S3 Base
-                    base = session.vars["s3path_base"].rstrip("/")
-                    if "amazonaws" in base:
-                        base = base.replace("/practice", "") # standard cleanup
-                    
-                    practice_data['image'] = f"{base}/{img_name}"
+                    # If the sheet already contains a full URL, use it as-is
+                    if img_name.startswith("http://") or img_name.startswith("https://"):
+                        practice_data["image"] = img_name
+                    else:
+                        ext = session.vars["extension"]
+                        if not img_name.lower().endswith(f".{ext}"):
+                            img_name = f"{img_name}.{ext}"
+                
+                        base = session.vars["s3path_base"].rstrip("/")  # IMPORTANT: do NOT strip /practice here
+                        practice_data["image"] = f"{base}/{img_name}"
+                else:
+                    logger.warning(f"{k}: practice image missing (expected key 'image' in practice sheet)")
+
                 
                 # Store in session.vars (e.g. session.vars['Practice1'])
                 session.vars[k] = practice_data
