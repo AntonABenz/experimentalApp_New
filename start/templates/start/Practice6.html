@@ -6,8 +6,6 @@
   [v-cloak] { display: none; }
   .input-group { max-width: fit-content; }
   .input-kids  { min-width: 200px; }
-  
-  /* Shared Styles */
   .vocabulary-box {
     border: 1px solid #ccc;
     background-color: #f8f9fa;
@@ -67,20 +65,22 @@
     <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
       <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
         <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
-          <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off">
+          <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off" @input="errorMsg=''">
           <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
         </div>
-        <button class="btn btn-outline-secondary ml-2" @click.prevent="addItem" :disabled="items.length >= maxItems">+</button>
-        <button class="btn btn-outline-danger ml-1" @click.prevent="removeItem(itemIndex)" :disabled="items.length <= 1">-</button>
+        <button class="btn btn-outline-secondary ml-2" type="button" @click.prevent="addItem" :disabled="items.length >= maxItems">+</button>
+        <button class="btn btn-outline-danger ml-1" type="button" @click.prevent="removeItem(itemIndex)" :disabled="items.length <= 1">-</button>
       </div>
     </div>
   </div>
 
+  <!-- ✅ submit to oTree -->
   <input type="hidden" name="practice_response" :value="jsonPayload">
+
   <p v-if="errorMsg" class="alert alert-danger text-center mt-3">[[ errorMsg ]]</p>
 
   <div class="text-center mt-5">
-    <button class="btn btn-primary btn-lg" @click.prevent="next">Next</button>
+    <button class="btn btn-primary btn-lg" type="button" @click.prevent="next">Next</button>
   </div>
 </div>
 
@@ -92,12 +92,14 @@
       let suffixes = p.suffixes;
       if (!Array.isArray(suffixes) || suffixes.length === 0) suffixes = ["", ""];
 
+      const required = Number(p.settings && p.settings.required_rows) || 3;
+
       return {
         props: p,
         suffixes,
         items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
         maxItems: 5,
-        requiredRows: 3, // Practice 6 requirement
+        requiredRows: required,
         errorMsg: ""
       };
     },
@@ -118,18 +120,18 @@
       next(e) {
         if (e) e.preventDefault();
         this.errorMsg = "";
-        
+
         if (this.items.length !== this.requiredRows) {
           this.errorMsg = `You must produce exactly ${this.requiredRows} sentences.`;
           return;
         }
-        
+
         const hasEmpty = this.items.some(item => item.fields.some(f => !String(f.value || "").trim()));
         if (hasEmpty) {
           this.errorMsg = "Please fill in all text fields.";
           return;
         }
-        
+
         document.querySelector("form").submit();
       }
     }
