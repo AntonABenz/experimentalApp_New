@@ -4,52 +4,57 @@
 {% block content %}
 
 <script>
-    window.page_settings       = {{ settings|json }};
-    window.interpreter_choices = {{ session.vars.interpreter_choices|json }};
-    window.interpreter_title   = {{ session.vars.interpreter_title|json }};
+  window.page_settings       = {{ settings|json }};
+  window.interpreter_choices = {{ session.vars.interpreter_choices|json }};
+  window.interpreter_title   = {{ session.vars.interpreter_title|json }};
 </script>
 
 <div id="app">
 
-    <h1>[[ title ]]</h1>
+  <h1>[[ title ]]</h1>
 
-    <div v-html="main_text"></div>
+  <div v-html="main_text"></div>
 
-    <div class="text-center my-3">
-        <img :src="image_path" :alt="title"
-             style="max-width: 600px; width: 100%; height: auto;">
-    </div>
+  <div class="text-center my-3">
+    <img v-if="image_path"
+         :src="image_path"
+         :alt="title"
+         style="max-width: 600px; width: 100%; height: auto;">
+  </div>
 
-    <table class="table">
-        <thead>
-            <tr>
-                <th>[[ interpreter_title ]]</th>
-                <th>Yes</th>
-                <th>No</th>
-            </tr>
-        </thead>
+  <table class="table">
+    <thead>
+      <tr>
+        <th>[[ interpreter_title ]]</th>
+        <th>Yes</th>
+        <th>No</th>
+      </tr>
+    </thead>
 
-        <tbody>
-            <tr v-for="(row, idx) in rows" :key="idx">
-                <td>[[ row.name ]]</td>
-                <td><input type="radio" v-model="row.choice" :value="true"></td>
-                <td><input type="radio" v-model="row.choice" :value="false"></td>
-            </tr>
-        </tbody>
-    </table>
+    <tbody>
+      <tr v-for="(row, idx) in rows" :key="idx">
+        <td>[[ row.name ]]</td>
+        <td><input type="radio" v-model="row.choice" :value="true"  @change="error=false"></td>
+        <td><input type="radio" v-model="row.choice" :value="false" @change="error=false"></td>
+      </tr>
+    </tbody>
+  </table>
 
-    <p v-if="error" class="alert alert-danger">
-        Please check your answers.
-    </p>
+  <!-- ✅ oTree field -->
+  <input type="hidden" name="practice_response" :value="practicePayload">
 
-    <div class="text-center mt-4">
-        <button type="button"
-                class="btn btn-primary"
-                :disabled="!allChosen"
-                @click="validate">
-            Next
-        </button>
-    </div>
+  <p v-if="error" class="alert alert-danger">
+    Please check your answers.
+  </p>
+
+  <div class="text-center mt-4">
+    <button type="button"
+            class="btn btn-primary"
+            :disabled="!allChosen"
+            @click="validate">
+      Next
+    </button>
+  </div>
 
 </div>
 
@@ -57,59 +62,50 @@
 
 <script>
 const app = Vue.createApp({
+  data() {
+    const S  = window.page_settings || {};
+    const IC = window.interpreter_choices || [];
 
-    data() {
-        const S  = window.page_settings || {};
-        const IC = window.interpreter_choices || [];
+    return {
+      title: S.title || "Practice",
+      main_text: S.main_text || "",
+      image_path: S.full_image_path || "",
+      interpreter_title: window.interpreter_title || "Interpretation",
 
-        return {
-            title: S.title || "Practice",
-            main_text: S.main_text || "",
-            image_path: S.full_image_path || "",
-            interpreter_title: window.interpreter_title || "Interpretation",
+      rows: IC.map(label => ({ name: label, choice: null })),
 
-            rows: IC.map(label => ({
-                name: label,
-                choice: null,
-            })),
+      // ✅ comes from Python: settings.right_answer = ["1","1","0","1"]
+      correct: (S.right_answer || []).map(x => Boolean(parseInt(x))),
+      error: false,
+    };
+  },
 
-            // from Excel: right_answer_1..4 like '1','1','0','1'
-            correct: (S.right_answer || []).map(x => Boolean(parseInt(x))),
-            error: false,
-        };
+  computed: {
+    allChosen() {
+      return this.rows.every(r => r.choice !== null);
     },
-
-    computed: {
-        allChosen() {
-            return this.rows.every(r => r.choice !== null);
-        }
-    },
-
-    methods: {
-        validate() {
-            // must choose Yes/No for all rows
-            if (!this.allChosen) {
-                this.error = true;
-                return;
-            }
-
-            // optional correctness check
-            if (this.correct.length && this.correct.length === this.rows.length) {
-                const ok = this.rows.every((r, i) => r.choice === this.correct[i]);
-                if (!ok) {
-                    alert("Incorrect answer. Please check your selections."); // This creates the popup
-                    this.error = true; // Optional: keep the red text too
-                    return;
-                }
-            }
-
-            // submit the OUTER oTree form (with csrf + hidden fields)
-            const outerForm = document.querySelector('form');
-            if (outerForm) {
-                outerForm.submit();
-            }
-        }
+    practicePayload() {
+      // send booleans to server
+      return JSON.stringify(this.rows.map(r => r.choice));
     }
+  },
+
+  methods: {
+    validate() {
+      if (!this.allChosen) { this.error = true; return; }
+
+      // client-side check (server-side also exists now)
+      if (this.correct.length && this.correct.length === this.rows.length) {
+        const ok = this.rows.every((r, i) => r.choice === this.correct[i]);
+        this.error = !ok;
+        if (!ok) return;
+      }
+
+      // ✅ submit OUTER oTree form
+      const outerForm = document.querySelector('form');
+      if (outerForm) outerForm.submit();
+    }
+  }
 });
 
 app.config.compilerOptions.delimiters = ["[[", "]]"];
@@ -117,4 +113,3 @@ app.mount("#app");
 </script>
 
 {% endblock %}
-
