@@ -96,8 +96,11 @@ const app = Vue.createApp({
             // optional correctness check
             if (this.correct.length && this.correct.length === this.rows.length) {
                 const ok = this.rows.every((r, i) => r.choice === this.correct[i]);
-                this.error = !ok;
-                if (!ok) return;
+                if (!ok) {
+                    alert("Incorrect answer. Please check your selections."); // This creates the popup
+                    this.error = true; // Optional: keep the red text too
+                    return;
+                }
             }
 
             // submit the OUTER oTree form (with csrf + hidden fields)
@@ -114,3 +117,4 @@ app.mount("#app");
 </script>
 
 {% endblock %}
+
