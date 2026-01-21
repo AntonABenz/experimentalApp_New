@@ -1,9 +1,10 @@
 from otree.api import *
 import logging
-from pathlib import Path
-import pandas as pd
 import re
 import json
+
+# IMPORT THE ROBUST LOADER
+from reading_xls.get_data import get_data
 
 logger = logging.getLogger(__name__)
 
@@ -25,99 +26,32 @@ class Player(BasePlayer):
 #  HELPER FUNCTIONS
 # -------------------------------------------------------------------
 
-def normalize_key(key):
-    """
-    Smart Normalizer:
-    1. Lowercase everything.
-    2. Turn any spaces or underscores into a single underscore.
-    """
-    if not key: return ""
-    k = str(key).lower().strip()
-    return re.sub(r'[\s_]+', '_', k)
+def clean_str(x):
+    if x is None: return ""
+    return str(x).strip()
 
-def _kv_sheet_to_dict(df) -> dict:
-    df = df.rename(columns={c: str(c).strip().lower() for c in df.columns})
-    if not {"name", "value"}.issubset(df.columns):
-        return {}
-
-    out = {}
-    for _, r in df.iterrows():
-        raw_key = r.get("name")
-        if pd.isna(raw_key) or raw_key == "": continue
-        
-        key = normalize_key(raw_key)
-        v = r.get("value")
-        out[key] = "" if pd.isna(v) else str(v).strip()
-    return out
-
-def build_s3_url(player, filename: str) -> str:
-    if not filename or pd.isna(filename) or str(filename).lower() == "nan": 
+def build_image_url(player, filename: str) -> str:
+    if not filename or filename.lower() in ["nan", "none", ""]: 
         return ""
         
-    settings = player.session.vars.get('sheet_settings', {})
-    base = settings.get('s3path_base', "")
-    ext = settings.get('extension', "png")
+    s3_base = player.session.vars.get('s3path_base', "")
+    ext = player.session.vars.get('extension', "png")
 
+    # Clean filename
+    filename = filename.strip()
     if not filename.lower().endswith(f".{ext}"):
         filename = f"{filename}.{ext}"
 
-    if not base:
-        base = "https://disjunction-experiment-pictures-zas2025.s3.eu-central-1.amazonaws.com/practice"
-    else:
-        base = base.rstrip("/")
-        if "amazonaws.com" in base and not base.endswith("/practice"):
-            base += "/practice"
-
-    return f"{base}/{filename}"
-
-def _load_practices(xlsx_filename: str):
-    root = Path(__file__).resolve().parents[1]
-    candidates = [
-        root / xlsx_filename,
-        root / "data" / xlsx_filename,
-        root / "start" / "data" / xlsx_filename,
-    ]
-    xlsx_path = next((p for p in candidates if p.exists()), None)
+    # Handle S3 base vs Practice subfolder
+    # Images in "start" app usually live in /practice folder
+    if s3_base:
+        base = s3_base.rstrip("/")
+        if "amazonaws.com" in base:
+            # Ensure we point to the practice folder
+            return f"{base}/practice/{filename}"
+        return f"{base}/{filename}"
     
-    if not xlsx_path:
-        logger.error(f"Excel not found: {xlsx_filename}")
-        return {}, {}
-
-    book = pd.read_excel(xlsx_path, sheet_name=None, dtype=str)
-
-    # 1. Load Settings
-    meta = {}
-    if "settings" in book:
-        settings_df = pd.read_excel(xlsx_path, sheet_name="settings", header=None, dtype=str)
-        settings_df = settings_df.rename(columns={0: "name", 1: "value"})
-        meta = _kv_sheet_to_dict(settings_df)
-
-    # 2. Load Practices
-    practice_settings = {}
-    for tab, df in book.items():
-        clean_name = normalize_key(tab)
-        if not clean_name.startswith("practice"): continue
-
-        try:
-            p_id = int(re.search(r'\d+', clean_name).group())
-            key_name = f"practice_{p_id}"
-        except: continue
-
-        kv = _kv_sheet_to_dict(df)
-        if not kv: continue
-
-        img = kv.get("image", "") 
-        answers = [kv[k] for k in sorted(kv.keys()) if k.startswith("right_answer")]
-
-        practice_settings[key_name] = {
-            "title": kv.get("title", tab),
-            "main_text": kv.get("main_text", ""),
-            "image": img,
-            "right_answer": answers,
-        }
-
-    return practice_settings, meta
-
+    return filename
 
 # -------------------------------------------------------------------
 #  SESSION CREATION
@@ -125,69 +59,47 @@ def _load_practices(xlsx_filename: str):
 
 def creating_session(subsession: BaseSubsession):
     session = subsession.session
-    cfg = session.config
-
-    xlsx = cfg.get("filename")
-    if not xlsx: raise RuntimeError("Session config must include 'filename'.")
-
-    ps, meta = _load_practices(xlsx)
-
-    session.vars["practice_settings"] = ps
-    session.vars["sheet_settings"] = meta
-
-    print(f"DEBUG: Keys found in settings: {list(meta.keys())}")
-
-    # Suffixes
-    suffixes = []
-    i = 1
-    while True:
-        key = f"suffix_{i}"
-        val = meta.get(key)
-        if val: suffixes.append(val)
-        else:
-            if i > 5: break 
-        i += 1
     
-    if not suffixes:
-        print("WARNING: Suffixes missing. Using defaults.")
-        suffixes = ["solve/d", "exercises"]
-        
-    session.vars["suffixes"] = suffixes
+    # 1. Load Data using the shared robust loader
+    #    (This handles Google Sheet download automatically)
+    filename = session.config.get("filename")
+    if not filename: 
+        raise RuntimeError("Session config must include 'filename'")
 
-    # Allowed Values
-    allowed_values = []
-    i = 1
-    while True:
-        key = f"allowed_values_{i}"
-        raw = meta.get(key)
-        
-        if raw:
-            print(f"DEBUG: Found {key}: {raw}")
-            allowed_values.append([x.strip() for x in raw.split(";") if x.strip()])
-        else:
-            if i > 5: break 
-            allowed_values.append([])
-        i += 1
-    
-    # Fallback
-    if not allowed_values or all(len(x)==0 for x in allowed_values):
-        print("WARNING: Allowed Values missing in Excel. Using fallback.")
-        av1 = "All; Some; None; Many; Most; Some, but not all; Many, but not most; Not all; Not any; Some did not; Most didn't; etc.".split(";")
-        av2 = "the A; the B; the C; the A and B; the A or B; the A and the C; the A, the B, and the C; etc.; all; most; etc.; not any of the; etc.".split(";")
-        allowed_values = [
-            [x.strip() for x in av1 if x.strip()],
-            [x.strip() for x in av2 if x.strip()]
-        ]
+    payload = get_data(filename)
+    settings = payload.get("settings", {})
 
-    session.vars["allowed_values"] = allowed_values
+    # 2. Store Settings in Session
+    #    (Practice sheets are already dicts inside 'settings' from get_data)
+    session.vars['sheet_settings'] = settings
     
-    session.vars["EndOfIntroText"] = meta.get("endofintrotext", "")
+    # Extract Practice Configs specifically for easy access
+    practice_settings = {}
+    for k, v in settings.items():
+        if k.startswith("Practice") and isinstance(v, dict):
+            practice_settings[k] = v
+    session.vars["practice_settings"] = practice_settings
+
+    # 3. Process Config Lists (Suffixes, etc)
+    #    (get_data already processed allowed_values/regex into lists in settings)
+    session.vars["allowed_values"] = settings.get("allowed_values", [])
+    session.vars["suffixes"] = settings.get("suffixes", ["solve/d", "exercises"])
+    session.vars["interpreter_choices"] = settings.get("interpreter_choices", [])
     
-    ic = meta.get("interpreter_choices")
-    if ic:
-        session.vars["interpreter_choices"] = [x.strip() for x in ic.split(";")]
-    else:
-        session.vars["interpreter_choices"] = []
+    # Misc
+    session.vars["EndOfIntroText"] = settings.get("EndOfIntroText", "")
+    
+    # Global S3 Base
+    raw_s3 = str(settings.get("s3path") or settings.get("s3path_base") or "")
+    if "console.aws.amazon.com" in raw_s3 and "buckets/" in raw_s3:
+        try:
+            bucket = raw_s3.split("buckets/")[1].split("?")[0].strip("/")
+            raw_s3 = f"https://{bucket}.s3.eu-central-1.amazonaws.com"
+        except: pass
+    session.vars['s3path_base'] = raw_s3
+    session.vars['extension'] = settings.get("extension", "png")
+
+    print(f"Start App: Loaded {len(practice_settings)} practice pages.")
 
 
 # -------------------------------------------------------------------
@@ -203,15 +115,31 @@ class _PracticePage(_BasePage):
 
     @classmethod
     def _settings(cls, player: Player):
-        key = f"practice_{cls.practice_id}"
+        # Look for "Practice1", "Practice2" (Capitalized, no underscore)
+        # matching the normalization in get_data.py
+        key = f"Practice{cls.practice_id}"
+        
+        # Fallback for old naming styles just in case
+        if key not in player.session.vars["practice_settings"]:
+            # Try "Practice 1" or "practice_1" logic if needed
+            pass
+
         s = player.session.vars["practice_settings"].get(key, {}).copy()
-        s["full_image_path"] = build_s3_url(player, s.get("image", ""))
-        if "right_answer" not in s: s["right_answer"] = []
+        
+        # Build image URL dynamically
+        img_name = s.get("image", "")
+        s["full_image_path"] = build_image_url(player, img_name)
+        
+        # Ensure right_answer is a list
+        # (get_data might supply a string, we might need to parse it if get_data didn't)
+        ra = s.get("right_answer")
+        if not isinstance(ra, list):
+             s["right_answer"] = [] # handled in template or JS
+             
         return s
 
     @classmethod
     def vars_for_template(cls, player: Player):
-        # DIRECT PASSING TO TEMPLATE
         return dict(
             settings=cls._settings(player),
             allowed_values=player.session.vars.get("allowed_values", []),
@@ -257,10 +185,12 @@ class Practice5(_BasePage):
 
     @staticmethod
     def vars_for_template(player: Player):
-        # reuse the same settings structure as other practice pages
-        key = "practice_5"
-        s = player.session.vars["practice_settings"].get(key, {}).copy()
-        s["full_image_path"] = build_s3_url(player, s.get("image", ""))
+        # reuse the same settings structure
+        key = "Practice5" # Note capitalization to match get_data
+        s = player.session.vars.get("practice_settings", {}).get(key, {}).copy()
+        
+        img = s.get("image", "")
+        full_image_path = build_image_url(player, img)
 
         allowed = player.session.vars.get("allowed_values", [])
         vocab1 = allowed[0] if len(allowed) > 0 else []
@@ -269,11 +199,10 @@ class Practice5(_BasePage):
         return dict(
             title=s.get("title", "Practice 5"),
             main_text=s.get("main_text", ""),
-            image_path=s.get("full_image_path", ""),
+            image_path=full_image_path,
             vocab1=vocab1,
             vocab2=vocab2,
         )
-
 
 class Practice6(_PracticePage):
     practice_id = 6
