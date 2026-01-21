@@ -84,14 +84,14 @@ def get_data(filename: str):
                 if k: settings_dict[k] = v
 
     # -------------------------------------------------------
-    # 2. READ DATA (Strictly "Data", "Items", "Trials")
+    # 2. READ DATA & PRACTICE SHEETS
     # -------------------------------------------------------
     all_data_frames = []
     
     for sheet_name in xls.sheet_names:
         lower_name = sheet_name.lower()
         
-        # Load Trial Data
+        # A) Load Trial Data
         if lower_name in ["data", "items", "trials"]:
             logger.info(f"Reading Data sheet: {sheet_name}")
             try:
@@ -106,7 +106,7 @@ def get_data(filename: str):
             except Exception as e:
                 logger.warning(f"Error reading data sheet {sheet_name}: {e}")
 
-        # Load Practice Configuration (Key-Value sheets)
+        # B) Load Practice Configuration
         elif lower_name.startswith("practice"):
             logger.info(f"Reading Practice Config sheet: {sheet_name}")
             try:
@@ -114,11 +114,10 @@ def get_data(filename: str):
                 df = xls.parse(sheet_name, dtype=str, keep_default_na=False, na_filter=False)
                 practice_conf = {}
                 
-                # Check if it has 'name' and 'value' columns
                 cols = [c.lower() for c in df.columns]
                 if 'name' in cols and 'value' in cols:
                     for _, row in df.iterrows():
-                        # Find actual column names (case insensitive matching)
+                        # Find actual column names
                         name_col = next(c for c in df.columns if c.lower() == 'name')
                         val_col = next(c for c in df.columns if c.lower() == 'value')
                         
@@ -126,13 +125,23 @@ def get_data(filename: str):
                         v = str(row[val_col]).strip()
                         if k: practice_conf[k] = v
                     
-                    # Store entire config dict in settings under the Sheet Name (e.g. "Practice 1")
-                    # Also normalize key to be safe (e.g. "Practice1")
-                    clean_key = sheet_name.strip().replace(" ", "")
-                    settings_dict[clean_key] = practice_conf
-                    settings_dict[sheet_name] = practice_conf # Store original name too
+                    # --- KEY FIX: NORMALIZE KEY TO 'PracticeX' ---
+                    # Converts "practice_1" -> "Practice1"
+                    # Converts "Practice 2" -> "Practice2"
+                    nums = re.findall(r'\d+', sheet_name)
+                    if nums:
+                        clean_key = f"Practice{nums[0]}"
+                        settings_dict[clean_key] = practice_conf
+                        logger.info(f"Loaded {sheet_name} as settings key '{clean_key}'")
+                    else:
+                        # Fallback for "PracticeTest" etc.
+                        clean_key = sheet_name.strip().replace(" ", "").replace("_", "")
+                        # Capitalize first letter
+                        clean_key = clean_key[0].upper() + clean_key[1:]
+                        settings_dict[clean_key] = practice_conf
+                        
                 else:
-                    logger.warning(f"Sheet {sheet_name} does not have 'name' and 'value' columns. Skipping.")
+                    logger.warning(f"Sheet {sheet_name} missing 'name'/'value' cols")
             except Exception as e:
                 logger.warning(f"Error reading practice sheet {sheet_name}: {e}")
 
