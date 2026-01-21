@@ -4,6 +4,7 @@ import re
 import time
 import urllib.request
 from pathlib import Path
+import io
 
 logger = logging.getLogger("benzapp.get_data")
 
@@ -11,12 +12,6 @@ def _is_gsheet_url(s: str) -> bool:
     return isinstance(s, str) and "docs.google.com/spreadsheets/d/" in s
 
 def _gsheet_export_xlsx_url(url: str) -> str:
-    """
-    Converts:
-      https://docs.google.com/spreadsheets/d/<ID>/edit?gid=...#gid=...
-    into:
-      https://docs.google.com/spreadsheets/d/<ID>/export?format=xlsx
-    """
     m = re.search(r"/spreadsheets/d/([^/]+)", url)
     if not m:
         raise ValueError("Could not parse Google Sheet ID from URL")
@@ -24,15 +19,10 @@ def _gsheet_export_xlsx_url(url: str) -> str:
     return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
 
 def _download_gsheet_xlsx(url: str, cache_seconds: int = 60) -> Path:
-    """
-    Downloads the Google Sheet as XLSX into /tmp with a short TTL cache.
-    Works on Heroku.
-    """
     export_url = _gsheet_export_xlsx_url(url)
     tmp_path = Path("/tmp") / "study.xlsx"
     stamp_path = Path("/tmp") / "study.xlsx.stamp"
 
-    # simple TTL cache
     try:
         if tmp_path.exists() and stamp_path.exists():
             age = time.time() - float(stamp_path.read_text().strip() or "0")
@@ -49,11 +39,9 @@ def _download_gsheet_xlsx(url: str, cache_seconds: int = 60) -> Path:
     return tmp_path
 
 def _load_excel(filename: str) -> Path:
-    # 1) Google Sheet URL path
     if _is_gsheet_url(filename):
         return _download_gsheet_xlsx(filename, cache_seconds=60)
 
-    # 2) local file path fallback
     root = Path(__file__).resolve().parents[1]
     candidates = [
         Path(filename),
@@ -74,30 +62,88 @@ def _allowed_value_converter(v: str):
     return [item.strip() for item in str(v).split(";") if item.strip()]
 
 def get_data(filename: str):
-    """
-    Main function to load Excel data and settings.
-    Returns dict with 'data' and 'settings' keys.
-    """
     xlsx_path = _load_excel(filename)
     
-    # Load Workbook
     try:
         xls = pd.ExcelFile(xlsx_path, engine="openpyxl")
     except Exception as e:
         logger.error(f"Critical error opening Excel: {e}")
         raise e
     
-    # 1. READ SETTINGS
-    settings_sheet = next((s for s in xls.sheet_names if "setting" in s.lower()), None)
+    # -------------------------------------------------------
+    # 1. READ GLOBAL SETTINGS
+    # -------------------------------------------------------
     settings_dict = {}
+    settings_sheet = next((s for s in xls.sheet_names if "setting" in s.lower()), None)
+    
     if settings_sheet:
         df = xls.parse(settings_sheet, header=None, dtype=str, keep_default_na=False)
         if len(df.columns) >= 2:
             for _, row in df.iterrows():
                 k, v = str(row[0]).strip(), str(row[1]).strip()
                 if k: settings_dict[k] = v
+
+    # -------------------------------------------------------
+    # 2. READ DATA (Strictly "Data", "Items", "Trials")
+    # -------------------------------------------------------
+    all_data_frames = []
     
-    # Process lists
+    for sheet_name in xls.sheet_names:
+        lower_name = sheet_name.lower()
+        
+        # Load Trial Data
+        if lower_name in ["data", "items", "trials"]:
+            logger.info(f"Reading Data sheet: {sheet_name}")
+            try:
+                df = xls.parse(sheet_name, dtype=str, keep_default_na=False, na_filter=False)
+                # Clean
+                try: df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
+                except AttributeError: df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+                
+                if "Item" in df.columns:
+                    df["Item"] = df["Item"].apply(lambda x: x.replace(" ", "_") if x else "")
+                all_data_frames.append(df)
+            except Exception as e:
+                logger.warning(f"Error reading data sheet {sheet_name}: {e}")
+
+        # Load Practice Configuration (Key-Value sheets)
+        elif lower_name.startswith("practice"):
+            logger.info(f"Reading Practice Config sheet: {sheet_name}")
+            try:
+                # Expecting format: name, value, comment
+                df = xls.parse(sheet_name, dtype=str, keep_default_na=False, na_filter=False)
+                practice_conf = {}
+                
+                # Check if it has 'name' and 'value' columns
+                cols = [c.lower() for c in df.columns]
+                if 'name' in cols and 'value' in cols:
+                    for _, row in df.iterrows():
+                        # Find actual column names (case insensitive matching)
+                        name_col = next(c for c in df.columns if c.lower() == 'name')
+                        val_col = next(c for c in df.columns if c.lower() == 'value')
+                        
+                        k = str(row[name_col]).strip()
+                        v = str(row[val_col]).strip()
+                        if k: practice_conf[k] = v
+                    
+                    # Store entire config dict in settings under the Sheet Name (e.g. "Practice 1")
+                    # Also normalize key to be safe (e.g. "Practice1")
+                    clean_key = sheet_name.strip().replace(" ", "")
+                    settings_dict[clean_key] = practice_conf
+                    settings_dict[sheet_name] = practice_conf # Store original name too
+                else:
+                    logger.warning(f"Sheet {sheet_name} does not have 'name' and 'value' columns. Skipping.")
+            except Exception as e:
+                logger.warning(f"Error reading practice sheet {sheet_name}: {e}")
+
+    if not all_data_frames:
+        raise ValueError("No 'Data', 'Items', or 'Trials' sheet found in Excel.")
+
+    combined_df = pd.concat(all_data_frames, ignore_index=True)
+    
+    # -------------------------------------------------------
+    # 3. PROCESS SETTINGS LISTS
+    # -------------------------------------------------------
     settings_dict["suffixes"] = [
         str(settings_dict.get(f"suffix_{i}", "")).strip() 
         for i in range(1, 11) if settings_dict.get(f"suffix_{i}")
@@ -113,22 +159,8 @@ def get_data(filename: str):
     
     if "interpreter_choices" in settings_dict:
         settings_dict["interpreter_choices"] = _allowed_value_converter(settings_dict["interpreter_choices"])
-    
-    # 2. READ DATA
-    data_sheet = next((s for s in xls.sheet_names if s.lower() in ["data", "items", "trials"]), None)
-    if not data_sheet:
-        raise ValueError("No 'data' sheet found in Excel file.")
-    
-    df = xls.parse(data_sheet, dtype=str, keep_default_na=False, na_filter=False)
-    
-    # Clean whitespace
-    df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
-    
-    # Clean Item filenames (spaces to underscores)
-    if "Item" in df.columns:
-        df["Item"] = df["Item"].apply(lambda x: x.replace(" ", "_") if x else "")
-    
+
     return dict(
-        data=df.to_dict(orient="records"),
+        data=combined_df.to_dict(orient="records"),
         settings=settings_dict
     )
