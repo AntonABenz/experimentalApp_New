@@ -18,7 +18,6 @@ def clean_str(x):
 def build_image_url(player, filename: str) -> str:
     """
     Practice images live under: <s3_base>/practice/<filename>.<ext>
-    BUT practice 6/7 can have blank image.
     """
     filename = clean_str(filename)
     if not filename:
@@ -36,7 +35,10 @@ def build_image_url(player, filename: str) -> str:
         return filename
 
     # Practice images must be in /practice
-    return f"{base}/practice/{filename}"
+    # Avoid double /practice if base already has it (rare)
+    if "/practice" not in base:
+        return f"{base}/practice/{filename}"
+    return f"{base}/{filename}"
 
 
 class C(BaseConstants):
@@ -98,6 +100,8 @@ def creating_session(subsession: BaseSubsession):
             pass
     session.vars["s3path_base"] = raw_s3
     session.vars["extension"] = clean_str(settings.get("extension") or "png")
+    
+    print(f"Start App: Loaded {len(practice_settings)} practice pages.")
 
 
 class _BasePage(Page):
@@ -112,11 +116,13 @@ class _PracticePage(_BasePage):
 
     @classmethod
     def is_displayed(cls, player: Player):
-        # ✅ THIS prevents the “skip all practice pages” issue.
-        # Toggle comes from global settings sheet: Practice1..Practice7 = 1/0
-        settings = player.session.vars.get("sheet_settings", {}) or {}
-        flag = settings.get(f"Practice{cls.practice_id}", "1")
-        return _truthy(flag)
+        # FIX: Check if the practice content exists in our loaded dictionary.
+        # DO NOT check 'settings.get(key)' with _truthy because that dictionary is not "True" string.
+        key = f"Practice{cls.practice_id}"
+        practices = player.session.vars.get("practice_settings", {})
+        
+        # If the key exists (e.g. "Practice1"), we show the page.
+        return key in practices
 
     @classmethod
     def _settings(cls, player: Player):
@@ -124,9 +130,9 @@ class _PracticePage(_BasePage):
         s = (player.session.vars.get("practice_settings", {}) or {}).get(key, {}) or {}
         s = dict(s)  # copy
         s["full_image_path"] = build_image_url(player, s.get("image", ""))
-        # useful for templates (dynamic row requirement)
+        
+        # Pass required rows for template logic
         if "required_rows" not in s:
-            # Practice4 expects 3 rows; Practice6 expects 3; Practice7 expects 5
             if cls.practice_id == 7:
                 s["required_rows"] = 5
             elif cls.practice_id in {4, 6}:
@@ -138,6 +144,9 @@ class _PracticePage(_BasePage):
         s = cls._settings(player)
         return dict(
             settings=s,
+            # Pass simple JSON strings for JS validation
+            js_right_answers=json.dumps(s.get("right_answers", [])),
+            js_regex=json.dumps(player.session.vars.get("allowed_regex", [])),
             allowed_values=player.session.vars.get("allowed_values", []),
             suffixes=player.session.vars.get("suffixes", []),
         )
@@ -183,6 +192,20 @@ class Practice4(_PracticePage):
 class Practice5(_PracticePage):
     practice_id = 5
     template_name = "start/Practice5.html"
+    
+    @staticmethod
+    def vars_for_template(player: Player):
+        s = _PracticePage._settings(player)
+        allowed = player.session.vars.get("allowed_values", [])
+        return dict(
+            title=s.get("title", "Practice 5"),
+            main_text=s.get("main_text", ""),
+            image_path=s.get("full_image_path", ""),
+            js_right_answers=json.dumps(s.get("right_answers", [])),
+            vocab1=allowed[0] if len(allowed) > 0 else [],
+            vocab2=allowed[1] if len(allowed) > 1 else [],
+            suffixes=player.session.vars.get("suffixes", [])
+        )
 
 
 class Practice6(_PracticePage):
