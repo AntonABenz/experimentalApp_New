@@ -2,50 +2,88 @@
 {% load otree static %}
 
 {% block content %}
+
+<script>
+  window.page_settings = {{ settings|json }};
+  window.allowedValues = {{ allowed_values|json }};
+</script>
+
 <style>
-  .vocabulary-box {
-    border: 1px solid #ccc;
-    background-color: #f8f9fa;
-    padding: 20px;
-    border-radius: 5px;
-    margin-bottom: 25px;
+  [v-cloak] { display:none; }
+  .vocabulary-box{
+    border:1px solid #ccc;
+    background:#f8f9fa;
+    padding:20px;
+    border-radius:5px;
+    margin-bottom:25px;
   }
-  .vocab-column { font-size: 1.1rem; text-align: left; }
-  .vocab-item { display: block; margin-bottom: 2px; }
-  @media (min-width: 768px) { .vocab-column:first-child { border-right: 2px solid #e9ecef; } }
+  .vocab-column{ font-size:1.1rem; text-align:left; }
+  .vocab-item{ display:block; margin-bottom:2px; }
+  @media (min-width:768px){
+    .vocab-column:first-child{ border-right:2px solid #e9ecef; }
+  }
+  .image-wrap img{
+    max-width:100%;
+    height:auto;
+    border:1px solid #ddd;
+    display:inline-block;
+  }
 </style>
 
-<h1 class="text-center mb-4">{{ title }}</h1>
-<div class="lead mb-4">{{ main_text|safe }}</div>
+<div id="app" v-cloak>
 
-{% if image_path %}
-  <div class="text-center my-4">
-    <img src="{{ image_path }}" alt="Practice image"
-         style="max-width: 100%; height: auto; border: 1px solid #ddd;">
+  <h1 class="text-center mb-4">[[ title ]]</h1>
+  <div class="lead mb-4" v-html="main_text"></div>
+
+  <div v-if="image_path" class="text-center my-4 image-wrap">
+    <img :src="image_path" alt="Practice image">
   </div>
-{% endif %}
 
-<div class="vocabulary-box text-center">
-  <h5 class="mb-3">Allowed Vocabulary</h5>
-  <div class="row justify-content-center">
-    <div class="col-md-5 vocab-column px-4">
-      {% for word in vocab1 %}
-        <div class="vocab-item">{{ word }}</div>
-      {% endfor %}
-    </div>
-    <div class="col-md-5 vocab-column px-4">
-      {% for word in vocab2 %}
-        <div class="vocab-item">{{ word }}</div>
-      {% endfor %}
+  <div class="vocabulary-box text-center">
+    <h5 class="mb-3">Allowed Vocabulary</h5>
+    <div class="row justify-content-center">
+      <div class="col-md-5 vocab-column px-4">
+        <div v-for="(w, i) in vocab1" :key="'v1-'+i" class="vocab-item">[[ w ]]</div>
+      </div>
+      <div class="col-md-5 vocab-column px-4">
+        <div v-for="(w, i) in vocab2" :key="'v2-'+i" class="vocab-item">[[ w ]]</div>
+      </div>
     </div>
   </div>
+
+  <!-- IMPORTANT: do NOT add csrf_token. oTree already wraps the page in a form. -->
+  <input type="hidden" name="practice_response" value="visited">
+
+  <div class="text-center mt-5">
+    <button type="button" class="btn btn-primary btn-lg" @click="submit">Next</button>
+  </div>
+
 </div>
 
-<form method="post">
-  <input type="hidden" name="practice_response" value="visited">
-  <div class="text-center mt-5">
-    <button class="btn btn-primary btn-lg">Next</button>
-  </div>
-</form>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script>
+const app = Vue.createApp({
+  data() {
+    const s = window.page_settings || {};
+    const allowed = Array.isArray(window.allowedValues) ? window.allowedValues : [];
+    return {
+      title: s.title || "Practice 5",
+      main_text: s.main_text || "",
+      image_path: s.full_image_path || "",
+      vocab1: allowed[0] || [],
+      vocab2: allowed[1] || [],
+    };
+  },
+  methods: {
+    submit() {
+      const outerForm = document.querySelector("form");
+      if (outerForm) outerForm.submit();
+    }
+  }
+});
+
+app.config.compilerOptions.delimiters = ["[[", "]]"];
+app.mount("#app");
+</script>
 
 {% endblock %}
