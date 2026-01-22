@@ -45,7 +45,7 @@
     <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
       <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
         <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
-          <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off">
+          <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off" @input="errorMsg=''">
           <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
         </div>
         <button class="btn btn-outline-secondary ml-2" @click.prevent="addItem" :disabled="items.length >= 5">+</button>
@@ -56,6 +56,8 @@
 
   <input type="hidden" name="practice_response" :value="jsonPayload">
   
+  <p v-if="errorMsg" class="alert alert-danger text-center mt-3" style="max-width: 600px; margin: 0 auto;">[[ errorMsg ]]</p>
+
   <div class="text-center mt-5">
     <button class="btn btn-primary btn-lg" @click.prevent="check">Next</button>
   </div>
@@ -75,6 +77,7 @@ const app = Vue.createApp({
       regexList,
       items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
       requiredRows: 5, // Practice 7 requires 5 sentences
+      errorMsg: ""
     };
   },
   computed: {
@@ -84,8 +87,10 @@ const app = Vue.createApp({
     addItem() { if(this.items.length < 5) this.items.push({ fields: this.suffixes.map(s=>({value:"", suffix:s})) }); },
     removeItem(i) { if(this.items.length > 1) this.items.splice(i, 1); },
     check() {
+      this.errorMsg = "";
+      
       if (this.items.length !== this.requiredRows) {
-        alert(`You must produce exactly ${this.requiredRows} sentences.`);
+        this.errorMsg = `You must produce exactly ${this.requiredRows} sentences.`;
         return;
       }
       for (let i = 0; i < this.items.length; i++) {
@@ -94,7 +99,7 @@ const app = Vue.createApp({
           const val = (row.fields[j].value || "").trim();
           const reg = this.regexList[j];
           if (reg && !reg.test(val)) {
-            alert(`Sentence ${i+1}, Field ${j+1}: "${val}" is not valid.\n\nPlease choose from the allowed vocabulary.`);
+            this.errorMsg = `Sentence ${i+1}, Field ${j+1}: "${val}" is not valid. Please choose from the allowed vocabulary.`;
             return; 
           }
         }
