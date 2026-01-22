@@ -12,10 +12,8 @@
   }
   .vocab-column { font-size: 1.1rem; text-align: left; }
   .vocab-item { display: block; margin-bottom: 2px; }
-  @media (min-width: 768px) {
-    .vocab-column:first-child { border-right: 2px solid #e9ecef; }
-  }
-
+  @media (min-width: 768px) { .vocab-column:first-child { border-right: 2px solid #e9ecef; } }
+  
   .image-wrap img {
     max-width: 100%;
     height: auto;
@@ -25,20 +23,14 @@
 </style>
 
 <h1 class="text-center mb-4">{{ settings.title }}</h1>
+<div class="lead mb-4">{{ settings.main_text|safe }}</div>
 
-<!-- ✅ main text (supports HTML if your sheet includes it) -->
-<div class="lead mb-4">
-  {{ settings.main_text|safe }}
-</div>
-
-<!-- ✅ Image ABOVE vocab box -->
 {% if settings.full_image_path %}
   <div class="text-center my-4 image-wrap">
     <img src="{{ settings.full_image_path }}" alt="Practice image">
   </div>
 {% endif %}
 
-<!-- ✅ Vocabulary box -->
 <div class="vocabulary-box text-center">
   <h5 class="mb-3">Allowed Vocabulary</h5>
   <div class="row justify-content-center">
@@ -55,12 +47,11 @@
   </div>
 </div>
 
-<!-- Optional: store that user reached Practice5 -->
-<input type="hidden" name="practice_response" value="visited_practice_5">
-
-<!-- ✅ Submit OUTER oTree form (no nested form) -->
-<div class="text-center mt-5">
-  <button type="submit" class="btn btn-primary btn-lg">Next</button>
-</div>
+<form method="post">
+    <input type="hidden" name="practice_response" value="visited">
+    <div class="text-center mt-5">
+        <button class="btn btn-primary btn-lg">Next</button>
+    </div>
+</form>
 
 {% endblock %}
