@@ -17,6 +17,7 @@ class Constants(BaseConstants):
     name_in_url = "img_desc"
     players_per_group = None
     num_rounds = 80
+
     PLACEMENT_ERR = "ERROR_BATCH_PLACEMENT"
     API_ERR = "API_ERROR"
     FALLBACK_URL = STUBURL + PLACEMENT_ERR
@@ -50,6 +51,7 @@ class Player(BasePlayer):
 
     full_return_url = models.StringField(blank=True)
 
+    # -------- batch helpers --------
     def _history(self):
         try:
             return json.loads(self.batch_history or "[]")
@@ -78,70 +80,78 @@ class Player(BasePlayer):
         except Exception:
             pass
 
+    # -------- rendering helpers --------
     def get_image_url(self):
         data = self.get_current_batch_data()
         img = clean_str(data.get("image", ""))
         if not img or img.lower() in {"nan", "na", "na_x", "none", "", "x"}:
             return ""
+
         base = (self.session.vars.get("s3path_base") or "").rstrip("/")
         ext = self.session.vars.get("extension") or "png"
-        if "amazonaws" in base:
-            base = base.replace("/practice", "")
+
         clean_name = img.replace(" ", "_")
         if not clean_name.lower().endswith(f".{ext}"):
             clean_name = f"{clean_name}.{ext}"
         return f"{base}/{clean_name}"
 
+    def _resolve_sentence_lookup(self, lookup):
+        """
+        lookup is a dict like:
+          {"source_exp": 0 or 1, "producer_slot": 2, "interpreter_slot": 3, "condition": "d0xx"}
+        We resolve from session.vars["sentences_by_key"].
+        """
+        if not lookup or not isinstance(lookup, dict):
+            return "[]"
+
+        src_exp = safe_int(lookup.get("source_exp"), -1)
+        prod = safe_int(lookup.get("producer_slot"), 0)
+        interp = safe_int(lookup.get("interpreter_slot"), 0)
+        cond = clean_str(lookup.get("condition"))
+
+        key = sentence_key(src_exp, prod, interp, cond)
+        store = self.session.vars.get("sentences_by_key") or {}
+        raw = store.get(key)
+
+        # raw might be already JSON string of pairs, or python list
+        if raw is None:
+            return "[]"
+        if isinstance(raw, str):
+            return raw
+        try:
+            return json.dumps(raw)
+        except Exception:
+            return "[]"
+
     def get_sentences_data(self):
         """
-        Interpreter sentences come from:
-          - Exp1: seed table (Exp0 in XLSX) already baked into `producer_sentences`
-          - Exp>=2: deferred lookup into session.vars["sentences_db"]
+        For interpreters, sentences come from:
+          - batch item "producer_sentences" if non-empty
+          - otherwise from batch item "sentence_lookup" resolved via session.vars mapping
         """
         data = self.get_current_batch_data()
         if not data:
             return []
 
-        if data.get("role") == PRODUCER:
+        role = data.get("role", "")
+        if role == PRODUCER:
             return []
 
-        raw = data.get("producer_sentences") or data.get("sentences") or ""
-        if isinstance(raw, str):
-            raw = raw.strip()
+        raw = data.get("producer_sentences")
 
-        # If baked sentences exist (Exp1 and/or producer_slot==0 cases), use them
-        if raw and raw != "__DEFERRED__":
-            try:
-                return json.loads(raw)
-            except Exception:
-                return []
-
-        # Deferred lookup for Exp>=2
-        lookup = data.get("sentence_lookup") or {}
-        if not isinstance(lookup, dict):
-            return []
-
-        source_exp = safe_int(lookup.get("source_exp"), 0)
-        pslot = safe_int(lookup.get("producer_slot"), 0)
-        islot = safe_int(lookup.get("interpreter_slot"), 0)
-        cond = clean_str(lookup.get("condition"))
-        rnd_xlsx = safe_int(lookup.get("round_in_excel"), 0)
-        trial = safe_int(lookup.get("trial"), 0)
-
-        db = self.session.vars.get("sentences_db", {}) or {}
-        k = db_sentence_key(source_exp, pslot, islot, cond, rnd_xlsx, trial)
-        found = db.get(k, "")
-
-        if not found:
-            # If you want strictness, you can mark faulty here.
-            return []
+        # If empty/'[]', try lookup
+        if not raw or (isinstance(raw, str) and raw.strip() == "[]"):
+            raw = self._resolve_sentence_lookup(data.get("sentence_lookup"))
 
         try:
-            return json.loads(found)
+            return json.loads(raw) if raw else []
         except Exception:
             return []
 
     def get_full_sentences(self):
+        """
+        Turns sentence pairs into rendered lines with prefix/suffixes.
+        """
         try:
             prefix = self.session.vars.get("prefix") or ""
             suffixes = self.session.vars.get("suffixes") or []
@@ -162,6 +172,7 @@ class Player(BasePlayer):
                     if suf:
                         parts.append(str(suf))
 
+                # tolerate extra fields
                 if len(sentence) > len(suffixes):
                     for extra in sentence[len(suffixes):]:
                         extra_str = str(extra).strip() if extra else ""
@@ -169,7 +180,7 @@ class Player(BasePlayer):
                             extra_str = "None"
                         parts.append(extra_str)
 
-                res.append(" ".join([p for p in parts if p is not None and str(p).strip() != ""]))
+                res.append(" ".join([p for p in parts if str(p).strip() != ""]))
             return res
         except Exception as e:
             logger.error(f"Error in get_full_sentences: {e}")
@@ -223,6 +234,10 @@ def is_valid_real_image(img: str) -> bool:
 
 
 def extract_sentences_from_row(r: dict) -> str:
+    """
+    Produces JSON list: [[Sentence_1_1, Sentence_1_2], ...]
+    Only includes pairs where at least one side is non-empty.
+    """
     pairs = []
     for i in range(1, 6):
         a = clean_str(r.get(f"Sentence_{i}_1"))
@@ -243,14 +258,13 @@ def fix_s3_url(raw_s3: str) -> str:
     return raw_s3
 
 
-def sentence_key(pslot: int, islot: int, cond: str, round_in_excel: int, trial: int):
-    # Key for seed lookup (Exp0) and Exp1 lookup into Exp0
-    return (int(pslot or 0), int(islot or 0), clean_str(cond), int(round_in_excel or 0), int(trial or 0))
-
-
-def db_sentence_key(exp: int, pslot: int, islot: int, cond: str, round_in_excel: int, trial: int):
-    # Key for DB/session store: sentences produced in ExpX and consumed in ExpX+1
-    return (int(exp or 0), int(pslot or 0), int(islot or 0), clean_str(cond), int(round_in_excel or 0), int(trial or 0))
+def sentence_key(exp_num: int, producer_slot: int, interpreter_slot: int, condition: str) -> str:
+    """
+    A stable key for sentence lookup across exps:
+      exp|producer|interpreter|condition
+    """
+    condition = clean_str(condition)
+    return f"{int(exp_num)}|{int(producer_slot)}|{int(interpreter_slot)}|{condition}"
 
 
 # ----------------------------------------------------------------------------
@@ -268,6 +282,7 @@ def creating_session(subsession: Subsession):
 
         logger.info(f"Starting session creation with filename: {filename}")
 
+        # load data/settings via your existing loader
         try:
             from reading_xls.get_data import get_data
         except ImportError:
@@ -286,7 +301,7 @@ def creating_session(subsession: Subsession):
         else:
             rows = list(raw_data or [])
 
-        # --- Global setting normalization ---
+        # --- 1) Global Settings ---
         clean_settings = {}
         for k, v in settings.items():
             if isinstance(v, str):
@@ -300,52 +315,68 @@ def creating_session(subsession: Subsession):
         session.vars["caseflag"] = _truthy(clean_settings.get("caseflag"))
         session.vars["instructions_url"] = clean_settings.get("instructions_url") or "https://google.com"
 
-        # --- Sentence stores ---
-        # Exp0 seed sentences for Exp1 interpreters
-        session.vars["seed_sentences"] = {}
-        # Produced sentences stored by Exp (Exp1 used for Exp2, etc.)
-        session.vars["sentences_db"] = {}
+        if session.config.get("completion_code"):
+            session.vars["completion_code"] = str(session.config["completion_code"])
 
-        # --- Build Exp0 seed lookup: (P,I,cond,round,trial) -> sentences ---
+        session.vars["allowed_values"] = settings.get("allowed_values", []) or []
+        session.vars["allowed_regexes"] = settings.get("allowed_regex", []) or []
+
+        # suffixes: suffix_1..suffix_10
+        suffixes = []
+        for i in range(1, 11):
+            v = clean_settings.get(f"suffix_{i}")
+            if v:
+                suffixes.append(v)
+        session.vars["suffixes"] = suffixes
+
+        # interpreter choices
+        ic = settings.get("interpreter_choices")
+        if isinstance(ic, str):
+            session.vars["interpreter_choices"] = [x.strip() for x in ic.split(";") if x.strip()]
+        elif isinstance(ic, list):
+            session.vars["interpreter_choices"] = ic
+        else:
+            session.vars["interpreter_choices"] = []
+
+        # --- 2) Build sentence stores ---
+        # sentences_by_key holds:
+        #   - Exp0 sentence table (static)
+        #   - Exp1 produced sentences (filled during runtime)
+        #   - Exp2+ can lookup Exp1 keys, etc.
+        session.vars["sentences_by_key"] = {}
+
+        # Map all EXP 0 rows that contain any sentence content
         for r in rows:
-            exp_num = 0
-            for key in ["d111", "Exp", "Experiment", "Exp.", "experiment"]:
-                val = r.get(key)
-                if val:
-                    exp_num = safe_int(val, 0)
-                    break
-
+            exp_num = safe_int(r.get("Exp") or r.get("Experiment") or r.get("experiment") or 0, 0)
             if exp_num != 0:
                 continue
 
-            pslot = safe_int(r.get("Producer"), 0)
-            islot = safe_int(r.get("Interpreter"), 0)
-            if pslot <= 0 or islot <= 0:
-                continue
-
+            prod = safe_int(r.get("Producer"), 0)
+            interp = safe_int(r.get("Interpreter"), 0)
             cond = clean_str(r.get("Condition"))
-            rnd_xlsx = safe_int(r.get("Round"), 0)
-            trial = safe_int(r.get("Trial"), 0)
 
-            session.vars["seed_sentences"][sentence_key(pslot, islot, cond, rnd_xlsx, trial)] = extract_sentences_from_row(r)
+            sent = extract_sentences_from_row(r)
+            # Only store if non-empty
+            if sent and sent.strip() != "[]":
+                key = sentence_key(0, prod, interp, cond)
+                session.vars["sentences_by_key"][key] = sent
 
-        # --- Slots & mapping ---
+        # --- 3) Slots & schedule prep ---
+        # identify how many participant slots exist (exclude producer=0 and producer=9)
         slot_ids = set()
         for r in rows:
-            # ignore Exp0 for slot discovery? not necessary; it has same IDs anyway.
             p = safe_int(r.get("Producer"), 0)
             i = safe_int(r.get("Interpreter"), 0)
-            if p != 0 and p != 9:
+            if p not in {0, 9}:
                 slot_ids.add(p)
             if i != 0:
                 slot_ids.add(i)
 
         if not slot_ids:
-            raise RuntimeError("No IDs found in Excel.")
-
+            raise RuntimeError("No participant slot IDs found in data.")
         K = max(slot_ids)
-        players = subsession.get_players()
 
+        players = subsession.get_players()
         slot_to_pid = {}
         pid_to_slot = {}
         for idx, pl in enumerate(players, start=1):
@@ -353,43 +384,27 @@ def creating_session(subsession: Subsession):
                 slot_to_pid[idx] = pl.id_in_subsession
                 pid_to_slot[pl.id_in_subsession] = idx
 
-        session.vars["slot_to_pid"] = slot_to_pid
-        session.vars["pid_to_slot"] = pid_to_slot
-
-        # --- Build valid image pool ---
+        # valid pool for random images
         valid_pool = []
         for r in rows:
-            exp_num = 0
-            for key in ["d111", "Exp", "Experiment", "Exp.", "experiment"]:
-                val = r.get(key)
-                if val:
-                    exp_num = safe_int(val, 0)
-                    break
-            if exp_num == 0:
-                continue  # ✅ don't sample from Exp0
-
+            exp_num = safe_int(r.get("Exp") or r.get("Experiment") or r.get("experiment") or 0, 0)
+            if exp_num < 1:
+                continue
             producer_slot = safe_int(r.get("Producer"), 0)
             img = clean_str(r.get("Item"))
-            if producer_slot != 0 and producer_slot != 9 and is_valid_real_image(img):
+            if producer_slot not in {0, 9} and is_valid_real_image(img):
                 valid_pool.append(img)
-
         if not valid_pool:
             valid_pool = ["d-A-B-BC-3"]
 
-        # --- Build schedule items ---
+        # --- 4) Build per-player items (EXCLUDE Exp 0 from schedule) ---
         from collections import defaultdict
         data_by_pid = defaultdict(list)
 
         for idx, r in enumerate(rows):
-            exp_num = 0
-            for key in ["d111", "Exp", "Experiment", "Exp.", "experiment"]:
-                val = r.get(key)
-                if val:
-                    exp_num = safe_int(val, 0)
-                    break
-
-            # ✅ EXP0 IS NEVER PLAYED
-            if exp_num == 0:
+            exp_num = safe_int(r.get("Exp") or r.get("Experiment") or r.get("experiment") or 0, 0)
+            if exp_num < 1:
+                # Exp 0 is ONLY for sentence lookup source
                 continue
 
             round_in_excel = safe_int(r.get("Round"), 0)
@@ -397,7 +412,6 @@ def creating_session(subsession: Subsession):
             condition = clean_str(r.get("Condition"))
             item_nr = clean_str(r.get("Item.Nr"))
             image_raw = clean_str(r.get("Item"))
-
             producer_slot = safe_int(r.get("Producer"), 0)
             interpreter_slot = safe_int(r.get("Interpreter"), 0)
 
@@ -405,41 +419,35 @@ def creating_session(subsession: Subsession):
                 continue
 
             interp_pid = slot_to_pid.get(interpreter_slot)
-            prod_pid = slot_to_pid.get(producer_slot) if (producer_slot != 0 and producer_slot != 9) else None
+            prod_pid = slot_to_pid.get(producer_slot) if producer_slot not in {0, 9} else None
             if not interp_pid:
                 continue
 
             sort_key = (exp_num, round_in_excel, trial, idx)
 
-            # --- sentence resolution rules ---
+            # decide sentence source:
+            # - exp 1: lookup exp0 if row has no sentences
+            # - exp 2+: lookup exp(exp_num-1) if row has no sentences
+            extracted = extract_sentences_from_row(r)
+            has_extracted = extracted and extracted.strip() != "[]"
+
+            sentence_lookup = None
+            producer_sentences_for_interpreter = extracted if has_extracted else "[]"
+
+            if not has_extracted:
+                # Only create lookup if producer_slot/interpreter_slot/condition exist
+                src_exp = 0 if exp_num == 1 else (exp_num - 1)
+                sentence_lookup = {
+                    "source_exp": src_exp,
+                    "producer_slot": producer_slot,
+                    "interpreter_slot": interpreter_slot,
+                    "condition": condition,
+                }
+
+            # assign image
+            # if producer_slot == 0: use the item in sheet, or fallback random
             if producer_slot == 0:
-                # no producer -> keep XLSX sentences
-                sentences_json = extract_sentences_from_row(r)
-                sentence_lookup = None
-
-            elif exp_num == 1:
-                # Exp1 interpreter reads Exp0 seed
-                sentences_json = session.vars["seed_sentences"].get(
-                    sentence_key(producer_slot, interpreter_slot, condition, round_in_excel, trial),
-                    extract_sentences_from_row(r),  # fallback
-                )
-                sentence_lookup = None
-
-            else:
-                # Exp>=2 interpreter reads Exp-1 from DB/session store
-                sentences_json = "__DEFERRED__"
-                sentence_lookup = dict(
-                    source_exp=exp_num - 1,
-                    producer_slot=producer_slot,
-                    interpreter_slot=interpreter_slot,
-                    condition=condition,
-                    round_in_excel=round_in_excel,
-                    trial=trial,
-                )
-
-            # --- schedule items ---
-            if producer_slot == 0:
-                picked = image_raw if is_valid_real_image(image_raw) else random.choice(valid_pool)
+                picked = image_raw if image_raw else random.choice(valid_pool)
                 data_by_pid[interp_pid].append({
                     "sort_key": sort_key,
                     "role": INTERPRETER,
@@ -450,52 +458,64 @@ def creating_session(subsession: Subsession):
                     "condition": condition,
                     "item_nr": item_nr,
                     "image": picked,
-                    "producer_sentences": sentences_json,
+                    "producer_sentences": producer_sentences_for_interpreter,
                     "sentence_lookup": sentence_lookup,
                     "interpreter_rewards": "",
                     "producer_slot": producer_slot,
                     "interpreter_slot": interpreter_slot,
                 })
+                continue
 
-            elif prod_pid:
-                prod_image = image_raw if is_valid_real_image(image_raw) else random.choice(valid_pool)
+            # producer_slot is real participant
+            if not prod_pid:
+                continue
 
-                # Producer sees image, produces sentences
-                data_by_pid[prod_pid].append({
-                    "sort_key": sort_key,
-                    "role": PRODUCER,
-                    "partner_id": interp_pid,
+            prod_image = image_raw if is_valid_real_image(image_raw) else random.choice(valid_pool)
+
+            # PRODUCER item
+            data_by_pid[prod_pid].append({
+                "sort_key": sort_key,
+                "role": PRODUCER,
+                "partner_id": interp_pid,
+                "exp": exp_num,
+                "round_in_excel": round_in_excel,
+                "trial": trial,
+                "condition": condition,
+                "item_nr": item_nr,
+                "image": prod_image,
+                "producer_sentences": "",
+                "sentence_lookup": None,  # producer doesn't use lookup
+                "interpreter_rewards": "",
+                "producer_slot": producer_slot,
+                "interpreter_slot": interpreter_slot,
+                # where to STORE produced sentences for later exps to lookup
+                "sentence_store_key": {
                     "exp": exp_num,
-                    "round_in_excel": round_in_excel,
-                    "trial": trial,
-                    "condition": condition,
-                    "item_nr": item_nr,
-                    "image": prod_image,
-                    "producer_sentences": "",
-                    "interpreter_rewards": "",
                     "producer_slot": producer_slot,
                     "interpreter_slot": interpreter_slot,
-                })
-
-                # Interpreter sees image + sentences (seed or deferred)
-                data_by_pid[interp_pid].append({
-                    "sort_key": sort_key,
-                    "role": INTERPRETER,
-                    "partner_id": prod_pid,
-                    "exp": exp_num,
-                    "round_in_excel": round_in_excel,
-                    "trial": trial,
                     "condition": condition,
-                    "item_nr": item_nr,
-                    "image": prod_image,
-                    "producer_sentences": sentences_json,
-                    "sentence_lookup": sentence_lookup,
-                    "interpreter_rewards": "",
-                    "producer_slot": producer_slot,
-                    "interpreter_slot": interpreter_slot,
-                })
+                }
+            })
 
-        # --- finalize player histories with 3P/5I blocks (your current logic kept) ---
+            # INTERPRETER item
+            data_by_pid[interp_pid].append({
+                "sort_key": sort_key,
+                "role": INTERPRETER,
+                "partner_id": prod_pid,
+                "exp": exp_num,
+                "round_in_excel": round_in_excel,
+                "trial": trial,
+                "condition": condition,
+                "item_nr": item_nr,
+                "image": prod_image,
+                "producer_sentences": producer_sentences_for_interpreter,
+                "sentence_lookup": sentence_lookup,
+                "interpreter_rewards": "",
+                "producer_slot": producer_slot,
+                "interpreter_slot": interpreter_slot,
+            })
+
+        # --- 5) Finalize per-player history (keep your 3P then 5I pattern) ---
         empty = []
         for p in players:
             my_items = data_by_pid.get(p.id_in_subsession, [])
@@ -504,12 +524,13 @@ def creating_session(subsession: Subsession):
             producer_items = [it for it in my_items if it.get("role") == PRODUCER]
             interpreter_items = [it for it in my_items if it.get("role") == INTERPRETER]
 
-            # If needed, your "force producer roles" fallback kept (though it can distort exp ordering)
+            # FORCE PRODUCER ROLES IF MISSING (keep as your legacy behavior)
             if len(producer_items) == 0 and len(interpreter_items) >= 3:
                 for _ in range(3):
                     item = interpreter_items.pop(0)
                     item["role"] = PRODUCER
                     item["producer_sentences"] = ""
+                    item["sentence_lookup"] = None
                     producer_items.append(item)
 
             final_history = []
@@ -549,11 +570,16 @@ def creating_session(subsession: Subsession):
 
             p.batch_history = json.dumps(final_history)
             p.participant.vars["batch_history"] = p.batch_history
+
             if not final_history:
                 empty.append(p.id_in_subsession)
 
         if empty:
             logger.warning(f"EMPTY schedules for: {empty}")
+
+        logger.info(
+            f"Loaded EXP0 sentence keys: {len(session.vars.get('sentences_by_key') or {})}"
+        )
 
     except Exception as e:
         logger.error(f"ERROR in creating_session: {e}", exc_info=True)
@@ -580,6 +606,7 @@ class Q(Page):
         if player.round_number > Constants.num_rounds:
             return False
 
+        # restore history
         if (player.batch_history == "[]" or not player.batch_history) and "batch_history" in player.participant.vars:
             player.batch_history = player.participant.vars["batch_history"]
 
@@ -612,8 +639,20 @@ class Q(Page):
         else:
             interpreter_choices = []
 
+        d = player.get_current_batch_data()
+
+        # For interpreters, force resolution attempt so template sees the correct sentences.
+        # This does NOT change saved history, it only ensures the UI has data.
+        if d.get("role") == INTERPRETER:
+            raw = d.get("producer_sentences")
+            if not raw or (isinstance(raw, str) and raw.strip() == "[]"):
+                resolved = player._resolve_sentence_lookup(d.get("sentence_lookup"))
+                # expose in template via d copy:
+                d = d.copy()
+                d["producer_sentences"] = resolved
+
         return dict(
-            d=player.get_current_batch_data(),
+            d=d,
             allowed_values=player.session.vars.get("allowed_values", []),
             allowed_regexes=player.session.vars.get("allowed_regexes", []),
             suffixes=player.session.vars.get("suffixes", []),
@@ -631,27 +670,27 @@ class Q(Page):
         if player.start_decision_time:
             player.decision_seconds = player.end_decision_time - player.start_decision_time
 
+        data = player.get_current_batch_data() or {}
         updates = {}
-        data = player.get_current_batch_data()
 
         if player.inner_role == PRODUCER:
             updates["producer_sentences"] = player.producer_decision
 
-            # ✅ Store produced sentences into DB for Exp>=1 so Exp+1 can read them
-            exp_num = safe_int(data.get("exp"), 0)
-            cond = clean_str(data.get("condition"))
-            rnd_xlsx = safe_int(data.get("round_in_excel"), 0)
-            trial = safe_int(data.get("trial"), 0)
-
-            pid_to_slot = player.session.vars.get("pid_to_slot", {}) or {}
-            producer_slot = pid_to_slot.get(player.id_in_subsession, 0)
-            partner_pid = safe_int(data.get("partner_id"), 0)
-            interpreter_slot = pid_to_slot.get(partner_pid, 0)
-
-            if exp_num >= 1 and producer_slot and interpreter_slot and cond:
-                db = player.session.vars.get("sentences_db", {}) or {}
-                db[db_sentence_key(exp_num, producer_slot, interpreter_slot, cond, rnd_xlsx, trial)] = player.producer_decision
-                player.session.vars["sentences_db"] = db
+            # STORE produced sentences into session-wide mapping so Exp2 can look them up
+            store_key = data.get("sentence_store_key")
+            if isinstance(store_key, dict):
+                exp_num = safe_int(store_key.get("exp"), -1)
+                prod = safe_int(store_key.get("producer_slot"), 0)
+                interp = safe_int(store_key.get("interpreter_slot"), 0)
+                cond = clean_str(store_key.get("condition"))
+                if exp_num >= 1 and prod and interp and cond:
+                    k = sentence_key(exp_num, prod, interp, cond)
+                    store = player.session.vars.get("sentences_by_key")
+                    if not isinstance(store, dict):
+                        store = {}
+                        player.session.vars["sentences_by_key"] = store
+                    store[k] = player.producer_decision
+                    logger.info(f"Stored produced sentences for key={k}")
 
         elif player.inner_role == INTERPRETER:
             updates["interpreter_rewards"] = player.interpreter_decision
@@ -688,8 +727,7 @@ class FinalForProlific(Page):
 def custom_export(players):
     yield [
         "session", "participant", "prolific_id", "demographics",
-        "exp_num", "round", "role",
-        "producer_id", "interpreter_id",
+        "exp_num", "round", "role", "producer_id", "interpreter_id",
         "condition", "item_nr", "image",
         "sentences_formatted", "sentences_raw",
         "rewards", "seconds", "feedback"
@@ -721,7 +759,6 @@ def custom_export(players):
             history = json.loads(history_json)
             timing_map = {}
             feedback_str = ""
-
             for pp in participant_players:
                 if pp.round_number:
                     timing_map[pp.round_number] = pp.decision_seconds or 0
@@ -729,6 +766,7 @@ def custom_export(players):
                         feedback_str = pp.feedback
 
             history.sort(key=lambda x: int(x.get("round_number", 0)))
+
             for item in history:
                 rnd = int(item.get("round_number", 0))
                 if rnd < 1 or rnd > Constants.num_rounds:
@@ -738,12 +776,12 @@ def custom_export(players):
                 formatted_sentences = raw_sentences
 
                 try:
-                    if isinstance(raw_sentences, str) and raw_sentences.startswith("["):
+                    if isinstance(raw_sentences, str) and raw_sentences.strip().startswith("["):
                         data = json.loads(raw_sentences)
                         parts = []
                         for pair in data:
                             if isinstance(pair, list) and len(pair) >= 2:
-                                parts.append(f"{pair[0]} {pair[1]}")
+                                parts.append(f"{pair[0]} {pair[1]}".strip())
                         if parts:
                             formatted_sentences = "; ".join(parts)
                 except Exception:
@@ -758,18 +796,28 @@ def custom_export(players):
                     prod_id = partner_id
                     interp_id = excel_slot
 
-                exp_num = item.get("exp", "") or item.get("d111", "")
+                exp_num = item.get("exp", "")
 
                 yield [
-                    first_player.session.code, participant_code, prolific_id, demographics,
-                    exp_num, rnd, my_role,
-                    prod_id, interp_id,
-                    item.get("condition", ""), item.get("item_nr", ""), item.get("image", ""),
-                    formatted_sentences, raw_sentences,
+                    first_player.session.code,
+                    participant_code,
+                    prolific_id,
+                    demographics,
+                    exp_num,
+                    rnd,
+                    my_role,
+                    prod_id,
+                    interp_id,
+                    item.get("condition", ""),
+                    item.get("item_nr", ""),
+                    item.get("image", ""),
+                    formatted_sentences,
+                    raw_sentences,
                     item.get("interpreter_rewards", "") or item.get("rewards", ""),
                     timing_map.get(rnd, 0),
-                    feedback_str if rnd == Constants.num_rounds else ""
+                    feedback_str if rnd == Constants.num_rounds else "",
                 ]
+
         except Exception:
             continue
 
