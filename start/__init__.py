@@ -37,15 +37,10 @@ def build_image_url(player, filename: str) -> str:
     return filename
 
 def _get_right_answers_list(practice_data: dict) -> list:
-    """
-    Parses 'right_answer_1', 'right_answer_2' from Excel into a simple list.
-    Returns: ['1', '0', '1'] or ['3; the A', '2; the B']
-    """
+    """Parses right_answer_1..N into a list."""
     answers = []
-    # Find keys like "right_answer_1", "right_answer_2"
     keys = [k for k in practice_data.keys() if str(k).lower().startswith("right_answer_")]
     
-    # Sort by the number in the key (e.g. 1, 2, 10)
     def extract_num(k):
         nums = re.findall(r'\d+', str(k))
         return int(nums[0]) if nums else 999
@@ -95,7 +90,6 @@ def creating_session(subsession: BaseSubsession):
     for k, v in settings.items():
         if k.startswith("Practice") and isinstance(v, dict):
             p_data = v.copy()
-            # CRITICAL: Convert right_answer_1..N into a list for the template
             p_data['right_answer'] = _get_right_answers_list(p_data)
             practice_settings[k] = p_data
             
@@ -134,12 +128,14 @@ class _PracticePage(_BasePage):
 
     @classmethod
     def is_displayed(cls, player: Player):
-        # 1. Check if the practice data was actually loaded from Excel
         key = f"Practice{cls.practice_id}"
-        practices = player.session.vars.get("practice_settings", {})
-        
-        # Check if the key exists in our loaded data
-        return key in practices
+        # Check toggle from sheet settings (default 1)
+        sheet_settings = player.session.vars.get("sheet_settings", {})
+        flag = str(sheet_settings.get(key, "1")).strip().lower()
+        enabled = flag in ["1", "true", "yes"]
+        # Check if data exists
+        has_data = key in player.session.vars.get("practice_settings", {})
+        return enabled and has_data
 
     @classmethod
     def _settings(cls, player: Player):
@@ -160,7 +156,7 @@ class _PracticePage(_BasePage):
         s = cls._settings(player)
         return dict(
             settings=s,
-            # CRITICAL: Pass Regex to template for P6/P7 validation
+            js_right_answers=json.dumps(s.get("right_answer", [])),
             js_regex=json.dumps(player.session.vars.get("allowed_regex", [])),
             allowed_values=player.session.vars.get("allowed_values", []),
             suffixes=player.session.vars.get("suffixes", [])
@@ -200,12 +196,11 @@ class Practice4(_PracticePage):
 class Practice5(_PracticePage):
     practice_id = 5
     template_name = "start/Practice5.html"
-
+    
     @staticmethod
     def vars_for_template(player: Player):
-        s = _PracticePage._settings(player)  # includes full_image_path
-        allowed = player.session.vars.get("allowed_values", []) or []
-
+        s = _PracticePage._settings(player)
+        allowed = player.session.vars.get("allowed_values", [])
         return dict(
             settings=s,
             vocab1=allowed[0] if len(allowed) > 0 else [],
