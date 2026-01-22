@@ -32,11 +32,13 @@
 
 <div id="app" v-cloak>
 
-  <h1 class="text-center mb-4">[[ title ]]</h1>
-  <div class="lead mb-4" v-html="main_text"></div>
+  <h1 class="text-center mb-3">[[ title ]]</h1>
+  <div class="lead mb-3" v-html="main_text"></div>
 
-  <div v-if="image_path" class="text-center my-4 image-wrap">
-    <img :src="image_path" alt="Practice image">
+  <div v-if="image_path" class="text-center my-3">
+  <img :src="image_path"
+       :alt="title"
+       style="max-width: 600px; width: 100%; height: auto;">
   </div>
 
   <div class="vocabulary-box text-center">
@@ -87,3 +89,4 @@ app.mount("#app");
 </script>
 
 {% endblock %}
+
