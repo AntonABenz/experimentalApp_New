@@ -210,7 +210,7 @@ class Practice5(_PracticePage):
             # FIX: Explicitly pass variables for {{ title }} placeholders
             title=s.get("title", "Practice 5"),
             main_text=s.get("main_text", ""),
-            image_path=s.get("full_image_path", ""),
+            #image_path=s.get("full_image_path", ""),
             
             # Vocab box data
             vocab1=allowed[0] if len(allowed) > 0 else [],
