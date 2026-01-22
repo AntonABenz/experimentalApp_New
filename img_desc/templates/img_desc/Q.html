@@ -62,12 +62,22 @@ window.props = {
     allowedValues: {{ allowed_values|json }},
     allowedRegexes: {{ allowed_regexes|json }},
     suffixes: {{ suffixes|json }},
+
+    // IMPORTANT: sentence display uses the python resolver
     full_sentences: {{ player.get_full_sentences|json }},
+
     interpreter_choices: {{ interpreter_choices|json }},
     interpreter_title: {{ interpreter_title|json }},
-    instructions_url: {{ instructions_url|json }}
+    instructions_url: {{ instructions_url|json }},
+
+    // IMPORTANT: image url from server (already computed in vars_for_template)
+    server_image_url: {{ server_image_url|json }},
+
+    // OPTIONAL BUT VERY USEFUL: debug batch dict
+    d: {{ d|json }}
 };
 </script>
+
 
 <div id="app" v-cloak>
 
@@ -226,8 +236,7 @@ const app = Vue.createApp({
             return base + joiner + "v=" + this.instructionsNonce;
         },
         imageUrl() {
-            const el = document.querySelector("img[data-server-image-url]");
-            return el ? el.getAttribute("data-server-image-url") : "{{ player.get_image_url }}";
+            return this.props.server_image_url || "";
         },
         optionsFieldNumber() { return this.optionsFieldIndex + 1; },
         optionsList() {
@@ -313,3 +322,4 @@ app.config.compilerOptions.delimiters = ["[[", "]]"];
 app.mount("#app");
 </script>
 {% endblock %}
+
