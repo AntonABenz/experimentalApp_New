@@ -12,23 +12,16 @@
   }
   .vocab-column { font-size: 1.1rem; text-align: left; }
   .vocab-item { display: block; margin-bottom: 2px; }
-  @media (min-width: 768px) {
-    .vocab-column:first-child { border-right: 2px solid #e9ecef; }
-  }
-  .image-wrap img {
-    max-width: 100%;
-    height: auto;
-    border: 1px solid #ddd;
-    display: inline-block;
-  }
+  @media (min-width: 768px) { .vocab-column:first-child { border-right: 2px solid #e9ecef; } }
 </style>
 
 <h1 class="text-center mb-4">{{ title }}</h1>
 <div class="lead mb-4">{{ main_text|safe }}</div>
 
 {% if image_path %}
-  <div class="text-center my-4 image-wrap">
-    <img src="{{ image_path }}" alt="Practice image">
+  <div class="text-center my-4">
+    <img src="{{ image_path }}" alt="Practice image"
+         style="max-width: 100%; height: auto; border: 1px solid #ddd;">
   </div>
 {% endif %}
 
