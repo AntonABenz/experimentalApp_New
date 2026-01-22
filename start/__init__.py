@@ -138,8 +138,7 @@ class _PracticePage(_BasePage):
         key = f"Practice{cls.practice_id}"
         practices = player.session.vars.get("practice_settings", {})
         
-        # FIX: Simply check if the key exists. 
-        # Don't check for "1" because the value is a dictionary.
+        # Check if the key exists in our loaded data
         return key in practices
 
     @classmethod
@@ -207,14 +206,11 @@ class Practice5(_PracticePage):
         s = _PracticePage._settings(player)
         allowed = player.session.vars.get("allowed_values", [])
         return dict(
-            settings=s,
-            title=s.get("title", "Practice 5"),
-            main_text=s.get("main_text", ""),
-            image_path=s.get("full_image_path", ""),
-            # Pass answers for JS check if needed
-            vocab1=allowed[0] if len(allowed) > 0 else [],
-            vocab2=allowed[1] if len(allowed) > 1 else [],
-            suffixes=player.session.vars.get("suffixes", [])
+            # FIX: Must pass 'settings' because template uses props.settings.full_image_path
+            settings=s, 
+            allowed_values=allowed,
+            suffixes=player.session.vars.get("suffixes", []),
+            js_right_answers=json.dumps(s.get("right_answer", [])),
         )
 
 class Practice6(_PracticePage):
