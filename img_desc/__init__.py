@@ -725,38 +725,141 @@ class FinalForProlific(Page):
 # EXPORT
 # ----------------------------------------------------------------------------
 def custom_export(players):
-    yield [
-        "session", "participant", "prolific_id", "demographics",
-        "exp_num", "round", "role", "producer_id", "interpreter_id",
-        "condition", "item_nr", "image",
-        "sentences_formatted", "sentences_raw",
-        "rewards", "seconds", "feedback"
+    import json
+    from collections import defaultdict
+
+    # ---- helper functions -----------------------------------------------------
+    def safe_json_loads(x, default):
+        try:
+            if x is None:
+                return default
+            if isinstance(x, (list, dict)):
+                return x
+            s = str(x).strip()
+            if not s:
+                return default
+            return json.loads(s)
+        except Exception:
+            return default
+
+    def normalize_yesno_to_01(v):
+        """
+        interpreter stores values like "Yes"/"No" (strings)
+        We convert to 1/0
+        """
+        if v is None:
+            return ""
+        s = str(v).strip().lower()
+        if s in {"yes", "y", "1", "true"}:
+            return 1
+        if s in {"no", "n", "0", "false"}:
+            return 0
+        return ""
+
+    def format_sentence_pair(pair, prefix="", suffixes=None):
+        """
+        pair = ["Some", "the A"] OR ["Some", "the A", ...]
+        Use suffixes if available to make readable sentence strings.
+        """
+        suffixes = suffixes or []
+        if not isinstance(pair, list):
+            return ""
+
+        parts = []
+        if prefix:
+            parts.append(str(prefix).strip())
+
+        # join field + suffix
+        for idx, val in enumerate(pair):
+            val_str = "" if val is None else str(val).strip()
+            if not val_str:
+                continue
+            parts.append(val_str)
+            if idx < len(suffixes):
+                suf = str(suffixes[idx]).strip()
+                if suf:
+                    parts.append(suf)
+
+        return " ".join([p for p in parts if p]).strip()
+
+    # ---- Define the demographics keys we want as columns ----------------------
+    demo_keys = [
+        "gender",
+        "age",
+        "handedness",
+        "grewUpInCountry",
+        "currentlyLivingInCountry",
+        "nativeLanguage",
+        "nativeLanguageOther",
+        "education",
     ]
 
-    from collections import defaultdict
+    # ---- Define export header -------------------------------------------------
+    yield [
+        # existing fields
+        "session", "participant", "prolific_id",
+
+        # demographics expanded
+        *[f"demo_{k}" for k in demo_keys],
+
+        "exp_num", "round", "role", "producer_id", "interpreter_id",
+        "condition", "item_nr", "image",
+
+        # producer sentences expanded (5 max)
+        "producer_sentence_1",
+        "producer_sentence_2",
+        "producer_sentence_3",
+        "producer_sentence_4",
+        "producer_sentence_5",
+
+        # interpreter decisions expanded (4 choices)
+        "interp_1",
+        "interp_2",
+        "interp_3",
+        "interp_4",
+
+        # keep these too (optional but useful)
+        "sentences_formatted",
+        "sentences_raw",
+        "rewards",
+        "seconds",
+        "feedback",
+    ]
+
+    # ---- group players by participant ----------------------------------------
     players_by_participant = defaultdict(list)
     for p in players:
         players_by_participant[p.participant.code].append(p)
 
+    # ---- export loop ----------------------------------------------------------
     for participant_code, participant_players in players_by_participant.items():
         try:
             first_player = participant_players[0]
             prolific_id = first_player.participant.vars.get("prolific_id", "")
             excel_slot = first_player.id_in_subsession
 
-            demographics = ""
+            # --- demographics lookup ---
+            demo_obj = {}
             try:
                 if "demographics" in first_player.participant.vars:
-                    demographics = json.dumps(first_player.participant.vars["demographics"])
+                    demo_obj = safe_json_loads(first_player.participant.vars["demographics"], {})
                 else:
-                    start_players = [pp for pp in first_player.participant.get_players() if hasattr(pp, "survey_data")]
+                    start_players = [
+                        pp for pp in first_player.participant.get_players()
+                        if hasattr(pp, "survey_data")
+                    ]
                     if start_players:
-                        demographics = start_players[0].survey_data or ""
+                        demo_obj = safe_json_loads(start_players[0].survey_data, {})
             except Exception:
-                pass
+                demo_obj = {}
 
+            demo_cols = [demo_obj.get(k, "") for k in demo_keys]
+
+            # --- history from participant.vars (schedule + sentences) ---
             history_json = first_player.participant.vars.get("batch_history", "[]")
-            history = json.loads(history_json)
+            history = safe_json_loads(history_json, [])
+
+            # --- timing map + feedback ---
             timing_map = {}
             feedback_str = ""
             for pp in participant_players:
@@ -767,28 +870,22 @@ def custom_export(players):
 
             history.sort(key=lambda x: int(x.get("round_number", 0)))
 
+            # get formatting helpers from session (optional)
+            prefix = first_player.session.vars.get("prefix") or ""
+            suffixes = first_player.session.vars.get("suffixes") or []
+            interpreter_choices = first_player.session.vars.get("interpreter_choices") or []
+            if isinstance(interpreter_choices, str):
+                interpreter_choices = [x.strip() for x in interpreter_choices.split(";") if x.strip()]
+
+            # ---- loop each round item in history --------------------------------
             for item in history:
                 rnd = int(item.get("round_number", 0))
                 if rnd < 1 or rnd > Constants.num_rounds:
                     continue
 
-                raw_sentences = item.get("producer_sentences") or item.get("sentences") or ""
-                formatted_sentences = raw_sentences
-
-                try:
-                    if isinstance(raw_sentences, str) and raw_sentences.strip().startswith("["):
-                        data = json.loads(raw_sentences)
-                        parts = []
-                        for pair in data:
-                            if isinstance(pair, list) and len(pair) >= 2:
-                                parts.append(f"{pair[0]} {pair[1]}".strip())
-                        if parts:
-                            formatted_sentences = "; ".join(parts)
-                except Exception:
-                    pass
-
                 my_role = item.get("role", "")
                 partner_id = item.get("partner_id", 0)
+
                 if my_role == PRODUCER:
                     prod_id = excel_slot
                     interp_id = partner_id
@@ -798,11 +895,55 @@ def custom_export(players):
 
                 exp_num = item.get("exp", "")
 
+                # ---- PRODUCER sentences (5 cols) --------------------------------
+                raw_sentences = item.get("producer_sentences") or item.get("sentences") or ""
+                sentence_pairs = safe_json_loads(raw_sentences, [])
+
+                # convert pairs into nice text, max 5
+                producer_sentence_cols = ["", "", "", "", ""]
+                formatted_parts = []
+                if isinstance(sentence_pairs, list):
+                    for idx, pair in enumerate(sentence_pairs[:5]):
+                        sent = format_sentence_pair(pair, prefix=prefix, suffixes=suffixes)
+                        producer_sentence_cols[idx] = sent
+                        if sent:
+                            formatted_parts.append(sent)
+
+                sentences_formatted = "; ".join([x for x in formatted_parts if x]).strip()
+                sentences_raw = raw_sentences
+
+                # ---- INTERPRETER decisions (4 cols) ------------------------------
+                # stored as [{"choice": "...", "answer": "Yes/No"}, ...]
+                raw_interp = item.get("interpreter_rewards") or item.get("rewards") or ""
+                interp_data = safe_json_loads(raw_interp, [])
+
+                interp_cols = ["", "", "", ""]
+                if isinstance(interp_data, list) and interp_data:
+                    # preferred: list of dict objects with "answer"
+                    for i in range(min(4, len(interp_data))):
+                        d = interp_data[i]
+                        if isinstance(d, dict):
+                            interp_cols[i] = normalize_yesno_to_01(d.get("answer"))
+                        else:
+                            # fallback if it's just raw values
+                            interp_cols[i] = normalize_yesno_to_01(d)
+                else:
+                    # if interpreter gave nothing or not JSON, leave blank
+
+                    # (optional fallback: if stored differently)
+                    pass
+
+                # ---- rewards + seconds + feedback --------------------------------
+                rewards = item.get("interpreter_rewards", "") or item.get("rewards", "")
+                seconds = timing_map.get(rnd, 0)
+
                 yield [
                     first_player.session.code,
                     participant_code,
                     prolific_id,
-                    demographics,
+
+                    *demo_cols,
+
                     exp_num,
                     rnd,
                     my_role,
@@ -811,15 +952,19 @@ def custom_export(players):
                     item.get("condition", ""),
                     item.get("item_nr", ""),
                     item.get("image", ""),
-                    formatted_sentences,
-                    raw_sentences,
-                    item.get("interpreter_rewards", "") or item.get("rewards", ""),
-                    timing_map.get(rnd, 0),
+
+                    *producer_sentence_cols,
+
+                    *interp_cols,
+
+                    sentences_formatted,
+                    sentences_raw,
+                    rewards,
+                    seconds,
                     feedback_str if rnd == Constants.num_rounds else "",
                 ]
 
         except Exception:
             continue
-
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
