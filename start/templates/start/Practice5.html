@@ -2,95 +2,132 @@
 {% load otree static %}
 
 {% block content %}
-
 <style>
-    /* Container for the Vocabulary Card */
-    .vocab-card {
-        background-color: #fff;
-        border: 1px solid #e3e3e3;
-        border-radius: 8px;
-        padding: 30px;
-        max-width: 800px;
-        margin: 2rem auto;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
+  [v-cloak] { display: none; }
+  .input-group { max-width: fit-content; }
+  .input-kids  { min-width: 200px; }
 
-    .vocab-title {
-        text-align: center;
-        font-weight: bold;
-        margin-bottom: 25px;
-        font-size: 1.25rem;
-        color: #333;
-    }
+  /* Vocab Box Styling */
+  .vocabulary-box {
+    border: 1px solid #ccc;
+    background-color: #f8f9fa;
+    padding: 20px;
+    border-radius: 5px;
+    margin-bottom: 25px;
+  }
+  .vocab-column { font-size: 1.1rem; text-align: left; }
+  .vocab-item { display: block; margin-bottom: 2px; }
+  @media (min-width: 768px) { .vocab-column:first-child { border-right: 2px solid #e9ecef; } }
 
-    .vocab-list {
-        list-style-type: none;
-        padding-left: 0;
-        margin-bottom: 0;
-        text-align: left;
-    }
-
-    .vocab-item {
-        padding: 4px 0;
-        font-size: 1.05rem;
-        color: #444;
-        line-height: 1.5;
-    }
-
-    .vocab-divider {
-        border-right: 1px solid #eee;
-    }
+  .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
 </style>
 
-<h1 class="mb-4 text-center">{{ title }}</h1>
+<script>
+  window.page_settings = {{ settings|json }};
+  window.suffixes = {{ suffixes|json }};
+  window.rightAnswers = {{ js_right_answers|safe }};
+</script>
 
-<div class="lead mb-4">
-    {{ main_text|safe }}
-</div>
+<h1 class="text-center mb-4">{{ title }}</h1>
+<div class="lead mb-4">{{ main_text|safe }}</div>
 
+{% if image_path %}
 <div class="text-center my-4">
-    <img src="{{ image_path }}"
-         alt="{{ title }}"
-         class="img-fluid"
-         style="box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-                border-radius: 4px;
-                max-height: 500px;
-                max-width: 100%;">
-</div>
-
-{% if vocab1 or vocab2 %}
-<div class="vocab-card">
-    <div class="vocab-title">Allowed Vocabulary</div>
-
-    <div class="row">
-        <div class="col-md-6 vocab-divider">
-            <ul class="vocab-list">
-                {% for word in vocab1 %}
-                    {% if word %}
-                        <li class="vocab-item">{{ word }}</li>
-                    {% endif %}
-                {% endfor %}
-            </ul>
-        </div>
-
-        <div class="col-md-6">
-            <ul class="vocab-list">
-                {% for word in vocab2 %}
-                    {% if word %}
-                        <li class="vocab-item">{{ word }}</li>
-                    {% endif %}
-                {% endfor %}
-            </ul>
-        </div>
-    </div>
+    <img src="{{ image_path }}" alt="Practice Image" style="max-width: 100%; height: auto; border: 1px solid #ddd;">
 </div>
 {% endif %}
 
-<div class="text-center mt-5">
-    <button type="submit"
-            class="btn btn-primary btn-lg">
-        Next
-    </button>
+<div class="vocabulary-box text-center">
+    <h5 class="mb-3">Allowed Vocabulary</h5>
+    <div class="row justify-content-center">
+        <div class="col-md-5 vocab-column px-4">
+            {% for word in vocab1 %}
+                <div class="vocab-item">{{ word }}</div>
+            {% endfor %}
+        </div>
+        <div class="col-md-5 vocab-column px-4">
+            {% for word in vocab2 %}
+                <div class="vocab-item">{{ word }}</div>
+            {% endfor %}
+        </div>
+    </div>
 </div>
 
+<div id="app" v-cloak>
+  <div class="text-center mt-4">
+    <div v-for="(item, idx) in items" :key="idx" class="clean-row d-flex justify-content-center">
+      <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
+        
+        <div v-for="(field, fIdx) in item.fields" :key="fIdx" class="d-flex align-items-baseline">
+          <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off">
+          <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
+        </div>
+
+        <button class="btn btn-outline-secondary ml-2" @click.prevent="addItem" :disabled="items.length >= 5">+</button>
+        <button class="btn btn-outline-danger ml-1" @click.prevent="removeItem(idx)" :disabled="items.length <= 1">-</button>
+      
+      </div>
+    </div>
+  </div>
+
+  <input type="hidden" name="practice_response" :value="jsonPayload">
+
+  <div class="text-center mt-5">
+    <button class="btn btn-primary btn-lg" @click.prevent="check">Next</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script>
+const app = Vue.createApp({
+  data() {
+    const suffixes = window.suffixes || ["", ""];
+    const rawAnswers = window.rightAnswers || [];
+    
+    // Convert "3; the A" -> ["3", "the a"]
+    const correctRows = rawAnswers.map(str => 
+      str.split(';').map(part => part.trim().toLowerCase())
+    );
+
+    return {
+      suffixes,
+      items: [{ fields: suffixes.map(sf => ({ value: "", suffix: sf })) }],
+      correctRows
+    };
+  },
+  computed: {
+    jsonPayload() { return JSON.stringify(this.items.map(i => i.fields.map(f => f.value))); }
+  },
+  methods: {
+    addItem() { if(this.items.length < 5) this.items.push({ fields: this.suffixes.map(s=>({value:"", suffix:s})) }); },
+    removeItem(i) { if(this.items.length > 1) this.items.splice(i, 1); },
+    
+    check() {
+      // Validation Logic
+      if (this.items.length !== this.correctRows.length) {
+        alert(`Incorrect number of sentences. Expected ${this.correctRows.length}.`);
+        return;
+      }
+
+      for (let i = 0; i < this.correctRows.length; i++) {
+        const row = this.items[i];
+        const correctPart = this.correctRows[i];
+
+        for (let j = 0; j < correctPart.length; j++) {
+          const userVal = (row.fields[j].value || "").trim().toLowerCase();
+          const correctVal = correctPart[j];
+          
+          if (userVal !== correctVal) {
+            alert(`Row ${i+1} is incorrect.\nYou wrote: "${userVal}"\nExpected: "${correctVal}"`);
+            return;
+          }
+        }
+      }
+      document.querySelector('form').submit();
+    }
+  }
+});
+app.config.compilerOptions.delimiters = ["[[", "]]"];
+app.mount("#app");
+</script>
 {% endblock %}
