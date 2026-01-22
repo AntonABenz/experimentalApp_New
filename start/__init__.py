@@ -200,27 +200,16 @@ class Practice4(_PracticePage):
 class Practice5(_PracticePage):
     practice_id = 5
     template_name = "start/Practice5.html"
-    
+
     @staticmethod
     def vars_for_template(player: Player):
-        s = _PracticePage._settings(player)
-        allowed = player.session.vars.get("allowed_values", [])
-        
+        s = _PracticePage._settings(player)  # includes full_image_path
+        allowed = player.session.vars.get("allowed_values", []) or []
+
         return dict(
-            # FIX: Explicitly pass variables for {{ title }} placeholders
-            title=s.get("title", "Practice 5"),
-            main_text=s.get("main_text", ""),
-            image_path=s.get("full_image_path", ""),
-            
-            # Vocab box data
+            settings=s,
             vocab1=allowed[0] if len(allowed) > 0 else [],
             vocab2=allowed[1] if len(allowed) > 1 else [],
-            
-            # Standard data for JS validation
-            settings=s,
-            allowed_values=allowed,
-            suffixes=player.session.vars.get("suffixes", []),
-            js_right_answers=json.dumps(s.get("right_answer", [])),
         )
 
 class Practice6(_PracticePage):
