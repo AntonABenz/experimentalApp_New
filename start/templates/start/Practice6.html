@@ -22,7 +22,7 @@
     settings: {{ settings|json }},
     allowedValues: {{ allowed_values|json }},
     suffixes: {{ suffixes|json }},
-    regexStr: {{ js_regex|safe }} // ✅ Received from Python
+    regexStr: {{ js_regex|safe }}
   };
 </script>
 
@@ -51,7 +51,7 @@
     <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
       <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
         <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
-          <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off">
+          <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off" @input="errorMsg=''">
           <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
         </div>
         <button class="btn btn-outline-secondary ml-2" @click.prevent="addItem" :disabled="items.length >= 5">+</button>
@@ -62,6 +62,10 @@
 
   <input type="hidden" name="practice_response" :value="jsonPayload">
   
+  <p v-if="errorMsg" class="alert alert-danger text-center mt-3" style="max-width: 600px; margin: 0 auto;">
+    [[ errorMsg ]]
+  </p>
+
   <div class="text-center mt-5">
     <button class="btn btn-primary btn-lg" @click.prevent="check">Next</button>
   </div>
@@ -73,8 +77,6 @@ const app = Vue.createApp({
   data() {
     const p = window.props || {};
     let suffixes = p.suffixes || ["", ""];
-    
-    // Compile Regexes
     const regexList = (p.regexStr || []).map(r => new RegExp(`^${r}$`, 'i'));
 
     return {
@@ -83,6 +85,7 @@ const app = Vue.createApp({
       regexList,
       items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
       requiredRows: 3, // Practice 6 requires 3 sentences
+      errorMsg: ""
     };
   },
   computed: {
@@ -93,9 +96,11 @@ const app = Vue.createApp({
     removeItem(i) { if(this.items.length > 1) this.items.splice(i, 1); },
     
     check() {
+      this.errorMsg = "";
+
       // 1. Check Row Count
       if (this.items.length !== this.requiredRows) {
-        alert(`You must produce exactly ${this.requiredRows} sentences.`);
+        this.errorMsg = `You must produce exactly ${this.requiredRows} sentences.`;
         return;
       }
 
@@ -104,18 +109,15 @@ const app = Vue.createApp({
         const row = this.items[i];
         for (let j = 0; j < row.fields.length; j++) {
           const val = (row.fields[j].value || "").trim();
-          
-          // Get regex for this column (0 or 1)
           const reg = this.regexList[j];
           
           if (reg && !reg.test(val)) {
-            alert(`Sentence ${i+1}, Field ${j+1}: "${val}" is not valid.\n\nPlease choose from the allowed vocabulary.`);
+            this.errorMsg = `Sentence ${i+1}, Field ${j+1}: "${val}" is not valid. Please choose from the allowed vocabulary.`;
             return; 
           }
         }
       }
 
-      // 3. Submit
       document.querySelector('form').submit();
     }
   }
