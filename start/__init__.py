@@ -299,18 +299,6 @@ class Practice5(_PracticePage):
     practice_id = 5
     template_name = "start/Practice5.html"
 
-    @staticmethod
-    def vars_for_template(player: Player):
-        s = _PracticePage._settings(player)
-        allowed = player.session.vars.get("allowed_values", []) or []
-        return dict(
-            title=s.get("title", "Practice 5"),
-            main_text=s.get("main_text", ""),
-            image_path=s.get("full_image_path", ""),  # <-- THIS is what your debug showed empty before
-            vocab1=allowed[0] if len(allowed) > 0 else [],
-            vocab2=allowed[1] if len(allowed) > 1 else [],
-        )
-
 
 class Practice6(_PracticePage):
     practice_id = 6
