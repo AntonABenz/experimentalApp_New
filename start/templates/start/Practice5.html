@@ -12,8 +12,9 @@
   }
   .vocab-column { font-size: 1.1rem; text-align: left; }
   .vocab-item { display: block; margin-bottom: 2px; }
-  @media (min-width: 768px) { .vocab-column:first-child { border-right: 2px solid #e9ecef; } }
-  
+  @media (min-width: 768px) {
+    .vocab-column:first-child { border-right: 2px solid #e9ecef; }
+  }
   .image-wrap img {
     max-width: 100%;
     height: auto;
@@ -25,9 +26,9 @@
 <h1 class="text-center mb-4">{{ title }}</h1>
 <div class="lead mb-4">{{ main_text|safe }}</div>
 
-{% if settings.full_image_path %}
+{% if image_path %}
   <div class="text-center my-4 image-wrap">
-    <img src="{{ settings.full_image_path }}" alt="Practice image">
+    <img src="{{ image_path }}" alt="Practice image">
   </div>
 {% endif %}
 
@@ -48,11 +49,11 @@
 </div>
 
 <form method="post">
-    <input type="hidden" name="practice_response" value="visited">
-    <div class="text-center mt-5">
-        <button class="btn btn-primary btn-lg">Next</button>
-    </div>
+  {% csrf_token %}
+  <input type="hidden" name="practice_response" value="visited">
+  <div class="text-center mt-5">
+    <button class="btn btn-primary btn-lg">Next</button>
+  </div>
 </form>
 
 {% endblock %}
-
