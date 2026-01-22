@@ -15,48 +15,55 @@ def clean_str(x):
     if x is None:
         return ""
     s = str(x).strip()
-    return "" if s.lower() in {"nan", "none"} else s
+    if s.lower() in {"nan", "none"}:
+        return ""
+    return s
 
-
-def fix_s3_url(raw_s3: str) -> str:
-    raw_s3 = clean_str(raw_s3)
-    if "console.aws.amazon.com" in raw_s3 and "buckets/" in raw_s3:
+def _maybe_cast(v):
+    """Cast numbers/bools coming from sheets into Python types where sensible."""
+    if isinstance(v, str):
+        s = v.strip()
+        if s.lower() in {"true", "false"}:
+            return s.lower() == "true"
         try:
-            bucket = raw_s3.split("buckets/")[1].split("?")[0].strip("/")
-            return f"https://{bucket}.s3.eu-central-1.amazonaws.com"
+            if "." in s:
+                return float(s)
+            return int(s)
         except Exception:
-            return raw_s3
-    return raw_s3
+            return s
+    return v
 
-
-def build_practice_image_url(session, image_name: str) -> str:
+def build_image_url(player, filename: str) -> str:
     """
-    Practice images live under: {s3path_base}/practice/{image}.{ext}
+    Constructs the full S3 URL for a practice image.
+    Assumes practice images are under {s3_base}/practice/{filename}.{ext}
     """
-    name = clean_str(image_name)
-    if not name:
+    filename = clean_str(filename)
+    if not filename:
         return ""
 
-    base = (session.vars.get("s3path_base") or "").rstrip("/")
-    ext = session.vars.get("extension") or "png"
+    s3_base = clean_str(player.session.vars.get("s3path_base", ""))
+    ext = clean_str(player.session.vars.get("extension", "png")) or "png"
 
-    if not name.lower().endswith(f".{ext}"):
-        name = f"{name}.{ext}"
+    # ensure extension
+    if not filename.lower().endswith(f".{ext}"):
+        filename = f"{filename}.{ext}"
 
-    if not base:
-        # fallback: return filename only (might work if served locally)
-        return name
+    if not s3_base:
+        # allow local/static fallback if you ever need it:
+        return filename
 
-    return f"{base}/practice/{name}"
+    base = s3_base.rstrip("/")
+    # if they accidentally pasted console URL, other code might normalize it earlier,
+    # but keep this safe anyway:
+    return f"{base}/practice/{filename}"
 
-
-def _get_right_answers_list(practice_data: dict) -> list:
+def _get_right_answers_list(practice_dict: dict) -> list[str]:
     """
-    You said Practice5 won't validate, but other practices might.
-    Keep this for Practice1-4/6/7 if needed.
+    Reads right_answer_1, right_answer_2... as a list of strings.
+    Example cell: "2;2" or "3; the A"
     """
-    answers = []
-    keys = [k for k in practice_data.keys() if str(k).lower().startswith("right_answer_")]
+    keys = [k for k in practice_dict.keys() if str(k).lower().startswith("right_answer_")]
 
     def extract_num(k):
         nums = re.findall(r"\d+", str(k))
@@ -64,11 +71,54 @@ def _get_right_answers_list(practice_data: dict) -> list:
 
     keys.sort(key=extract_num)
 
+    out = []
     for k in keys:
-        val = clean_str(practice_data.get(k))
-        if val:
-            answers.append(val)
-    return answers
+        v = clean_str(practice_dict.get(k))
+        if v:
+            out.append(v)
+    return out
+
+def _parse_kv_sheet(rows: list[dict]) -> dict:
+    """
+    Practice tabs are key/value sheets:
+      name | value | comment
+    Convert to dict {name: value}
+    """
+    out = {}
+    for r in rows or []:
+        name = clean_str(r.get("name") or r.get("Name"))
+        if not name:
+            continue
+        val = r.get("value") if "value" in r else r.get("Value")
+        out[name] = _maybe_cast(val)
+    return out
+
+def _find_practice_tab(practices_payload: dict, practice_id: int):
+    """
+    Accept many tab naming styles:
+      practice_5, Practice_5, PRACTICE_5, practice5, Practice5
+    """
+    if not isinstance(practices_payload, dict):
+        return None
+
+    pid = str(practice_id)
+    candidates = [
+        f"practice_{pid}", f"Practice_{pid}", f"PRACTICE_{pid}",
+        f"practice{pid}", f"Practice{pid}", f"PRACTICE{pid}",
+    ]
+    # direct matches
+    for c in candidates:
+        if c in practices_payload:
+            return practices_payload[c]
+
+    # case-insensitive fallback
+    lower_map = {str(k).lower(): k for k in practices_payload.keys()}
+    for c in candidates:
+        k = lower_map.get(c.lower())
+        if k is not None:
+            return practices_payload[k]
+
+    return None
 
 
 # -------------------------------------------------------------------
@@ -100,34 +150,64 @@ class Player(BasePlayer):
 
 def creating_session(subsession: BaseSubsession):
     session = subsession.session
+
     filename = session.config.get("filename")
     if not filename:
         raise RuntimeError("Session config must include 'filename'")
 
     payload = get_data(filename)
-    settings = payload.get("settings", {}) or {}
 
+    # Global settings
+    settings = payload.get("settings", {}) or {}
     session.vars["sheet_settings"] = settings
 
-    # global vars
-    raw_s3 = str(settings.get("s3path") or settings.get("s3path_base") or "")
-    session.vars["s3path_base"] = fix_s3_url(raw_s3)
-    session.vars["extension"] = settings.get("extension", "png")
-
+    # Store globals used across practice templates
     session.vars["allowed_values"] = settings.get("allowed_values", []) or []
     session.vars["allowed_regex"] = settings.get("allowed_regex", []) or []
-    session.vars["suffixes"] = settings.get("suffixes", ["solve/d", "exercises"])
+    session.vars["suffixes"] = settings.get("suffixes", ["solve/d", "exercises"]) or ["solve/d", "exercises"]
     session.vars["interpreter_choices"] = settings.get("interpreter_choices", []) or []
-    session.vars["interpreter_title"] = settings.get("interpreter_title", "Interpretation")
-    session.vars["EndOfIntroText"] = settings.get("EndOfIntroText", "")
+    session.vars["interpreter_title"] = settings.get("interpreter_title", "Interpretation") or "Interpretation"
+    session.vars["EndOfIntroText"] = settings.get("EndOfIntroText", "") or ""
 
-    # practice settings
+    # S3 base + extension
+    raw_s3 = clean_str(settings.get("s3path") or settings.get("s3path_base") or "")
+    if "console.aws.amazon.com" in raw_s3 and "buckets/" in raw_s3:
+        try:
+            bucket = raw_s3.split("buckets/")[1].split("?")[0].strip("/")
+            raw_s3 = f"https://{bucket}.s3.eu-central-1.amazonaws.com"
+        except Exception:
+            pass
+    session.vars["s3path_base"] = raw_s3
+    session.vars["extension"] = clean_str(settings.get("extension", "png")) or "png"
+
+    # ----------------------------------------------------------------
+    # Practice settings: build Practice1..Practice7
+    # ----------------------------------------------------------------
     practice_settings = {}
+
+    # Case A: get_data already embedded PracticeX dicts inside settings
     for k, v in settings.items():
-        if k.startswith("Practice") and isinstance(v, dict):
+        if str(k).startswith("Practice") and isinstance(v, dict):
             p = v.copy()
-            p["right_answer"] = _get_right_answers_list(p)  # kept for other practice pages
-            practice_settings[k] = p
+            p["right_answer"] = _get_right_answers_list(p)
+            practice_settings[str(k)] = p
+
+    # Case B: get_data provides separate practice tabs (payload["practices"])
+    practices_payload = payload.get("practices")  # expected dict: tab_name -> list[dict rows]
+    if isinstance(practices_payload, dict):
+        for pid in range(1, 8):
+            key = f"Practice{pid}"
+            if key in practice_settings:
+                continue  # already got it from settings dicts
+
+            tab_rows = _find_practice_tab(practices_payload, pid)
+            if not tab_rows:
+                continue
+
+            p = _parse_kv_sheet(tab_rows)
+            # normalize right answers into list
+            p["right_answer"] = _get_right_answers_list(p)
+            practice_settings[key] = p
 
     session.vars["practice_settings"] = practice_settings
 
@@ -149,22 +229,23 @@ class _PracticePage(_BasePage):
     @classmethod
     def is_displayed(cls, player: Player):
         key = f"Practice{cls.practice_id}"
-        return key in player.session.vars.get("practice_settings", {})
+        return key in (player.session.vars.get("practice_settings") or {})
 
     @classmethod
     def _settings(cls, player: Player):
         key = f"Practice{cls.practice_id}"
-        s = player.session.vars["practice_settings"].get(key, {}).copy()
+        s = (player.session.vars.get("practice_settings") or {}).get(key, {}).copy()
 
-        # robust image lookup
-        img = s.get("image")
-        if not img:
-            for kk, vv in s.items():
-                if str(kk).strip().lower() == "image":
-                    img = vv
-                    break
+        # image
+        s["full_image_path"] = build_image_url(player, s.get("image", ""))
 
-        s["full_image_path"] = build_practice_image_url(player.session, img)
+        # required rows defaulting (only used where templates need it)
+        if "required_rows" not in s:
+            if cls.practice_id == 7:
+                s["required_rows"] = 5
+            elif cls.practice_id in {4, 6}:
+                s["required_rows"] = 3
+
         return s
 
     @classmethod
@@ -172,9 +253,9 @@ class _PracticePage(_BasePage):
         s = cls._settings(player)
         return dict(
             settings=s,
+            js_regex=json.dumps(player.session.vars.get("allowed_regex", [])),
             allowed_values=player.session.vars.get("allowed_values", []),
             suffixes=player.session.vars.get("suffixes", []),
-            js_regex=json.dumps(player.session.vars.get("allowed_regex", [])),
         )
 
 
@@ -215,21 +296,17 @@ class Practice4(_PracticePage):
 
 
 class Practice5(_PracticePage):
-    """
-    Display-only: image + vocab box + next
-    """
     practice_id = 5
     template_name = "start/Practice5.html"
 
     @staticmethod
     def vars_for_template(player: Player):
         s = _PracticePage._settings(player)
-        allowed = player.session.vars.get("allowed_values", [])
-
+        allowed = player.session.vars.get("allowed_values", []) or []
         return dict(
             title=s.get("title", "Practice 5"),
             main_text=s.get("main_text", ""),
-            image_path=s.get("full_image_path", ""),
+            image_path=s.get("full_image_path", ""),  # <-- THIS is what your debug showed empty before
             vocab1=allowed[0] if len(allowed) > 0 else [],
             vocab2=allowed[1] if len(allowed) > 1 else [],
         )
