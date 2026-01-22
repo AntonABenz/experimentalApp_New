@@ -3,11 +3,6 @@
 
 {% block content %}
 <style>
-  [v-cloak] { display: none; }
-  .input-group { max-width: fit-content; }
-  .input-kids  { min-width: 200px; }
-
-  /* Vocab Box Styling */
   .vocabulary-box {
     border: 1px solid #ccc;
     background-color: #f8f9fa;
@@ -18,15 +13,7 @@
   .vocab-column { font-size: 1.1rem; text-align: left; }
   .vocab-item { display: block; margin-bottom: 2px; }
   @media (min-width: 768px) { .vocab-column:first-child { border-right: 2px solid #e9ecef; } }
-
-  .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
 </style>
-
-<script>
-  window.page_settings = {{ settings|json }};
-  window.suffixes = {{ suffixes|json }};
-  window.rightAnswers = {{ js_right_answers|safe }};
-</script>
 
 <h1 class="text-center mb-4">{{ title }}</h1>
 <div class="lead mb-4">{{ main_text|safe }}</div>
@@ -53,81 +40,10 @@
     </div>
 </div>
 
-<div id="app" v-cloak>
-  <div class="text-center mt-4">
-    <div v-for="(item, idx) in items" :key="idx" class="clean-row d-flex justify-content-center">
-      <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
-        
-        <div v-for="(field, fIdx) in item.fields" :key="fIdx" class="d-flex align-items-baseline">
-          <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off">
-          <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
-        </div>
-
-        <button class="btn btn-outline-secondary ml-2" @click.prevent="addItem" :disabled="items.length >= 5">+</button>
-        <button class="btn btn-outline-danger ml-1" @click.prevent="removeItem(idx)" :disabled="items.length <= 1">-</button>
-      
-      </div>
+<form>
+    <div class="text-center mt-5">
+        <button class="btn btn-primary btn-lg">Next</button>
     </div>
-  </div>
+</form>
 
-  <input type="hidden" name="practice_response" :value="jsonPayload">
-
-  <div class="text-center mt-5">
-    <button class="btn btn-primary btn-lg" @click.prevent="check">Next</button>
-  </div>
-</div>
-
-<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-<script>
-const app = Vue.createApp({
-  data() {
-    const suffixes = window.suffixes || ["", ""];
-    const rawAnswers = window.rightAnswers || [];
-    
-    // Convert "3; the A" -> ["3", "the a"]
-    const correctRows = rawAnswers.map(str => 
-      str.split(';').map(part => part.trim().toLowerCase())
-    );
-
-    return {
-      suffixes,
-      items: [{ fields: suffixes.map(sf => ({ value: "", suffix: sf })) }],
-      correctRows
-    };
-  },
-  computed: {
-    jsonPayload() { return JSON.stringify(this.items.map(i => i.fields.map(f => f.value))); }
-  },
-  methods: {
-    addItem() { if(this.items.length < 5) this.items.push({ fields: this.suffixes.map(s=>({value:"", suffix:s})) }); },
-    removeItem(i) { if(this.items.length > 1) this.items.splice(i, 1); },
-    
-    check() {
-      // Validation Logic
-      if (this.items.length !== this.correctRows.length) {
-        alert(`Incorrect number of sentences. Expected ${this.correctRows.length}.`);
-        return;
-      }
-
-      for (let i = 0; i < this.correctRows.length; i++) {
-        const row = this.items[i];
-        const correctPart = this.correctRows[i];
-
-        for (let j = 0; j < correctPart.length; j++) {
-          const userVal = (row.fields[j].value || "").trim().toLowerCase();
-          const correctVal = correctPart[j];
-          
-          if (userVal !== correctVal) {
-            alert(`Row ${i+1} is incorrect.\nYou wrote: "${userVal}"\nExpected: "${correctVal}"`);
-            return;
-          }
-        }
-      }
-      document.querySelector('form').submit();
-    }
-  }
-});
-app.config.compilerOptions.delimiters = ["[[", "]]"];
-app.mount("#app");
-</script>
 {% endblock %}
