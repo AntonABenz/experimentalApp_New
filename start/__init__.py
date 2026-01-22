@@ -205,9 +205,19 @@ class Practice5(_PracticePage):
     def vars_for_template(player: Player):
         s = _PracticePage._settings(player)
         allowed = player.session.vars.get("allowed_values", [])
+        
         return dict(
-            # FIX: Must pass 'settings' because template uses props.settings.full_image_path
-            settings=s, 
+            # FIX: Explicitly pass variables for {{ title }} placeholders
+            title=s.get("title", "Practice 5"),
+            main_text=s.get("main_text", ""),
+            image_path=s.get("full_image_path", ""),
+            
+            # Vocab box data
+            vocab1=allowed[0] if len(allowed) > 0 else [],
+            vocab2=allowed[1] if len(allowed) > 1 else [],
+            
+            # Standard data for JS validation
+            settings=s,
             allowed_values=allowed,
             suffixes=player.session.vars.get("suffixes", []),
             js_right_answers=json.dumps(s.get("right_answer", [])),
