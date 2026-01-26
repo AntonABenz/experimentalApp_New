@@ -369,8 +369,6 @@ def creating_session(subsession: Subsession):
             session.vars["interpreter_choices"] = []
 
         # --- 2) Sentence store ---
-        # Exp0: static lookup for Exp1
-        # Exp1: produced sentences store for Exp2 lookup, etc.
         session.vars["sentences_by_key"] = {}
 
         # preload Exp0 sentence lookup
@@ -402,11 +400,9 @@ def creating_session(subsession: Subsession):
 
         players = subsession.get_players()
         slot_to_pid = {}
-        pid_to_slot = {}
         for idx, pl in enumerate(players, start=1):
             if idx <= K:
                 slot_to_pid[idx] = pl.id_in_subsession
-                pid_to_slot[pl.id_in_subsession] = idx
 
         # valid image pool
         valid_pool = []
@@ -452,11 +448,6 @@ def creating_session(subsession: Subsession):
             extracted = extract_sentences_from_row(r)
             has_extracted = extracted and extracted.strip() != "[]"
 
-            # if sheet row contains sentences -> use them directly
-            # else -> lookup:
-            #    Exp1 -> Exp0
-            #    Exp2 -> Exp1 (produced)
-            #    Exp3 -> Exp2 ...
             sentence_lookup = None
             producer_sentences_for_interpreter = extracted if has_extracted else "[]"
             if not has_extracted:
@@ -546,33 +537,75 @@ def creating_session(subsession: Subsession):
                 }
             )
 
-        # --- 5) Final history PER PARTICIPANT, KEEPING SHEET ORDER ---
-        empty = []
-        for p in players:
-            my_items = data_by_pid.get(p.id_in_subsession, [])
-            my_items.sort(key=lambda x: x["sort_key"])  # THIS preserves sheet order
-
-            final_history = []
-            round_counter = 1
-            for it in my_items:
-                if round_counter > Constants.num_rounds:
+    # --- 5) Finalize per-player history with FORCED 3P/5I mixing ---
+    empty = []
+    for p in players:
+        my_items = data_by_pid.get(p.id_in_subsession, [])
+        my_items.sort(key=lambda x: x["sort_key"])
+        
+        producer_items = [it for it in my_items if it.get("role") == PRODUCER]
+        interpreter_items = [it for it in my_items if it.get("role") == INTERPRETER]
+        
+        final_history = []
+        round_counter = 1
+        p_idx = 0
+        i_idx = 0
+        
+        while round_counter <= Constants.num_rounds:
+            # --- PHASE A: 3 PRODUCER ROUNDS (Forces 3 rounds) ---
+            for _ in range(3):
+                if round_counter > Constants.num_rounds: break
+                
+                item = None
+                # Try to get a real producer item
+                if p_idx < len(producer_items):
+                    item = producer_items[p_idx].copy()
+                    p_idx += 1
+                # If no producer item available, STEAL one from interpreter queue
+                elif i_idx < len(interpreter_items):
+                    item = interpreter_items[i_idx].copy()
+                    # Convert to Producer
+                    item["role"] = PRODUCER
+                    item["producer_sentences"] = "" # Clean for input
+                    item["sentence_lookup"] = None
+                    # Note: We consume from interpreter pile, so we advance i_idx
+                    i_idx += 1
+                
+                if item:
+                    item.pop("sort_key", None)
+                    item["round_number"] = round_counter
+                    final_history.append(item)
+                    round_counter += 1
+                else:
+                    # No items left anywhere
                     break
-                item = it.copy()
-                item.pop("sort_key", None)
-                item["round_number"] = round_counter
-                final_history.append(item)
-                round_counter += 1
 
-            p.batch_history = json.dumps(final_history)
-            p.participant.vars["batch_history"] = p.batch_history
-
-            if not final_history:
-                empty.append(p.id_in_subsession)
-
-        if empty:
+            # --- PHASE B: 5 INTERPRETER ROUNDS ---
+            for _ in range(5):
+                if round_counter > Constants.num_rounds: break
+                
+                if i_idx < len(interpreter_items):
+                    item = interpreter_items[i_idx].copy()
+                    item.pop("sort_key", None)
+                    item["round_number"] = round_counter
+                    final_history.append(item)
+                    i_idx += 1
+                    round_counter += 1
+                else:
+                    break
+            
+            # Stop if we have exhausted everything
+            if p_idx >= len(producer_items) and i_idx >= len(interpreter_items):
+                break
+        
+        p.batch_history = json.dumps(final_history)
+        p.participant.vars["batch_history"] = p.batch_history
+            
+        if not final_history:
+            empty.append(p.id_in_subsession)
+            
+    if empty:
             logger.warning(f"EMPTY schedules for: {empty}")
-
-        logger.info(f"Loaded Exp0 sentence keys: {len(session.vars.get('sentences_by_key') or {})}")
 
     except Exception as e:
         logger.error(f"ERROR in creating_session: {e}", exc_info=True)
@@ -902,7 +935,7 @@ def custom_export(players):
                         else:
                             interp_cols[i] = normalize_yesno_to_01(d)
 
-                rewards = item.get("interpreter_rewards", "") or item.get("rewards", "")
+                rewards = item.get("interpreter_rewards") or item.get("rewards") or ""
                 seconds = timing_map.get(rnd, 0)
 
                 yield [
@@ -929,5 +962,3 @@ def custom_export(players):
 
         except Exception:
             continue
-
-page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
