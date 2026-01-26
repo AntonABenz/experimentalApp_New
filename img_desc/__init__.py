@@ -537,74 +537,74 @@ def creating_session(subsession: Subsession):
                 }
             )
 
-    # --- 5) Finalize per-player history with FORCED 3P/5I mixing ---
-    empty = []
-    for p in players:
-        my_items = data_by_pid.get(p.id_in_subsession, [])
-        my_items.sort(key=lambda x: x["sort_key"])
-        
-        producer_items = [it for it in my_items if it.get("role") == PRODUCER]
-        interpreter_items = [it for it in my_items if it.get("role") == INTERPRETER]
-        
-        final_history = []
-        round_counter = 1
-        p_idx = 0
-        i_idx = 0
-        
-        while round_counter <= Constants.num_rounds:
-            # --- PHASE A: 3 PRODUCER ROUNDS (Forces 3 rounds) ---
-            for _ in range(3):
-                if round_counter > Constants.num_rounds: break
-                
-                item = None
-                # Try to get a real producer item
-                if p_idx < len(producer_items):
-                    item = producer_items[p_idx].copy()
-                    p_idx += 1
-                # If no producer item available, STEAL one from interpreter queue
-                elif i_idx < len(interpreter_items):
-                    item = interpreter_items[i_idx].copy()
-                    # Convert to Producer
-                    item["role"] = PRODUCER
-                    item["producer_sentences"] = "" # Clean for input
-                    item["sentence_lookup"] = None
-                    # Note: We consume from interpreter pile, so we advance i_idx
-                    i_idx += 1
-                
-                if item:
-                    item.pop("sort_key", None)
-                    item["round_number"] = round_counter
-                    final_history.append(item)
-                    round_counter += 1
-                else:
-                    # No items left anywhere
-                    break
+        # --- 5) Finalize per-player history with FORCED 3P/5I mixing ---
+        empty = []
+        for p in players:
+            my_items = data_by_pid.get(p.id_in_subsession, [])
+            my_items.sort(key=lambda x: x["sort_key"])
+            
+            producer_items = [it for it in my_items if it.get("role") == PRODUCER]
+            interpreter_items = [it for it in my_items if it.get("role") == INTERPRETER]
+            
+            final_history = []
+            round_counter = 1
+            p_idx = 0
+            i_idx = 0
+            
+            while round_counter <= Constants.num_rounds:
+                # --- PHASE A: 3 PRODUCER ROUNDS (Forces 3 rounds) ---
+                for _ in range(3):
+                    if round_counter > Constants.num_rounds: break
+                    
+                    item = None
+                    # Try to get a real producer item
+                    if p_idx < len(producer_items):
+                        item = producer_items[p_idx].copy()
+                        p_idx += 1
+                    # If no producer item available, STEAL one from interpreter queue
+                    elif i_idx < len(interpreter_items):
+                        item = interpreter_items[i_idx].copy()
+                        # Convert to Producer
+                        item["role"] = PRODUCER
+                        item["producer_sentences"] = "" # Clean for input
+                        item["sentence_lookup"] = None
+                        # Note: We consume from interpreter pile, so we advance i_idx
+                        i_idx += 1
+                    
+                    if item:
+                        item.pop("sort_key", None)
+                        item["round_number"] = round_counter
+                        final_history.append(item)
+                        round_counter += 1
+                    else:
+                        # No items left anywhere
+                        break
 
-            # --- PHASE B: 5 INTERPRETER ROUNDS ---
-            for _ in range(5):
-                if round_counter > Constants.num_rounds: break
+                # --- PHASE B: 5 INTERPRETER ROUNDS ---
+                for _ in range(5):
+                    if round_counter > Constants.num_rounds: break
+                    
+                    if i_idx < len(interpreter_items):
+                        item = interpreter_items[i_idx].copy()
+                        item.pop("sort_key", None)
+                        item["round_number"] = round_counter
+                        final_history.append(item)
+                        i_idx += 1
+                        round_counter += 1
+                    else:
+                        break
                 
-                if i_idx < len(interpreter_items):
-                    item = interpreter_items[i_idx].copy()
-                    item.pop("sort_key", None)
-                    item["round_number"] = round_counter
-                    final_history.append(item)
-                    i_idx += 1
-                    round_counter += 1
-                else:
+                # Stop if we have exhausted everything
+                if p_idx >= len(producer_items) and i_idx >= len(interpreter_items):
                     break
             
-            # Stop if we have exhausted everything
-            if p_idx >= len(producer_items) and i_idx >= len(interpreter_items):
-                break
-        
-        p.batch_history = json.dumps(final_history)
-        p.participant.vars["batch_history"] = p.batch_history
-            
-        if not final_history:
-            empty.append(p.id_in_subsession)
-            
-    if empty:
+            p.batch_history = json.dumps(final_history)
+            p.participant.vars["batch_history"] = p.batch_history
+                
+            if not final_history:
+                empty.append(p.id_in_subsession)
+                
+        if empty:
             logger.warning(f"EMPTY schedules for: {empty}")
 
     except Exception as e:
@@ -744,9 +744,6 @@ class FinalForProlific(Page):
         if not cc:
             return RedirectResponse(Constants.API_ERR_URL, status_code=302)
         return RedirectResponse(STUBURL + str(cc), status_code=302)
-
-
-page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
 
 
 # ----------------------------------------------------------------------------
@@ -962,3 +959,5 @@ def custom_export(players):
 
         except Exception:
             continue
+
+page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
