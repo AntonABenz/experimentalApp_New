@@ -440,7 +440,50 @@ def creating_session(subsession: Subsession):
             interpreter_slot = safe_int(r.get("Interpreter"), 0)
 
             if interpreter_slot == 0:
+                prod_pid = slot_to_pid.get(producer_slot) if producer_slot not in {0, 9} else None
+                if not prod_pid:
+                    continue
+            
+                sort_key = (exp_num, round_in_excel, trial, idx)
+            
+                # image choice
+                if producer_slot == 0:
+                    picked = image_raw if image_raw else random.choice(valid_pool)
+                else:
+                    picked = image_raw if is_valid_real_image(image_raw) else random.choice(valid_pool)
+            
+                excel_row_index0 = idx
+                excel_row_number_guess = idx + 2
+            
+                data_by_pid[prod_pid].append(
+                    {
+                        "sort_key": sort_key,
+                        "role": PRODUCER,
+                        "partner_id": 0,  # producer-only
+                        "exp": exp_num,
+                        "round_in_excel": round_in_excel,
+                        "trial": trial,
+                        "condition": condition,
+                        "item_nr": item_nr,
+                        "image": picked,
+                        "producer_sentences": "",
+                        "sentence_lookup": None,
+                        "interpreter_rewards": "",
+                        "producer_slot": producer_slot,
+                        "interpreter_slot": 0,
+                        "sentence_store_key": {
+                            "exp": exp_num,
+                            "producer_slot": producer_slot,
+                            "interpreter_slot": 0,
+                            "condition": condition,
+                            "item": picked,
+                        },
+                        "excel_row_index0": excel_row_index0,
+                        "excel_row_number_guess": excel_row_number_guess,
+                    }
+                )
                 continue
+
 
             interp_pid = slot_to_pid.get(interpreter_slot)
             prod_pid = slot_to_pid.get(producer_slot) if producer_slot not in {0, 9} else None
