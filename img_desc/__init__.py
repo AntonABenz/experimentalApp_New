@@ -449,7 +449,7 @@ def creating_session(subsession: Subsession):
             
             # Debug row tracking (best-effort; depends on loader/header)
             excel_row_index0 = idx
-            excel_row_number_guess = idx + 1
+            excel_row_number_guess = idx + 2
 
             # image choice
             if producer_slot == 0:
@@ -787,13 +787,13 @@ class Q(Page):
         player.end_decision_time = time.time()
         if player.start_decision_time:
             player.decision_seconds = player.end_decision_time - player.start_decision_time
-
+    
         data = player.get_current_batch_data() or {}
         updates = {}
-
+    
         if player.inner_role == PRODUCER:
             updates["producer_sentences"] = player.producer_decision
-
+    
             # store produced sentences for later lookup (Exp2 looks in Exp1, etc.)
             store_key = data.get("sentence_store_key")
             if isinstance(store_key, dict):
@@ -801,7 +801,7 @@ class Q(Page):
                 prod = safe_int(store_key.get("producer_slot"), 0)
                 interp = safe_int(store_key.get("interpreter_slot"), 0)
                 cond = clean_str(store_key.get("condition"))
-
+    
                 # Store only keys that can be looked up later: interpreter must be in 1..4
                 if exp_num >= 1 and prod and interp and cond:
                     k = sentence_key(exp_num, prod, interp, cond)
@@ -811,10 +811,63 @@ class Q(Page):
                         player.session.vars["sentences_by_key"] = store
                     store[k] = player.producer_decision
                     logger.info(f"Stored produced sentences key={k}")
-
+    
         elif player.inner_role == INTERPRETER:
-            updates["interpreter_rewards"] = player.interpreter_decision
-
+            # Normalize interpreter answers so export is stable.
+            choices = player.session.vars.get("interpreter_choices") or []
+            if isinstance(choices, str):
+                choices = [x.strip() for x in choices.split(";") if x.strip()]
+            elif not isinstance(choices, list):
+                choices = []
+            choices = [str(x).strip() for x in choices if str(x).strip()][:4]
+            while len(choices) < 4:
+                choices.append(f"Option_{len(choices)+1}")
+    
+            raw = player.interpreter_decision
+            data_in = safe_json_loads(raw, None)
+    
+            labeled = []
+    
+            # Case A: list aligned with choices
+            if isinstance(data_in, list) and (not any(isinstance(x, dict) for x in data_in)):
+                for opt, val in zip(choices, data_in[:4]):
+                    labeled.append({"option": opt, "answer": normalize_yesno_to_01(val)})
+    
+            # Case B: list of dicts
+            elif isinstance(data_in, list) and any(isinstance(x, dict) for x in data_in):
+                by_label = {}
+                for d in data_in:
+                    if not isinstance(d, dict):
+                        continue
+                    opt = d.get("option") or d.get("choice") or d.get("label") or d.get("text") or d.get("name")
+                    if opt is None:
+                        continue
+                    opt = str(opt).strip()
+                    by_label[opt] = normalize_yesno_to_01(d.get("answer", d.get("value", d.get("selected"))))
+    
+                if by_label:
+                    for opt in choices:
+                        labeled.append({"option": opt, "answer": by_label.get(opt, "")})
+                else:
+                    for i, opt in enumerate(choices):
+                        if i >= len(data_in):
+                            labeled.append({"option": opt, "answer": ""})
+                            continue
+                        d = data_in[i] if isinstance(data_in[i], dict) else {}
+                        labeled.append({"option": opt, "answer": normalize_yesno_to_01(d.get("answer", d.get("value", d.get("selected"))))})
+    
+            # Case C: plain string
+            else:
+                s = "" if raw is None else str(raw).strip()
+                parts = [p.strip() for p in re.split(r"[,\;\|\s]+", s) if p.strip()]
+                for opt, val in zip(choices, parts[:4]):
+                    labeled.append({"option": opt, "answer": normalize_yesno_to_01(val)})
+                if not labeled:
+                    labeled = [{"option": opt, "answer": ""} for opt in choices]
+    
+            updates["interpreter_rewards"] = json.dumps(labeled)
+    
+        # ✅ MUST be here (outside role branches)
         if updates:
             player.update_current_batch_data(updates)
             player.participant.vars["batch_history"] = player.batch_history
@@ -840,48 +893,60 @@ class FinalForProlific(Page):
             return RedirectResponse(Constants.API_ERR_URL, status_code=302)
         return RedirectResponse(STUBURL + str(cc), status_code=302)
 
+def normalize_yesno_to_01(v):
+    if v is None:
+        return ""
+    s = str(v).strip().lower()
+    if s in {"yes", "y", "1", "true", "t"}:
+        return 1
+    if s in {"no", "n", "0", "false", "f"}:
+        return 0
+    try:
+        if int(v) in (0, 1):
+            return int(v)
+    except Exception:
+        pass
+    return ""
 
 # ----------------------------------------------------------------------------
 # EXPORT
 # ----------------------------------------------------------------------------
+def extract_sentence_cells(raw_sentences_json):
+    """
+    Returns 10 cells:
+      Sentence_1_1 ... Sentence_5_2
+
+    Rule:
+      - Use participant-entered values (or resolved fallback for interpreters)
+      - If a sentence or slot is missing → EMPTY CELL
+      - Literal "None" string is preserved if participant typed it
+    """
+    pairs = safe_json_loads(raw_sentences_json, [])
+    out = []
+    for i in range(5):
+        a = ""
+        b = ""
+        if isinstance(pairs, list) and i < len(pairs) and isinstance(pairs[i], list):
+            if len(pairs[i]) >= 1:
+                a = clean_str(pairs[i][0])
+            if len(pairs[i]) >= 2:
+                b = clean_str(pairs[i][1])
+        out.extend([a, b])
+    return out
+
+
 def custom_export(players):
     """
-    - demographics expanded into columns
-    - producer sentences expanded into 5 cols
-    - interpreter answers expanded into 4 cols (0/1)
-    - IMPORTANT: if role == I and producer_sentences empty, resolve from sentence_lookup/session store
+    CSV requirements:
+      - Sentences exported as 10 raw columns:
+          Sentence_1_1, Sentence_1_2, ... , Sentence_5_1, Sentence_5_2
+        (empty cells if fewer than 5 sentences)
+      - Interpreter answers exported as 4 columns:
+          column names EXACTLY equal to the option text shown to participants
+          values are 0/1 based on participant input
+      - For role == I, if producer_sentences empty/[] -> resolve via sentence_lookup/session store
     """
     from collections import defaultdict
-
-    def normalize_yesno_to_01(v):
-        if v is None:
-            return ""
-        s = str(v).strip().lower()
-        if s in {"yes", "y", "1", "true"}:
-            return 1
-        if s in {"no", "n", "0", "false"}:
-            return 0
-        return ""
-
-    def format_sentence_pair(pair, prefix="", suffixes=None):
-        suffixes = suffixes or []
-        if not isinstance(pair, list):
-            return ""
-        parts = []
-        if prefix:
-            parts.append(str(prefix).strip())
-
-        for idx, val in enumerate(pair):
-            val_str = clean_str(val)  # preserves 'None'
-            if val_str == "":
-                val_str = "None"
-            parts.append(val_str)
-            if idx < len(suffixes):
-                suf = str(suffixes[idx]).strip()
-                if suf:
-                    parts.append(suf)
-
-        return " ".join([p for p in parts if p]).strip()
 
     def resolve_lookup_sentences(item, session_vars):
         lookup = item.get("sentence_lookup")
@@ -895,6 +960,67 @@ def custom_export(players):
         store = session_vars.get("sentences_by_key") or {}
         return store.get(k) or ""
 
+    def get_interpreter_choices_from_session(any_player):
+        ic = any_player.session.vars.get("interpreter_choices") or []
+        if isinstance(ic, str):
+            choices = [x.strip() for x in ic.split(";") if x.strip()]
+        elif isinstance(ic, list):
+            choices = [str(x).strip() for x in ic if str(x).strip()]
+        else:
+            choices = []
+        choices = choices[:4]
+        while len(choices) < 4:
+            choices.append(f"Option_{len(choices)+1}")
+        return choices
+
+    def parse_interpreter_answers(raw_interp, choices):
+        """
+        Returns dict option_text -> 0/1/""
+        Supports stored formats:
+          A) [1,0,1,0] aligned with choices order
+          B) [{"option":"...", "answer":1}, ...]
+          C) [{"answer":1}, {"answer":0}, ...] aligned by index
+        """
+        out = {c: "" for c in choices}
+        data = safe_json_loads(raw_interp, [])
+        if not isinstance(data, list):
+            return out
+
+        # dict-labeled format
+        if any(isinstance(x, dict) for x in data):
+            # if dicts include option labels, use them
+            has_labels = any(
+                isinstance(x, dict) and (x.get("option") is not None or x.get("choice") is not None or x.get("label") is not None)
+                for x in data
+            )
+            if has_labels:
+                for d in data:
+                    if not isinstance(d, dict):
+                        continue
+                    opt = d.get("option") or d.get("choice") or d.get("label")
+                    if opt is None:
+                        continue
+                    opt = str(opt).strip()
+                    if opt in out:
+                        out[opt] = normalize_yesno_to_01(d.get("answer", d.get("value", d.get("selected"))))
+                return out
+
+            # otherwise assume aligned by index using "answer" field
+            for i, c in enumerate(choices):
+                if i >= len(data):
+                    break
+                d = data[i]
+                if isinstance(d, dict):
+                    out[c] = normalize_yesno_to_01(d.get("answer", d.get("value", d.get("selected"))))
+            return out
+
+        # plain list aligned by index
+        for i, c in enumerate(choices):
+            if i >= len(data):
+                break
+            out[c] = normalize_yesno_to_01(data[i])
+        return out
+
     demo_keys = [
         "gender",
         "age",
@@ -906,6 +1032,11 @@ def custom_export(players):
         "education",
     ]
 
+    # Determine interpreter choice headers once (assume consistent per session)
+    any_player = players[0] if players else None
+    choice_headers = get_interpreter_choices_from_session(any_player) if any_player else ["Option_1", "Option_2", "Option_3", "Option_4"]
+
+    # HEADER
     yield [
         "session",
         "participant",
@@ -919,25 +1050,25 @@ def custom_export(players):
         "condition",
         "item_nr",
         "image",
-        "producer_sentence_1",
-        "producer_sentence_2",
-        "producer_sentence_3",
-        "producer_sentence_4",
-        "producer_sentence_5",
-        "interp_1",
-        "interp_2",
-        "interp_3",
-        "interp_4",
-        "sentences_formatted",
-        "sentences_raw",
-        "rewards",
+        "Sentence_1_1",
+        "Sentence_1_2",
+        "Sentence_2_1",
+        "Sentence_2_2",
+        "Sentence_3_1",
+        "Sentence_3_2",
+        "Sentence_4_1",
+        "Sentence_4_2",
+        "Sentence_5_1",
+        "Sentence_5_2",
+        *choice_headers,  # EXACT option text
+        "rewards_raw",
         "seconds",
         "feedback",
-        # debug fields (optional)
         "excel_row_number_guess",
         "excel_row_index0",
     ]
 
+    # group by participant
     players_by_participant = defaultdict(list)
     for p in players:
         players_by_participant[p.participant.code].append(p)
@@ -959,11 +1090,13 @@ def custom_export(players):
                         demo_obj = safe_json_loads(start_players[0].survey_data, {})
             except Exception:
                 demo_obj = {}
-
             demo_cols = [demo_obj.get(k, "") for k in demo_keys]
 
+            # history
             history = safe_json_loads(first_player.participant.vars.get("batch_history", "[]"), [])
+            history.sort(key=lambda x: int(x.get("round_number", 0)))
 
+            # timing + feedback
             timing_map = {}
             feedback_str = ""
             for pp in participant_players:
@@ -971,11 +1104,6 @@ def custom_export(players):
                     timing_map[pp.round_number] = pp.decision_seconds or 0
                     if pp.round_number == Constants.num_rounds and pp.feedback:
                         feedback_str = pp.feedback
-
-            history.sort(key=lambda x: int(x.get("round_number", 0)))
-
-            prefix = first_player.session.vars.get("prefix") or ""
-            suffixes = first_player.session.vars.get("suffixes") or []
 
             for item in history:
                 rnd = int(item.get("round_number", 0))
@@ -994,6 +1122,7 @@ def custom_export(players):
 
                 exp_num = item.get("exp", "")
 
+                # sentences: participant entered for producer; for interpreter we export the shown sentences
                 raw_sentences = item.get("producer_sentences") or item.get("sentences") or ""
                 if my_role == INTERPRETER:
                     if (not raw_sentences) or (isinstance(raw_sentences, str) and raw_sentences.strip() in {"", "[]"}):
@@ -1001,32 +1130,13 @@ def custom_export(players):
                         if resolved:
                             raw_sentences = resolved
 
-                sentence_pairs = safe_json_loads(raw_sentences, [])
-                producer_sentence_cols = ["", "", "", "", ""]
-                formatted_parts = []
-                if isinstance(sentence_pairs, list):
-                    for idx2, pair in enumerate(sentence_pairs[:5]):
-                        sent = format_sentence_pair(pair, prefix=prefix, suffixes=suffixes)
-                        producer_sentence_cols[idx2] = sent
-                        if sent:
-                            formatted_parts.append(sent)
+                sentence_cells = extract_sentence_cells(raw_sentences)
 
-                sentences_formatted = "; ".join([x for x in formatted_parts if x]).strip()
-                sentences_raw = raw_sentences
-
+                # interpreter answers -> 4 option columns
                 raw_interp = item.get("interpreter_rewards") or item.get("rewards") or ""
-                interp_data = safe_json_loads(raw_interp, [])
+                ans_map = parse_interpreter_answers(raw_interp, choice_headers)
+                interp_cols = [ans_map.get(opt, "") for opt in choice_headers]
 
-                interp_cols = ["", "", "", ""]
-                if isinstance(interp_data, list) and interp_data:
-                    for i in range(min(4, len(interp_data))):
-                        d = interp_data[i]
-                        if isinstance(d, dict):
-                            interp_cols[i] = normalize_yesno_to_01(d.get("answer"))
-                        else:
-                            interp_cols[i] = normalize_yesno_to_01(d)
-
-                rewards = item.get("interpreter_rewards") or item.get("rewards") or ""
                 seconds = timing_map.get(rnd, 0)
 
                 yield [
@@ -1042,11 +1152,9 @@ def custom_export(players):
                     item.get("condition", ""),
                     item.get("item_nr", ""),
                     item.get("image", ""),
-                    *producer_sentence_cols,
+                    *sentence_cells,
                     *interp_cols,
-                    sentences_formatted,
-                    sentences_raw,
-                    rewards,
+                    raw_interp,
                     seconds,
                     feedback_str if rnd == Constants.num_rounds else "",
                     item.get("excel_row_number_guess", ""),
