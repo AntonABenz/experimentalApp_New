@@ -99,7 +99,7 @@ class Player(BasePlayer):
     def _resolve_sentence_lookup(self, lookup):
         """
         lookup:
-          {"source_exp": int, "producer_slot": int, "interpreter_slot": int, "condition": str}
+          {"source_exp": int, "producer_slot": int, "interpreter_slot": int, "condition": str, "item": str}
         resolves from session.vars["sentences_by_key"]
         """
         if not lookup or not isinstance(lookup, dict):
@@ -109,8 +109,9 @@ class Player(BasePlayer):
         prod = safe_int(lookup.get("producer_slot"), 0)
         interp = safe_int(lookup.get("interpreter_slot"), 0)
         cond = clean_str(lookup.get("condition"))
+        item = clean_str(lookup.get("item"))
 
-        key = sentence_key(src_exp, prod, interp, cond)
+        key = sentence_key(src_exp, prod, interp, cond, item)
         store = self.session.vars.get("sentences_by_key") or {}
         raw = store.get(key)
 
@@ -278,9 +279,11 @@ def fix_s3_url(raw_s3: str) -> str:
     return raw_s3
 
 
-def sentence_key(exp_num: int, producer_slot: int, interpreter_slot: int, condition: str) -> str:
+# ✅ Key must support your fallback tuple: (producer, interpreter, item) (+condition)
+def sentence_key(exp_num: int, producer_slot: int, interpreter_slot: int, condition: str, item: str) -> str:
     condition = clean_str(condition)
-    return f"{int(exp_num)}|{int(producer_slot)}|{int(interpreter_slot)}|{condition}"
+    item = clean_str(item)
+    return f"{int(exp_num)}|{int(producer_slot)}|{int(interpreter_slot)}|{condition}|{item}"
 
 
 def safe_json_loads(x, default):
@@ -371,7 +374,7 @@ def creating_session(subsession: Subsession):
         # --- 2) Sentence store ---
         session.vars["sentences_by_key"] = {}
 
-        # preload Exp0 sentence lookup
+        # ✅ preload Exp0 sentence lookup using (p,i,condition,item)
         for r in rows:
             exp_num = get_exp_num(r)
             if exp_num != 0:
@@ -379,9 +382,10 @@ def creating_session(subsession: Subsession):
             prod = safe_int(r.get("Producer"), 0)
             interp = safe_int(r.get("Interpreter"), 0)
             cond = clean_str(r.get("Condition"))
+            item = clean_str(r.get("Item"))
             sent = extract_sentences_from_row(r)
             if sent and sent.strip() != "[]":
-                k = sentence_key(0, prod, interp, cond)
+                k = sentence_key(0, prod, interp, cond, item)
                 session.vars["sentences_by_key"][k] = sent
 
         # --- 3) Slot mapping ---
@@ -448,6 +452,9 @@ def creating_session(subsession: Subsession):
             extracted = extract_sentences_from_row(r)
             has_extracted = extracted and extracted.strip() != "[]"
 
+            # ✅ Your 3 interpreter cases:
+            # - if sentences exist, ALWAYS use them (even producer=0, item=NA)
+            # - if no sentences, lookup in previous experiment using (p,i,item,condition)
             sentence_lookup = None
             producer_sentences_for_interpreter = extracted if has_extracted else "[]"
             if not has_extracted:
@@ -457,13 +464,19 @@ def creating_session(subsession: Subsession):
                     "producer_slot": producer_slot,
                     "interpreter_slot": interpreter_slot,
                     "condition": condition,
+                    "item": image_raw,  # ✅ include item for uniqueness
                 }
 
-            # image choice
+            # image choice (keep your existing behavior)
             if producer_slot == 0:
                 picked = image_raw if image_raw else random.choice(valid_pool)
             else:
                 picked = image_raw if is_valid_real_image(image_raw) else random.choice(valid_pool)
+
+            # Debug: keep row index so you can verify mapping round->excel row
+            # NOTE: "excel_row_number" is a best-effort guess (header row effects depend on your loader).
+            excel_row_index0 = idx
+            excel_row_number_guess = idx + 2
 
             # virtual producer (0): interpreter-only row
             if producer_slot == 0:
@@ -483,6 +496,8 @@ def creating_session(subsession: Subsession):
                         "interpreter_rewards": "",
                         "producer_slot": producer_slot,
                         "interpreter_slot": interpreter_slot,
+                        "excel_row_index0": excel_row_index0,
+                        "excel_row_number_guess": excel_row_number_guess,
                     }
                 )
                 continue
@@ -513,7 +528,10 @@ def creating_session(subsession: Subsession):
                         "producer_slot": producer_slot,
                         "interpreter_slot": interpreter_slot,
                         "condition": condition,
+                        "item": picked,  # ✅ store with item so Exp2+ lookup works correctly
                     },
+                    "excel_row_index0": excel_row_index0,
+                    "excel_row_number_guess": excel_row_number_guess,
                 }
             )
 
@@ -534,76 +552,73 @@ def creating_session(subsession: Subsession):
                     "interpreter_rewards": "",
                     "producer_slot": producer_slot,
                     "interpreter_slot": interpreter_slot,
+                    "excel_row_index0": excel_row_index0,
+                    "excel_row_number_guess": excel_row_number_guess,
                 }
             )
 
-        # --- 5) Finalize per-player history with FORCED 3P/5I mixing ---
+        # --- 5) Finalize per-player history with STRICT 3P/5I (NO STEALING / NO ROLE CONVERSION) ---
         empty = []
+
+        def round_plan(n):
+            plan = []
+            while len(plan) < n:
+                plan.extend([PRODUCER] * 3)
+                plan.extend([INTERPRETER] * 5)
+            return plan[:n]
+
         for p in players:
             my_items = data_by_pid.get(p.id_in_subsession, [])
             my_items.sort(key=lambda x: x["sort_key"])
-            
+
             producer_items = [it for it in my_items if it.get("role") == PRODUCER]
             interpreter_items = [it for it in my_items if it.get("role") == INTERPRETER]
-            
+
             final_history = []
-            round_counter = 1
             p_idx = 0
             i_idx = 0
-            
-            while round_counter <= Constants.num_rounds:
-                # --- PHASE A: 3 PRODUCER ROUNDS (Forces 3 rounds) ---
-                for _ in range(3):
-                    if round_counter > Constants.num_rounds: break
-                    
-                    item = None
-                    # Try to get a real producer item
-                    if p_idx < len(producer_items):
-                        item = producer_items[p_idx].copy()
-                        p_idx += 1
-                    # If no producer item available, STEAL one from interpreter queue
-                    elif i_idx < len(interpreter_items):
-                        item = interpreter_items[i_idx].copy()
-                        # Convert to Producer
-                        item["role"] = PRODUCER
-                        item["producer_sentences"] = "" # Clean for input
-                        item["sentence_lookup"] = None
-                        # Note: We consume from interpreter pile, so we advance i_idx
-                        i_idx += 1
-                    
-                    if item:
-                        item.pop("sort_key", None)
-                        item["round_number"] = round_counter
-                        final_history.append(item)
-                        round_counter += 1
-                    else:
-                        # No items left anywhere
-                        break
 
-                # --- PHASE B: 5 INTERPRETER ROUNDS ---
-                for _ in range(5):
-                    if round_counter > Constants.num_rounds: break
-                    
-                    if i_idx < len(interpreter_items):
-                        item = interpreter_items[i_idx].copy()
-                        item.pop("sort_key", None)
-                        item["round_number"] = round_counter
-                        final_history.append(item)
-                        i_idx += 1
-                        round_counter += 1
-                    else:
+            plan = round_plan(Constants.num_rounds)
+            round_counter = 1
+
+            for need_role in plan:
+                if need_role == PRODUCER:
+                    if p_idx >= len(producer_items):
                         break
-                
-                # Stop if we have exhausted everything
-                if p_idx >= len(producer_items) and i_idx >= len(interpreter_items):
+                    item = producer_items[p_idx].copy()
+                    p_idx += 1
+                else:
+                    if i_idx >= len(interpreter_items):
+                        break
+                    item = interpreter_items[i_idx].copy()
+                    i_idx += 1
+
+                item.pop("sort_key", None)
+                item["round_number"] = round_counter
+                final_history.append(item)
+
+                # Debug log (you can grep for pid and round)
+                try:
+                    logger.info(
+                        f"SCHEDULE pid={p.id_in_subsession} round={round_counter} "
+                        f"role={item.get('role')} exp={item.get('exp')} "
+                        f"round_in_excel={item.get('round_in_excel')} trial={item.get('trial')} "
+                        f"prod={item.get('producer_slot')} interp={item.get('interpreter_slot')} "
+                        f"item={item.get('image')} excel_row_guess={item.get('excel_row_number_guess')}"
+                    )
+                except Exception:
+                    pass
+
+                round_counter += 1
+                if round_counter > Constants.num_rounds:
                     break
-            
+
             p.batch_history = json.dumps(final_history)
             p.participant.vars["batch_history"] = p.batch_history
-                
+
             if not final_history:
                 empty.append(p.id_in_subsession)
-                
+
         if empty:
             logger.warning(f"EMPTY schedules for: {empty}")
 
@@ -668,7 +683,7 @@ class Q(Page):
         # expose batch item as d
         d = player.get_current_batch_data()
 
-        # (optional) make sure interpreters can see resolved sentences in the template
+        # ensure interpreters can see resolved sentences in the template
         if d.get("role") == INTERPRETER:
             raw = d.get("producer_sentences")
             if not raw or (isinstance(raw, str) and raw.strip() in {"", "[]"}):
@@ -701,15 +716,16 @@ class Q(Page):
         if player.inner_role == PRODUCER:
             updates["producer_sentences"] = player.producer_decision
 
-            # store produced sentences for Exp2+ lookup
+            # ✅ store produced sentences for Exp2+ lookup using SAME key (includes item)
             store_key = data.get("sentence_store_key")
             if isinstance(store_key, dict):
                 exp_num = safe_int(store_key.get("exp"), -1)
                 prod = safe_int(store_key.get("producer_slot"), 0)
                 interp = safe_int(store_key.get("interpreter_slot"), 0)
                 cond = clean_str(store_key.get("condition"))
-                if exp_num >= 1 and prod and interp and cond:
-                    k = sentence_key(exp_num, prod, interp, cond)
+                it = clean_str(store_key.get("item"))
+                if exp_num >= 1 and prod and interp and cond and it:
+                    k = sentence_key(exp_num, prod, interp, cond, it)
                     store = player.session.vars.get("sentences_by_key")
                     if not isinstance(store, dict):
                         store = {}
@@ -796,7 +812,8 @@ def custom_export(players):
         prod = safe_int(lookup.get("producer_slot"), 0)
         interp = safe_int(lookup.get("interpreter_slot"), 0)
         cond = clean_str(lookup.get("condition"))
-        k = sentence_key(src_exp, prod, interp, cond)
+        it = clean_str(lookup.get("item"))
+        k = sentence_key(src_exp, prod, interp, cond, it)
         store = session_vars.get("sentences_by_key") or {}
         return store.get(k) or ""
 
@@ -838,6 +855,9 @@ def custom_export(players):
         "rewards",
         "seconds",
         "feedback",
+        # optional debug fields (helpful while validating)
+        "excel_row_number_guess",
+        "excel_row_index0",
     ]
 
     players_by_participant = defaultdict(list)
@@ -864,7 +884,7 @@ def custom_export(players):
 
             demo_cols = [demo_obj.get(k, "") for k in demo_keys]
 
-            # history (already ordered by round_number; round_number preserves sheet order)
+            # history (already ordered by round_number)
             history = safe_json_loads(first_player.participant.vars.get("batch_history", "[]"), [])
 
             # timing and feedback
@@ -910,9 +930,9 @@ def custom_export(players):
                 producer_sentence_cols = ["", "", "", "", ""]
                 formatted_parts = []
                 if isinstance(sentence_pairs, list):
-                    for idx, pair in enumerate(sentence_pairs[:5]):
+                    for idx2, pair in enumerate(sentence_pairs[:5]):
                         sent = format_sentence_pair(pair, prefix=prefix, suffixes=suffixes)
-                        producer_sentence_cols[idx] = sent
+                        producer_sentence_cols[idx2] = sent
                         if sent:
                             formatted_parts.append(sent)
 
@@ -955,9 +975,12 @@ def custom_export(players):
                     rewards,
                     seconds,
                     feedback_str if rnd == Constants.num_rounds else "",
+                    item.get("excel_row_number_guess", ""),
+                    item.get("excel_row_index0", ""),
                 ]
 
         except Exception:
             continue
+
 
 page_sequence = [FaultyCatcher, Q, Feedback, FinalForProlific]
