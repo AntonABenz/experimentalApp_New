@@ -445,11 +445,11 @@ def creating_session(subsession: Subsession):
             producer_slot = safe_int(r.get("Producer"), 0)
             interpreter_slot = safe_int(r.get("Interpreter"), 0)
 
-            sort_key = (exp_num, round_in_excel, trial, idx)
-
+            sort_key = (exp_num, idx)   # exact sheet order inside each experiment
+            
             # Debug row tracking (best-effort; depends on loader/header)
             excel_row_index0 = idx
-            excel_row_number_guess = idx + 2
+            excel_row_number_guess = idx + 1
 
             # image choice
             if producer_slot == 0:
@@ -616,6 +616,10 @@ def creating_session(subsession: Subsession):
 
             producer_items = [it for it in my_items if it.get("role") == PRODUCER]
             interpreter_items = [it for it in my_items if it.get("role") == INTERPRETER]
+            if p.id_in_subsession == 1:
+                for it in interpreter_items[:15]:
+                    logger.info(f"PID1 I_ITEM excel_row={it.get('excel_row_number_guess')} prod={it.get('producer_slot')} interp={it.get('interpreter_slot')} cond={it.get('condition')} sent={it.get('producer_sentences')[:40] if isinstance(it.get('producer_sentences'), str) else it.get('producer_sentences')}")
+
 
             final_history = []
             p_idx = 0
