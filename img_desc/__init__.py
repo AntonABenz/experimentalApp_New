@@ -660,9 +660,9 @@ class Q(Page):
             interpreter_choices = raw_choices
         else:
             interpreter_choices = []
-
+    
         d = player.get_current_batch_data()
-
+    
         # ensure BOTH roles see resolved sentences when lookup applies
         raw = d.get("producer_sentences")
         if not raw or (isinstance(raw, str) and raw.strip() in {"", "[]"}):
@@ -670,7 +670,7 @@ class Q(Page):
             if resolved and isinstance(resolved, str) and resolved.strip() not in {"", "[]"}:
                 d = d.copy()
                 d["producer_sentences"] = resolved
-
+    
         return dict(
             d=d,
             allowed_values=player.session.vars.get("allowed_values", []),
@@ -684,7 +684,11 @@ class Q(Page):
             doc_link=player.session.vars.get("doc_link", ""),
             server_image_url=player.get_image_url(),
             caseflag=player.session.vars.get("caseflag"),
+    
+            # ✅ NEW: pass precomputed full sentences instead of calling player method in the template
+            full_sentences=player.get_full_sentences(),
         )
+
 
     @staticmethod
     def before_next_page(player, timeout_happened):
