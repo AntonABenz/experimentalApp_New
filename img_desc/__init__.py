@@ -116,6 +116,64 @@ class Player(BasePlayer):
         except Exception:
             return "[]"
 
+    def get_sentences_data(self):
+        """
+        Sentences shown to BOTH roles:
+          1) if batch item has producer_sentences and it's not empty/[]
+          2) else resolve via sentence_lookup
+        Returns: list (decoded JSON)
+        """
+        data = self.get_current_batch_data()
+        if not data:
+            return []
+
+        raw = data.get("producer_sentences")
+        if not raw or (isinstance(raw, str) and raw.strip() in {"", "[]"}):
+            raw = self._resolve_sentence_lookup(data.get("sentence_lookup"))
+
+        try:
+            return json.loads(raw) if raw else []
+        except Exception:
+            return []
+
+    def get_full_sentences(self):
+        """
+        Render sentence pairs using prefix/suffixes.
+        Produces a list of strings for the template.
+        """
+        try:
+            prefix = self.session.vars.get("prefix") or ""
+            suffixes = self.session.vars.get("suffixes") or []
+            sentences = self.get_sentences_data() or []
+            sentences = [s for s in sentences if isinstance(s, list)]
+
+            res = []
+            for sentence in sentences:
+                parts = []
+                if prefix:
+                    parts.append(str(prefix).strip())
+
+                for val, suf in zip(sentence, suffixes):
+                    val_str = clean_str(val)
+                    if not val_str:
+                        val_str = "None"
+                    parts.append(val_str)
+                    if suf:
+                        parts.append(str(suf).strip())
+
+                if len(sentence) > len(suffixes):
+                    for extra in sentence[len(suffixes):]:
+                        extra_str = clean_str(extra)
+                        if not extra_str:
+                            extra_str = "None"
+                        parts.append(extra_str)
+
+                res.append(" ".join([p for p in parts if str(p).strip() != ""]).strip())
+
+            return res
+        except Exception as e:
+            logger.error(f"Error in get_full_sentences: {e}")
+            return []
 
 # ----------------------------------------------------------------------------
 # UTIL
