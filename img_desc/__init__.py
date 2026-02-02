@@ -298,6 +298,39 @@ def sentences_for_line(row: dict, exp_target: int):
         "condition": cond,
     }
 
+def render_full_sentences_from_json(raw_sentences_json, prefix, suffixes):
+    pairs = safe_json_loads(raw_sentences_json, [])
+    if not isinstance(pairs, list):
+        return []
+
+    prefix = clean_str(prefix)
+    suffixes = suffixes or []
+
+    out = []
+    for pair in pairs:
+        if not isinstance(pair, list):
+            continue
+        parts = []
+        if prefix:
+            parts.append(prefix)
+
+        for val, suf in zip(pair, suffixes):
+            v = clean_str(val) or "None"
+            parts.append(v)
+            if suf:
+                parts.append(str(suf).strip())
+
+        # any extras beyond suffixes
+        if len(pair) > len(suffixes):
+            for extra in pair[len(suffixes):]:
+                v = clean_str(extra) or "None"
+                parts.append(v)
+
+        out.append(" ".join([p for p in parts if str(p).strip()]).strip())
+
+    return out
+
+
 
 def required_sentence_keys_for_player(player) -> set:
     """
@@ -685,8 +718,12 @@ class Q(Page):
             server_image_url=player.get_image_url(),
             caseflag=player.session.vars.get("caseflag"),
     
-            # ✅ NEW: pass precomputed full sentences instead of calling player method in the template
-            full_sentences=player.get_full_sentences(),
+            full_sentences=render_full_sentences_from_json(
+                d.get("producer_sentences", "[]"),
+                player.session.vars.get("prefix", ""),
+                player.session.vars.get("suffixes", []),
+            ),
+
         )
 
 
