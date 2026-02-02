@@ -64,7 +64,7 @@ window.props = {
     suffixes: {{ suffixes|json }},
 
     // IMPORTANT: sentence display uses the python resolver
-    full_sentences: {{ player.get_full_sentences|json }},
+    full_sentences: {{ full_sentences|json }},
 
     interpreter_choices: {{ interpreter_choices|json }},
     interpreter_title: {{ interpreter_title|json }},
@@ -322,4 +322,5 @@ app.config.compilerOptions.delimiters = ["[[", "]]"];
 app.mount("#app");
 </script>
 {% endblock %}
+
 
