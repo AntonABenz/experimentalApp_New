@@ -964,8 +964,13 @@ def custom_export(players):
     ]
 
     any_player = players[0] if players else None
-    choice_headers = get_interpreter_choices_from_session(any_player) if any_player else ["Option_1", "Option_2", "Option_3", "Option_4"]
+    choice_headers = (
+        get_interpreter_choices_from_session(any_player)
+        if any_player
+        else ["Option_1", "Option_2", "Option_3", "Option_4"]
+    )
 
+    # header row
     yield [
         "session",
         "participant",
@@ -997,6 +1002,7 @@ def custom_export(players):
         "excel_row_index0",
     ]
 
+    # group players by participant
     players_by_participant = defaultdict(list)
     for p in players:
         players_by_participant[p.participant.code].append(p)
@@ -1005,23 +1011,28 @@ def custom_export(players):
         try:
             first_player = participant_players[0]
             prolific_id = first_player.participant.vars.get("prolific_id", "")
-            excel_slot = first_player.id_in_subsession
 
+            # demographics
             demo_obj = {}
             try:
                 if "demographics" in first_player.participant.vars:
                     demo_obj = safe_json_loads(first_player.participant.vars["demographics"], {})
                 else:
-                    start_players = [pp for pp in first_player.participant.get_players() if hasattr(pp, "survey_data")]
+                    start_players = [
+                        pp for pp in first_player.participant.get_players()
+                        if hasattr(pp, "survey_data")
+                    ]
                     if start_players:
                         demo_obj = safe_json_loads(start_players[0].survey_data, {})
             except Exception:
                 demo_obj = {}
             demo_cols = [demo_obj.get(k, "") for k in demo_keys]
 
+            # history produced during creating_session / updated in before_next_page
             history = safe_json_loads(first_player.participant.vars.get("batch_history", "[]"), [])
             history.sort(key=lambda x: int(x.get("round_number", 0)))
 
+            # timing + feedback
             timing_map = {}
             feedback_str = ""
             for pp in participant_players:
@@ -1035,13 +1046,15 @@ def custom_export(players):
                 if rnd < 1 or rnd > Constants.num_rounds:
                     continue
 
-                # always export the *Excel* slots (1..cohort_size), not global oTree ids
+                my_role = item.get("role", "")
+
+                # IMPORTANT: export Excel slots (1..cohort_size), not global oTree ids
                 prod_id = safe_int(item.get("producer_slot"), 0)
                 interp_id = safe_int(item.get("interpreter_slot"), 0)
 
-
                 exp_num = item.get("exp", "")
 
+                # sentences (direct or lookup)
                 raw_sentences = item.get("producer_sentences") or item.get("sentences") or ""
                 if (not raw_sentences) or (isinstance(raw_sentences, str) and raw_sentences.strip() in {"", "[]"}):
                     resolved = resolve_lookup_sentences(item, first_player.session.vars)
@@ -1050,6 +1063,7 @@ def custom_export(players):
 
                 sentence_cells = extract_sentence_cells(raw_sentences)
 
+                # interpreter answers (labeled)
                 raw_interp = item.get("interpreter_rewards") or item.get("rewards") or ""
                 ans_map = parse_interpreter_answers(raw_interp, choice_headers)
                 interp_cols = [ans_map.get(opt, "") for opt in choice_headers]
@@ -1081,6 +1095,4 @@ def custom_export(players):
         except Exception:
             continue
 
-
-# IMPORTANT: insert wait page before Q
 page_sequence = [FaultyCatcher, WaitForPrevExperiment, Q, Feedback, FinalForProlific]
