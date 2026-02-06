@@ -1035,15 +1035,10 @@ def custom_export(players):
                 if rnd < 1 or rnd > Constants.num_rounds:
                     continue
 
-                my_role = item.get("role", "")
-                partner_id = item.get("partner_id", 0)
+                # always export the *Excel* slots (1..cohort_size), not global oTree ids
+                prod_id = safe_int(item.get("producer_slot"), 0)
+                interp_id = safe_int(item.get("interpreter_slot"), 0)
 
-                if my_role == PRODUCER:
-                    prod_id = excel_slot
-                    interp_id = partner_id
-                else:
-                    prod_id = partner_id
-                    interp_id = excel_slot
 
                 exp_num = item.get("exp", "")
 
