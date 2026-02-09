@@ -295,6 +295,53 @@ def normalize_yesno_to_01(v):
         pass
     return ""
 
+def participant_completed_app(participant, app_name: str) -> bool:
+    return bool(participant.vars.get(f"{app_name}_completed", False))
+
+
+def mark_participant_completed_app(participant, app_name: str):
+    participant.vars[f"{app_name}_completed"] = True
+
+
+def reset_this_app_for_participant(player):
+    """
+    Hard-reset THIS app for this participant:
+      - clears per-round Player records for this participant in this app
+      - clears participant.vars batch_history used by our scheduling
+      - resets oTree page index so they start from the beginning cleanly
+    """
+    # clear app-level vars we use
+    player.participant.vars.pop("batch_history", None)
+    player.participant.vars.pop("needed_sentence_keys", None)
+    player.participant.vars.pop("missing_sentence_keys", None)
+
+    # clear all per-round data for this app
+    for pp in player.participant.get_players():
+        if pp.subsession._meta.app_config.name != Constants.name_in_url:
+            continue
+
+        pp.batch_history = "[]"
+        pp.inner_role = ""
+        pp.faulty = False
+        pp.feedback = ""
+        pp.producer_decision = ""
+        pp.interpreter_decision = ""
+        pp.start_decision_time = 0
+        pp.end_decision_time = 0
+        pp.decision_seconds = 0
+        pp.save()
+
+
+    # remove completion flag
+    player.participant.vars.pop(f"{Constants.name_in_url}_completed", None)
+
+    # reset oTree's internal progress (this avoids “previous round not complete”)
+    # These are internal attributes in oTree; this is the cleanest way to restart the participant.
+    try:
+        player.participant._index_in_pages = 0
+    except Exception:
+        pass
+
 
 # ----------------------------------------------------------------------------
 # COHORT HELPERS
@@ -408,6 +455,20 @@ def required_sentence_keys_for_player(player) -> set:
         if src_exp >= 0 and prod and interp and cond:
             needed.add(sentence_key(src_exp, prod, interp, cond))
     return needed
+
+
+class RestartIfIncomplete(Page):
+    @staticmethod
+    def is_displayed(player):
+        if participant_completed_app(player.participant, Constants.name_in_url):
+            return False
+
+        # Only restart if they are coming back mid-way.
+        return player.round_number > 1
+
+    def get(self):
+        reset_this_app_for_participant(self.player)
+        return RedirectResponse(self.player.participant._start_url(), status_code=302)
 
 
 # ----------------------------------------------------------------------------
@@ -880,6 +941,10 @@ class Feedback(Page):
     def is_displayed(player):
         return player.round_number == Constants.num_rounds
 
+    @staticmethod
+    def before_next_page(player, timeout_happened):
+        mark_participant_completed_app(player.participant, Constants.name_in_url)
+
 
 class FinalForProlific(Page):
     @staticmethod
@@ -1095,4 +1160,5 @@ def custom_export(players):
         except Exception:
             continue
 
-page_sequence = [FaultyCatcher, WaitForPrevExperiment, Q, Feedback, FinalForProlific]
+page_sequence = [RestartIfIncomplete, FaultyCatcher, WaitForPrevExperiment, Q, Feedback, FinalForProlific]
+
