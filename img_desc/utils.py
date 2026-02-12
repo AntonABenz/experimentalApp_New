@@ -214,3 +214,23 @@ def increase_space(study_id: str, num_extra: int, max_users: int):
         return resp.json()
     except Exception:
         return None
+
+def verify_prolific_webhook(raw_body: bytes, timestamp: str, signature: str) -> bool:
+    """
+    Verify Prolific webhook signature.
+    Prolific sends headers:
+      - X-Prolific-Request-Timestamp
+      - X-Prolific-Request-Signature
+
+    Verification: base64(hmac_sha256(secret, timestamp + body_as_text))
+    """
+    if not PROLIFIC_WEBHOOK_SECRET:
+        return False
+    if not timestamp or not signature:
+        return False
+
+    msg = (timestamp + raw_body.decode("utf-8")).encode("utf-8")
+    digest = hmac.new(PROLIFIC_WEBHOOK_SECRET.encode("utf-8"), msg, hashlib.sha256).digest()
+    expected = base64.b64encode(digest).decode("utf-8")
+
+    return hmac.compare_digest(expected, signature)
