@@ -1,4 +1,7 @@
 from otree.api import *
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import time
@@ -23,6 +26,10 @@ class Constants(BaseConstants):
     API_ERR = "API_ERROR"
     FALLBACK_URL = STUBURL + PLACEMENT_ERR
     API_ERR_URL = STUBURL + API_ERR
+
+    # Prolific submission statuses that mean "participant should not continue"
+    # Status strings come from Prolific submission status enums. :contentReference[oaicite:2]{index=2}
+    BAD_PROLIFIC_STATUSES = {"TIMED-OUT"}  # add "RETURNED" if you also want to discard on returns
 
 
 # ----------------------------------------------------------------------------
@@ -175,6 +182,7 @@ class Player(BasePlayer):
             logger.error(f"Error in get_full_sentences: {e}")
             return []
 
+
 # ----------------------------------------------------------------------------
 # UTIL
 # ----------------------------------------------------------------------------
@@ -295,6 +303,7 @@ def normalize_yesno_to_01(v):
         pass
     return ""
 
+
 def participant_completed_app(participant, app_name: str) -> bool:
     return bool(participant.vars.get(f"{app_name}_completed", False))
 
@@ -303,23 +312,17 @@ def mark_participant_completed_app(participant, app_name: str):
     participant.vars[f"{app_name}_completed"] = True
 
 
-def reset_this_app_for_participant(player):
+def reset_this_app_for_participant(participant):
     """
-    Hard-reset THIS app for this participant:
-      - clears per-round Player records for this participant in this app
-      - clears participant.vars batch_history used by our scheduling
-      - resets oTree page index so they start from the beginning cleanly
+    Hard-reset THIS app for this participant (used ONLY when Prolific webhook says TIMED-OUT).
     """
-    # clear app-level vars we use
-    player.participant.vars.pop("batch_history", None)
-    player.participant.vars.pop("needed_sentence_keys", None)
-    player.participant.vars.pop("missing_sentence_keys", None)
+    participant.vars.pop("batch_history", None)
+    participant.vars.pop("needed_sentence_keys", None)
+    participant.vars.pop("missing_sentence_keys", None)
 
-    # clear all per-round data for this app
-    for pp in player.participant.get_players():
+    for pp in participant.get_players():
         if pp.subsession._meta.app_config.name != Constants.name_in_url:
             continue
-
         pp.batch_history = "[]"
         pp.inner_role = ""
         pp.faulty = False
@@ -331,14 +334,9 @@ def reset_this_app_for_participant(player):
         pp.decision_seconds = 0
         pp.save()
 
-
-    # remove completion flag
-    player.participant.vars.pop(f"{Constants.name_in_url}_completed", None)
-
-    # reset oTree's internal progress (this avoids “previous round not complete”)
-    # These are internal attributes in oTree; this is the cleanest way to restart the participant.
+    participant.vars.pop(f"{Constants.name_in_url}_completed", None)
     try:
-        player.participant._index_in_pages = 0
+        participant._index_in_pages = 0
     except Exception:
         pass
 
@@ -351,23 +349,18 @@ def cohort_size(session) -> int:
 
 
 def cohort_index_from_pid(pid: int, csize: int) -> int:
-    return (pid - 1) // csize  # 0 for 1..csize, 1 for next cohort, ...
+    return (pid - 1) // csize
 
 
 def local_slot_from_pid(pid: int, csize: int) -> int:
-    return ((pid - 1) % csize) + 1  # 1..csize inside cohort
+    return ((pid - 1) % csize) + 1
 
 
 def exp_for_pid(pid: int, csize: int) -> int:
-    # cohort 1 -> Exp1, cohort 2 -> Exp2, ...
     return cohort_index_from_pid(pid, csize) + 1
 
 
 def cohort_slot_to_pid(pid: int, csize: int, max_pid: int) -> dict:
-    """
-    Map excel slot 1..csize to actual participant ids within same cohort.
-    Non-existent ids => 0.
-    """
     cidx = cohort_index_from_pid(pid, csize)
     base = cidx * csize
     m = {}
@@ -378,14 +371,6 @@ def cohort_slot_to_pid(pid: int, csize: int, max_pid: int) -> dict:
 
 
 def sentences_for_line(row: dict, exp_target: int):
-    """
-    Prof. Benz rule for BOTH roles:
-      - Picture is always from the same Excel line.
-      - Sentences:
-          * If Producer == 0: take from the same line.
-          * Else: take from previous experiment (Exp n-1) store by
-                  (producer_slot, interpreter_slot, condition).
-    """
     producer_slot = safe_int(row.get("Producer"), 0)
     interpreter_slot = safe_int(row.get("Interpreter"), 0)
     cond = clean_str(row.get("Condition"))
@@ -402,6 +387,7 @@ def sentences_for_line(row: dict, exp_target: int):
         "interpreter_slot": interpreter_slot,
         "condition": cond,
     }
+
 
 def render_full_sentences_from_json(raw_sentences_json, prefix, suffixes):
     pairs = safe_json_loads(raw_sentences_json, [])
@@ -425,7 +411,6 @@ def render_full_sentences_from_json(raw_sentences_json, prefix, suffixes):
             if suf:
                 parts.append(str(suf).strip())
 
-        # any extras beyond suffixes
         if len(pair) > len(suffixes):
             for extra in pair[len(suffixes):]:
                 v = clean_str(extra) or "None"
@@ -436,12 +421,7 @@ def render_full_sentences_from_json(raw_sentences_json, prefix, suffixes):
     return out
 
 
-
 def required_sentence_keys_for_player(player) -> set:
-    """
-    For cohorts > 1: compute all sentence keys that must exist (from Exp n-1)
-    based on this player's batch_history lookups (both roles).
-    """
     needed = set()
     hist = safe_json_loads(player.batch_history, [])
     for item in hist:
@@ -457,38 +437,24 @@ def required_sentence_keys_for_player(player) -> set:
     return needed
 
 
-class RestartIfIncomplete(Page):
+# ----------------------------------------------------------------------------
+# NEW: Gate page (only blocks if webhook marked them timed-out)
+# ----------------------------------------------------------------------------
+class ProlificStatusGate(Page):
     @staticmethod
     def is_displayed(player):
-        if participant_completed_app(player.participant, Constants.name_in_url):
-            return False
-
-        # Only restart if they are coming back mid-way.
-        return player.round_number > 1
+        status = clean_str(player.participant.vars.get("prolific_submission_status", ""))
+        return status in Constants.BAD_PROLIFIC_STATUSES
 
     def get(self):
-        reset_this_app_for_participant(self.player)
-        return RedirectResponse(self.player.participant._start_url(), status_code=302)
+        # Safety: prevent continuing if Prolific timed them out.
+        return RedirectResponse(Constants.FALLBACK_URL, status_code=302)
 
 
 # ----------------------------------------------------------------------------
 # SESSION CREATION
 # ----------------------------------------------------------------------------
 def creating_session(subsession: Subsession):
-    """
-    Single-session cohort logic:
-      - Cohort size = session.config['cohort_size'] (default 4)
-      - pid 1..4 => Exp1, pid 5..8 => Exp2, etc.
-      - Within each cohort, local slots are 1..4 for matching Excel Producer/Interpreter columns.
-
-    Scheduling per local slot:
-      - Each Exp has 10 Excel rounds, each round has 20 rows.
-      - Per Excel round:
-          * Producer trials = first 3 rows where Producer == local_slot
-          * Interpreter trials = first 5 rows where Interpreter == local_slot
-          * Append: 3 producer then 5 interpreter = 8 oTree rounds per Excel round
-      - Total: 10 * 8 = 80 oTree rounds
-    """
     session = subsession.session
     if subsession.round_number != 1:
         return
@@ -515,7 +481,6 @@ def creating_session(subsession: Subsession):
 
         rows = raw_data.to_dict(orient="records") if hasattr(raw_data, "to_dict") else list(raw_data or [])
 
-        # --- global settings (Excel settings + config overrides) ---
         clean_settings = {}
         for k, v in settings.items():
             if isinstance(v, str):
@@ -528,7 +493,6 @@ def creating_session(subsession: Subsession):
         session.vars["interpreter_title"] = clean_settings.get("interpreter_title") or "Buy medals:"
         session.vars["caseflag"] = _truthy(clean_settings.get("caseflag"))
 
-        # config overrides appear in admin UI
         session.vars["instructions_url"] = session.config.get("instructions_url") or clean_settings.get("instructions_url") or "https://google.com"
         session.vars["introduction_text"] = session.config.get("introduction_text") or ""
         session.vars["doc_link"] = session.config.get("doc_link") or ""
@@ -554,7 +518,6 @@ def creating_session(subsession: Subsession):
         else:
             session.vars["interpreter_choices"] = []
 
-        # --- sentence store: preload Exp0 from Excel, then fill Exp>=1 from producers ---
         session.vars["sentences_by_key"] = {}
         for r in rows:
             if get_exp_num(r) != 0:
@@ -571,8 +534,7 @@ def creating_session(subsession: Subsession):
         csize = cohort_size(session)
         session.vars["cohort_size"] = csize
 
-        # --- cache Excel per exp ---
-        exp_cache = {}  # exp -> (round_numbers, rounds_map)
+        exp_cache = {}
 
         def get_exp_rounds(exp_num: int):
             if exp_num in exp_cache:
@@ -597,16 +559,19 @@ def creating_session(subsession: Subsession):
             exp_cache[exp_num] = (round_numbers, rounds_map)
             return exp_cache[exp_num]
 
-        # --- build schedules per player ---
         for p in players:
             pid = p.id_in_subsession
             exp_target = exp_for_pid(pid, csize)
             local_slot = local_slot_from_pid(pid, csize)
             slot_to_pid = cohort_slot_to_pid(pid, csize, max_pid)
 
+            # Store cohort metadata for webhook logs / debugging
+            p.participant.vars["exp_target"] = exp_target
+            p.participant.vars["local_slot"] = local_slot
+            p.participant.vars["cohort_index"] = cohort_index_from_pid(pid, csize)
+
             round_numbers, rounds_map = get_exp_rounds(exp_target)
             if not round_numbers:
-                # No exp rows -> this player can't proceed
                 logger.error(f"No rows found for Exp={exp_target} (pid={pid}). Update Excel to include Exp={exp_target}.")
                 p.batch_history = "[]"
                 p.participant.vars["batch_history"] = p.batch_history
@@ -636,7 +601,6 @@ def creating_session(subsession: Subsession):
                         picked = image_raw or "d-A-B-BC-3"
 
                     partner_pid = slot_to_pid.get(interpreter_slot, 0) if interpreter_slot else 0
-
                     ps, lookup = sentences_for_line(row, exp_target)
 
                     final_history.append(
@@ -682,7 +646,6 @@ def creating_session(subsession: Subsession):
                         picked = image_raw or "d-A-B-BC-3"
 
                     partner_pid = slot_to_pid.get(producer_slot, 0) if producer_slot not in {0, 9} else 0
-
                     ps, lookup = sentences_for_line(row, exp_target)
 
                     final_history.append(
@@ -737,18 +700,13 @@ class FaultyCatcher(Page):
 
 
 class WaitForPrevExperiment(Page):
-    """
-    Block cohort >=2 until ALL required sentence keys from previous experiment exist.
-    This blocks both producers + interpreters (because both show sentences).
-    """
     @staticmethod
     def is_displayed(player):
         csize = cohort_size(player.session)
         pid = player.id_in_subsession
         if cohort_index_from_pid(pid, csize) == 0:
-            return False  # cohort 1 never waits
+            return False
 
-        # restore history if needed
         if (player.batch_history == "[]" or not player.batch_history) and "batch_history" in player.participant.vars:
             player.batch_history = player.participant.vars["batch_history"]
 
@@ -780,7 +738,6 @@ class Q(Page):
         if player.round_number > Constants.num_rounds:
             return False
 
-        # restore history if needed
         if (player.batch_history == "[]" or not player.batch_history) and "batch_history" in player.participant.vars:
             player.batch_history = player.participant.vars["batch_history"]
 
@@ -812,17 +769,16 @@ class Q(Page):
             interpreter_choices = raw_choices
         else:
             interpreter_choices = []
-    
+
         d = player.get_current_batch_data()
-    
-        # ensure BOTH roles see resolved sentences when lookup applies
+
         raw = d.get("producer_sentences")
         if not raw or (isinstance(raw, str) and raw.strip() in {"", "[]"}):
             resolved = player._resolve_sentence_lookup(d.get("sentence_lookup"))
             if resolved and isinstance(resolved, str) and resolved.strip() not in {"", "[]"}:
                 d = d.copy()
                 d["producer_sentences"] = resolved
-    
+
         return dict(
             d=d,
             allowed_values=player.session.vars.get("allowed_values", []),
@@ -836,15 +792,12 @@ class Q(Page):
             doc_link=player.session.vars.get("doc_link", ""),
             server_image_url=player.get_image_url(),
             caseflag=player.session.vars.get("caseflag"),
-    
             full_sentences=render_full_sentences_from_json(
                 d.get("producer_sentences", "[]"),
                 player.session.vars.get("prefix", ""),
                 player.session.vars.get("suffixes", []),
             ),
-
         )
-
 
     @staticmethod
     def before_next_page(player, timeout_happened):
@@ -858,7 +811,6 @@ class Q(Page):
         if player.inner_role == PRODUCER:
             updates["producer_sentences"] = player.producer_decision
 
-            # store produced sentences for lookup by next experiment (Exp n+1 looks in Exp n)
             store_key = data.get("sentence_store_key")
             if isinstance(store_key, dict):
                 exp_num = safe_int(store_key.get("exp"), -1)
@@ -888,12 +840,10 @@ class Q(Page):
 
             labeled = []
 
-            # A) list of scalars aligned to choices
             if isinstance(parsed, list) and (not any(isinstance(x, dict) for x in parsed)):
                 for opt, val in zip(choices, parsed[:4]):
                     labeled.append({"option": opt, "answer": normalize_yesno_to_01(val)})
 
-            # B) list of dicts
             elif isinstance(parsed, list) and any(isinstance(x, dict) for x in parsed):
                 by_label = {}
                 for d in parsed:
@@ -916,7 +866,6 @@ class Q(Page):
                         d = parsed[i] if isinstance(parsed[i], dict) else {}
                         labeled.append({"option": opt, "answer": normalize_yesno_to_01(d.get("answer", d.get("value", d.get("selected"))))})
 
-            # C) string fallback
             else:
                 s = "" if raw is None else str(raw).strip()
                 parts = [p.strip() for p in re.split(r"[,;\|\s]+", s) if p.strip()]
@@ -959,7 +908,7 @@ class FinalForProlific(Page):
 
 
 # ----------------------------------------------------------------------------
-# EXPORT (unchanged from your version)
+# EXPORT (unchanged)
 # ----------------------------------------------------------------------------
 def extract_sentence_cells(raw_sentences_json):
     pairs = safe_json_loads(raw_sentences_json, [])
@@ -1035,7 +984,6 @@ def custom_export(players):
         else ["Option_1", "Option_2", "Option_3", "Option_4"]
     )
 
-    # header row
     yield [
         "session",
         "participant",
@@ -1067,7 +1015,6 @@ def custom_export(players):
         "excel_row_index0",
     ]
 
-    # group players by participant
     players_by_participant = defaultdict(list)
     for p in players:
         players_by_participant[p.participant.code].append(p)
@@ -1077,7 +1024,6 @@ def custom_export(players):
             first_player = participant_players[0]
             prolific_id = first_player.participant.vars.get("prolific_id", "")
 
-            # demographics
             demo_obj = {}
             try:
                 if "demographics" in first_player.participant.vars:
@@ -1093,11 +1039,9 @@ def custom_export(players):
                 demo_obj = {}
             demo_cols = [demo_obj.get(k, "") for k in demo_keys]
 
-            # history produced during creating_session / updated in before_next_page
             history = safe_json_loads(first_player.participant.vars.get("batch_history", "[]"), [])
             history.sort(key=lambda x: int(x.get("round_number", 0)))
 
-            # timing + feedback
             timing_map = {}
             feedback_str = ""
             for pp in participant_players:
@@ -1112,14 +1056,10 @@ def custom_export(players):
                     continue
 
                 my_role = item.get("role", "")
-
-                # IMPORTANT: export Excel slots (1..cohort_size), not global oTree ids
                 prod_id = safe_int(item.get("producer_slot"), 0)
                 interp_id = safe_int(item.get("interpreter_slot"), 0)
-
                 exp_num = item.get("exp", "")
 
-                # sentences (direct or lookup)
                 raw_sentences = item.get("producer_sentences") or item.get("sentences") or ""
                 if (not raw_sentences) or (isinstance(raw_sentences, str) and raw_sentences.strip() in {"", "[]"}):
                     resolved = resolve_lookup_sentences(item, first_player.session.vars)
@@ -1128,7 +1068,6 @@ def custom_export(players):
 
                 sentence_cells = extract_sentence_cells(raw_sentences)
 
-                # interpreter answers (labeled)
                 raw_interp = item.get("interpreter_rewards") or item.get("rewards") or ""
                 ans_map = parse_interpreter_answers(raw_interp, choice_headers)
                 interp_cols = [ans_map.get(opt, "") for opt in choice_headers]
@@ -1160,5 +1099,4 @@ def custom_export(players):
         except Exception:
             continue
 
-page_sequence = [RestartIfIncomplete, FaultyCatcher, WaitForPrevExperiment, Q, Feedback, FinalForProlific]
-
+page_sequence = [ProlificStatusGate, FaultyCatcher, WaitForPrevExperiment, Q, Feedback, FinalForProlific]
