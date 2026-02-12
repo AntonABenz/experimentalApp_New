@@ -31,7 +31,6 @@ SESSION_CONFIGS = [
         instructions_url=INSTRUCTIONS_URL,
         introduction_url=INTRODUCTION_URL,
     ),
-
     dict(
         name="practice_pages",
         display_name="Practice pages only",
@@ -88,7 +87,7 @@ SESSION_FIELDS = [
     "max_users",
     "batch_size",
 
-    # NEW: keep these accessible in session.vars
+    # keep these accessible in session.vars
     "cohort_size",
     "instructions_url",
     "introduction_url",
@@ -104,5 +103,27 @@ ADMIN_PASSWORD = environ.get("OTREE_ADMIN_PASSWORD", "admin")
 SECRET_KEY = environ.get("OTREE_SECRET_KEY", "dev-secret")
 
 OTREE_PRODUCTION = as_bool(environ.get("OTREE_PRODUCTION", "0"), False)
+
+# ------------------------------------------------------------
+# Django routing for webhook endpoint (Option A)
+# ------------------------------------------------------------
+# This makes Django load experimentalApp_New/urls.py
+ROOT_URLCONF = "urls"
+
+# ------------------------------------------------------------
+# Deployment safety (Heroku)
+# ------------------------------------------------------------
+# Allow webhook requests to hit the app.
+# Heroku sets host automatically, but Django still checks ALLOWED_HOSTS.
+# If you use a custom domain, include it too.
+ALLOWED_HOSTS = environ.get("ALLOWED_HOSTS", "*").split(",")
+
+# CSRF isn't required for webhook (we use csrf_exempt), but this avoids issues
+# in some deployments that enforce origin checks.
+CSRF_TRUSTED_ORIGINS = [
+    o.strip()
+    for o in environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if o.strip()
+]
 
 INSTALLED_APPS = ["otree"]
