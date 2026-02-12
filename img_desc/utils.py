@@ -1,5 +1,8 @@
 # img_desc/utils.py
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -13,12 +16,18 @@ logger = logging.getLogger("benzapp.utils")
 # -------------------------------------------------------------------
 
 PROLIFIC_API_KEY = os.environ.get("PROLIFIC_API_KEY")
+PROLIFIC_WEBHOOK_SECRET = os.environ.get("PROLIFIC_WEBHOOK_SECRET")
 
 if not PROLIFIC_API_KEY:
     # IMPORTANT: do NOT crash if the key is missing
     logger.warning(
         "PROLIFIC_API_KEY not set; Prolific API features (balance, "
         "increase_space, completion lookup) are disabled."
+    )
+
+if not PROLIFIC_WEBHOOK_SECRET:
+    logger.warning(
+        "PROLIFIC_WEBHOOK_SECRET not set; Prolific webhook verification is disabled."
     )
 
 STUBURL = "https://app.prolific.co/submissions/complete?cc="
@@ -34,10 +43,10 @@ BALANCE_URL = (
     "647787b9fe04daac6e2e944e/balance/"
 )
 
-
 # -------------------------------------------------------------------
 #  IMAGE URL HELPER (used by Player.get_image_url)
 # -------------------------------------------------------------------
+
 
 def get_url_for_image(player, img: str, extension: str | None = None) -> str:
     """
@@ -47,7 +56,6 @@ def get_url_for_image(player, img: str, extension: str | None = None) -> str:
     s3path = player.session.vars.get("s3path") or ""
     ext = extension or player.session.vars.get("extension") or "png"
 
-    # if img already has an extension, don't duplicate
     if img and not img.lower().endswith(f".{ext}"):
         img = f"{img}.{ext}"
 
@@ -57,6 +65,7 @@ def get_url_for_image(player, img: str, extension: str | None = None) -> str:
 # -------------------------------------------------------------------
 #  PROLIFIC API HELPERS
 # -------------------------------------------------------------------
+
 
 def _can_call_prolific() -> bool:
     if not PROLIFIC_API_KEY:
@@ -82,12 +91,13 @@ def get_balance():
         return None
 
     if resp.status_code != 200:
-        logger.warning(
-            f"Get error trying to get balance. Status code: {resp.status_code}"
-        )
+        logger.warning(f"Error getting balance. Status code: {resp.status_code}")
         return None
 
-    return resp.json()
+    try:
+        return resp.json()
+    except Exception:
+        return None
 
 
 def get_study(study_id: str):
@@ -107,20 +117,21 @@ def get_study(study_id: str):
 
     if resp.status_code != 200:
         logger.warning(
-            f"Get error trying to get data for study {study_id}. "
-            f"Status code: {resp.status_code}"
+            f"Error getting data for study {study_id}. Status code: {resp.status_code}"
         )
         return None
 
-    return resp.json()
+    try:
+        return resp.json()
+    except Exception:
+        return None
 
 
 def get_completion_info(study_id: str):
     """
     Returns dict(completion_code=..., full_return_url=...) or None.
-
     If the Prolific API is unavailable, caller should fall back to
-    'API_ERROR' codes (which your img_desc app already does).
+    'API_ERROR' codes.
     """
     study_data = get_study(study_id)
     if not study_data:
@@ -128,12 +139,11 @@ def get_completion_info(study_id: str):
         return None
 
     if isinstance(study_data, dict) and study_data.get("error"):
-        logger.warning(f"Get error trying to get data for study {study_id}")
+        logger.warning(f"Prolific API returned error for study {study_id}")
         return None
 
     completion_codes = study_data.get("completion_codes", [])
 
-    # First COMPLETED code, or "NO_CODE"
     completed_code = next(
         (
             cinfo.get("code")
@@ -144,9 +154,7 @@ def get_completion_info(study_id: str):
     )
 
     full_return_url = f"{STUBURL}{completed_code}"
-    logger.info(
-        f"full_return_url: {full_return_url}; completed_code: {completed_code}"
-    )
+    logger.info(f"Completion URL: {full_return_url}; code: {completed_code}")
 
     return dict(
         completion_code=completed_code,
@@ -156,9 +164,7 @@ def get_completion_info(study_id: str):
 
 def increase_space(study_id: str, num_extra: int, max_users: int):
     """
-    Attempts to increase 'total_available_places' on Prolific, but
-    only if PROLIFIC_API_KEY is set.
-
+    Attempts to increase 'total_available_places' on Prolific.
     Returns JSON response or None.
     """
     if not _can_call_prolific():
@@ -166,21 +172,18 @@ def increase_space(study_id: str, num_extra: int, max_users: int):
 
     study = get_study(study_id)
     if not study:
-        logger.warning("Something wrong with response when getting study data.")
+        logger.warning("Could not fetch study data.")
         return None
 
     try:
         num_current_places = int(study.get("total_available_places"))
     except (TypeError, ValueError):
-        logger.warning(
-            "SOMETHING WRONG WITH RESPONSE OF DATA GETTING OF THE STUDY"
-        )
+        logger.warning("Unexpected study response format: total_available_places invalid.")
         return None
 
     if num_current_places >= max_users:
         logger.warning(
-            f"QUOTA EXCEEDED. Num of current places: {num_current_places}. "
-            f"Max users: {max_users}"
+            f"Quota exceeded. Current places: {num_current_places}. Max users: {max_users}"
         )
         return None
 
@@ -188,11 +191,7 @@ def increase_space(study_id: str, num_extra: int, max_users: int):
     url = f"https://api.prolific.co/api/v1/studies/{study_id}/"
     payload = json.dumps({"total_available_places": new_places})
 
-    logger.info(
-        f"calling prolific api requesting to increase places to {new_places} "
-        f"in study {study_id}"
-    )
-    logger.info(f"payload: {payload}; url: {url}")
+    logger.info(f"Increasing Prolific places to {new_places} for study {study_id}")
 
     try:
         resp = requests.patch(url, headers=BASE_HEADERS, data=payload, timeout=10)
@@ -202,35 +201,49 @@ def increase_space(study_id: str, num_extra: int, max_users: int):
 
     if resp.status_code != 200:
         logger.warning(
-            f"Get error trying to increase places in study {study_id}. "
-            f"Status code: {resp.status_code}"
+            f"Error increasing places in study {study_id}. Status code: {resp.status_code}"
         )
+        logger.warning(f"Response text: {resp.text}")
         return None
-
-    logger.info(f"response.status_code: {resp.status_code}")
-    logger.info(f"response.text: {resp.text}")
 
     try:
         return resp.json()
     except Exception:
         return None
 
+
+# -------------------------------------------------------------------
+#  PROLIFIC WEBHOOK VERIFICATION
+# -------------------------------------------------------------------
+
+
 def verify_prolific_webhook(raw_body: bytes, timestamp: str, signature: str) -> bool:
     """
     Verify Prolific webhook signature.
+
     Prolific sends headers:
       - X-Prolific-Request-Timestamp
       - X-Prolific-Request-Signature
 
-    Verification: base64(hmac_sha256(secret, timestamp + body_as_text))
+    Expected signature:
+      base64(hmac_sha256(secret, timestamp + body_as_text))
     """
     if not PROLIFIC_WEBHOOK_SECRET:
         return False
-    if not timestamp or not signature:
+
+    ts = (timestamp or "").strip()
+    sig = (signature or "").strip()
+    if not ts or not sig:
         return False
 
-    msg = (timestamp + raw_body.decode("utf-8")).encode("utf-8")
-    digest = hmac.new(PROLIFIC_WEBHOOK_SECRET.encode("utf-8"), msg, hashlib.sha256).digest()
-    expected = base64.b64encode(digest).decode("utf-8")
+    body_text = raw_body.decode("utf-8")  # should be UTF-8 JSON
+    message = (ts + body_text).encode("utf-8")
 
-    return hmac.compare_digest(expected, signature)
+    digest = hmac.new(
+        PROLIFIC_WEBHOOK_SECRET.encode("utf-8"),
+        message,
+        hashlib.sha256,
+    ).digest()
+
+    expected = base64.b64encode(digest).decode("utf-8")
+    return hmac.compare_digest(expected, sig)
