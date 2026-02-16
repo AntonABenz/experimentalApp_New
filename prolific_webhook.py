@@ -1,9 +1,8 @@
 # prolific_webhook.py
 import json
 import logging
-
-from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.requests import Request
+from starlette.responses import JSONResponse, PlainTextResponse
 
 from otree.models import Participant
 from img_desc.utils import verify_prolific_webhook
@@ -13,15 +12,6 @@ logger = logging.getLogger("benzapp.prolific_webhook")
 
 
 async def prolific_webhook_view(request: Request):
-    """
-    Starlette webhook receiver for Prolific.
-    Prolific sends:
-      - X-Prolific-Request-Timestamp
-      - X-Prolific-Request-Signature
-    Body: JSON payload
-    """
-
-    # quick sanity check in browser
     if request.method == "GET":
         return PlainTextResponse("ok", status_code=200)
 
@@ -48,22 +38,18 @@ async def prolific_webhook_view(request: Request):
         data = payload if isinstance(payload, dict) else {}
 
     status = (data.get("status") or data.get("submission_status") or "").strip()
-
     prolific_pid = (
         data.get("participant_id")
         or data.get("prolific_pid")
         or data.get("prolific_id")
         or ""
     )
-
     study_id = data.get("study_id") or ""
     submission_id = data.get("submission_id") or data.get("id") or ""
 
     if not prolific_pid or not status:
-        logger.warning(f"Webhook missing prolific_pid or status. payload={payload}")
         return PlainTextResponse("Missing prolific_pid or status", status_code=400)
 
-    # Find participant by prolific_id stored at entry
     participant = None
     for p in Participant.objects.all().order_by("-id")[:2000]:
         if p.vars.get("prolific_id") == prolific_pid:
@@ -71,7 +57,6 @@ async def prolific_webhook_view(request: Request):
             break
 
     if participant is None:
-        logger.warning(f"No participant found for prolific_id={prolific_pid}")
         return JSONResponse({"ok": True, "note": "participant_not_found"})
 
     participant.vars["prolific_submission_status"] = status
@@ -80,10 +65,6 @@ async def prolific_webhook_view(request: Request):
     participant.save()
 
     if status == "TIMED-OUT":
-        logger.warning(
-            f"TIMED-OUT: prolific_id={prolific_pid} participant_code={participant.code} "
-            f"study_id={study_id} submission_id={submission_id}"
-        )
         try:
             reset_this_app_for_participant(participant)
         except Exception as e:
