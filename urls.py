@@ -1,17 +1,15 @@
-# urls.py  (project root)
+# urls.py (project root)
+
 from otree.urls import get_urlpatterns
 from starlette.routing import Route
 
 from prolific_webhook import prolific_webhook_view
 
-routes = get_urlpatterns()
+urlpatterns = get_urlpatterns()
 
-# Add webhook endpoint (allow GET for quick sanity check)
-routes.append(
-    Route(
-        "/prolific/webhook/",
-        endpoint=prolific_webhook_view,
-        methods=["GET", "POST"],
-        name="prolific_webhook",
-    )
-)
+# Add BOTH versions (with and without trailing slash),
+# because Starlette routing is strict about slashes.
+urlpatterns += [
+    Route("/prolific/webhook", prolific_webhook_view, methods=["GET", "POST"]),
+    Route("/prolific/webhook/", prolific_webhook_view, methods=["GET", "POST"]),
+]
