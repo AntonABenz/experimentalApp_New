@@ -13,3 +13,4 @@ google-auth==2.34.0
 pandas
 openpyxl
 psycopg2-binary
+uvicorn
