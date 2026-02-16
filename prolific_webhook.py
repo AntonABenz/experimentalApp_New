@@ -1,39 +1,33 @@
+# prolific_webhook.py
 import json
 import logging
 
-from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
-
 from otree.models import Participant
 
 from img_desc.utils import verify_prolific_webhook
-from img_desc import reset_this_app_for_participant  # uses participant object
+from img_desc import reset_this_app_for_participant
 
 logger = logging.getLogger("benzapp.prolific_webhook")
 
 
-async def prolific_webhook_view(request: Request):
+async def prolific_webhook_view(request):
     """
-    Prolific webhook receiver (Starlette endpoint).
-
-    Expected headers:
+    Prolific webhook receiver (Starlette).
+    Prolific sends headers:
       - X-Prolific-Request-Timestamp
       - X-Prolific-Request-Signature
-    Body: JSON payload containing submission status changes.
     """
     if request.method == "GET":
-        # Useful for manual testing
-        return JSONResponse({"ok": True, "note": "webhook endpoint alive"})
+        # simple health check to prove routing works
+        return PlainTextResponse("webhook alive", status_code=200)
 
     if request.method != "POST":
         return PlainTextResponse("POST required", status_code=400)
 
     raw_body = await request.body()
-    if not raw_body:
-        raw_body = b"{}"
-
-    ts = request.headers.get("X-Prolific-Request-Timestamp", "")
-    sig = request.headers.get("X-Prolific-Request-Signature", "")
+    ts = request.headers.get("x-prolific-request-timestamp", "")
+    sig = request.headers.get("x-prolific-request-signature", "")
 
     ok = verify_prolific_webhook(raw_body=raw_body, timestamp=ts, signature=sig)
     if not ok:
@@ -41,7 +35,7 @@ async def prolific_webhook_view(request: Request):
         return PlainTextResponse("Bad signature", status_code=403)
 
     try:
-        payload = json.loads(raw_body.decode("utf-8"))
+        payload = json.loads(raw_body.decode("utf-8") or "{}")
     except Exception:
         return PlainTextResponse("Invalid JSON", status_code=400)
 
@@ -63,7 +57,6 @@ async def prolific_webhook_view(request: Request):
         logger.warning(f"Webhook missing prolific_pid or status. payload={payload}")
         return PlainTextResponse("Missing prolific_pid or status", status_code=400)
 
-    # ---- Find Participant in oTree ----
     participant = None
     for p in Participant.objects.all().order_by("-id")[:2000]:
         if p.vars.get("prolific_id") == prolific_pid:
@@ -72,7 +65,7 @@ async def prolific_webhook_view(request: Request):
 
     if participant is None:
         logger.warning(f"No participant found for prolific_id={prolific_pid}")
-        return JSONResponse({"ok": True, "note": "participant_not_found"})
+        return JSONResponse({"ok": True, "note": "participant_not_found"}, status_code=200)
 
     participant.vars["prolific_submission_status"] = status
     participant.vars["prolific_submission_id"] = submission_id
@@ -81,15 +74,11 @@ async def prolific_webhook_view(request: Request):
 
     if status == "TIMED-OUT":
         logger.warning(
-            f"TIMED-OUT: prolific_id={prolific_pid} "
-            f"participant_code={participant.code} "
-            f"study_id={study_id} submission_id={submission_id} "
-            f"exp_target={participant.vars.get('exp_target')} "
-            f"local_slot={participant.vars.get('local_slot')}"
+            f"TIMED-OUT: prolific_id={prolific_pid} participant_code={participant.code}"
         )
         try:
             reset_this_app_for_participant(participant)
         except Exception as e:
             logger.error(f"Failed to reset participant {participant.code}: {e}", exc_info=True)
 
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True}, status_code=200)
