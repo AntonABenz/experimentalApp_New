@@ -71,6 +71,7 @@ class Player(BasePlayer):
                 if int(item.get("round_number", 0)) == rnd:
                     item.update(updates)
                     self.batch_history = json.dumps(hist)
+                    self.save()
                     return
         except Exception:
             pass
@@ -492,7 +493,7 @@ def creating_session(subsession: Subsession):
             session.vars["completion_code"] = str(session.config["completion_code"])
 
         session.vars["allowed_values"] = settings.get("allowed_values", []) or []
-        session.vars["allowed_regexes"] = settings.get("allowed_regex", []) or []
+        session.vars["allowed_regex"] = settings.get("allowed_regex", []) or []
 
         suffixes = []
         for i in range(1, 11):
@@ -773,7 +774,7 @@ class Q(Page):
         return dict(
             d=d,
             allowed_values=player.session.vars.get("allowed_values", []),
-            allowed_regexes=player.session.vars.get("allowed_regexes", []),
+            allowed_regex=player.session.vars.get("allowed_regex", []),
             suffixes=player.session.vars.get("suffixes", []),
             prefix=player.session.vars.get("prefix", ""),
             interpreter_choices=interpreter_choices,
