@@ -33,6 +33,46 @@ def _maybe_cast(v):
             return s
     return v
 
+def _maybe_store_prolific_params(player):
+    p = player.participant
+
+    # A) Best case: participant_label configured to PROLIFIC_PID
+    if p.label and not p.vars.get("prolific_id"):
+        p.vars["prolific_id"] = str(p.label).strip()
+
+    # B) If oTree already stored params into vars (happens in some setups)
+    for k in ("PROLIFIC_PID", "prolific_pid"):
+        if p.vars.get(k) and not p.vars.get("prolific_id"):
+            p.vars["prolific_id"] = str(p.vars.get(k)).strip()
+
+    for k in ("STUDY_ID", "study_id"):
+        if p.vars.get(k) and not p.vars.get("study_id"):
+            p.vars["study_id"] = str(p.vars.get(k)).strip()
+
+    for k in ("SESSION_ID", "session_id"):
+        if p.vars.get(k) and not p.vars.get("prolific_session_id"):
+            p.vars["prolific_session_id"] = str(p.vars.get(k)).strip()
+
+    # C) Fallback: try parsing URL if it still contains query params
+    try:
+        url = p._url_i_should_be_on()
+        if "?" in url:
+            qs = url.split("?", 1)[1]
+            params = dict(kv.split("=", 1) for kv in qs.split("&") if "=" in kv)
+
+            pid = params.get("PROLIFIC_PID") or params.get("prolific_pid")
+            sid = params.get("STUDY_ID") or params.get("study_id")
+            sess = params.get("SESSION_ID") or params.get("session_id")
+
+            if pid and not p.vars.get("prolific_id"):
+                p.vars["prolific_id"] = pid
+            if sid and not p.vars.get("study_id"):
+                p.vars["study_id"] = sid
+            if sess and not p.vars.get("prolific_session_id"):
+                p.vars["prolific_session_id"] = sess
+    except Exception:
+        pass
+    
 def build_image_url(player, filename: str) -> str:
     """
     Constructs the full S3 URL for a practice image.
@@ -263,7 +303,7 @@ class Consent(_BasePage):
     @staticmethod
     def before_next_page(player, timeout_happened=False):
         if player.session.config.get("for_prolific"):
-            player.participant.vars["prolific_id"] = player.participant.label
+            _maybe_store_prolific_params(player)
 
 
 class Demographics(_BasePage):
