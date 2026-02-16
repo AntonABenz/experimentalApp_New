@@ -7,7 +7,6 @@ def as_bool(v, default=False):
     return v in ("1", "true", "True", True)
 
 
-# Provided by you
 INSTRUCTIONS_URL = "https://docs.google.com/document/d/1PBL73XGMwln6uTFBXW2UaGoeb5-pM5OClvXXUe6YCP0/edit?tab=t.0"
 INTRODUCTION_URL = "https://docs.google.com/document/d/1frtr8zzT1KehperGjaNJNKgEh9fpZvHc0OvPuUgPblo/edit?tab=t.0"
 
@@ -19,15 +18,13 @@ SESSION_CONFIGS = [
         app_sequence=["start", "img_desc"],
         num_demo_participants=8,
         filename="https://docs.google.com/spreadsheets/d/1IQiLSLk9LFt8EK9fr5l_Z8sx8-p9VotoHmlXP5s7mRs/edit?gid=1525060338#gid=1525060338",
+        completion_code="COIC1LIY",
 
-        # used by img_desc + start.Consent
         for_prolific=True,
         expand_slots=True,
 
-        # cohort setup (1–4 => Exp1, 5–8 => Exp2, etc.)
         cohort_size=4,
 
-        # NEW: doc links (stored in session.vars in creating_session)
         instructions_url=INSTRUCTIONS_URL,
         introduction_url=INTRODUCTION_URL,
     ),
@@ -40,7 +37,6 @@ SESSION_CONFIGS = [
         for_prolific=False,
         expand_slots=False,
 
-        # optional for practice too
         instructions_url=INSTRUCTIONS_URL,
         introduction_url=INTRODUCTION_URL,
     ),
@@ -58,6 +54,9 @@ PARTICIPANT_FIELDS = [
     "study_id",
     "prolific_session_id",
     "full_study_completed",
+
+    # webhook will set this:
+    "prolific_submission_status",
 ]
 
 
@@ -105,21 +104,18 @@ SECRET_KEY = environ.get("OTREE_SECRET_KEY", "dev-secret")
 OTREE_PRODUCTION = as_bool(environ.get("OTREE_PRODUCTION", "0"), False)
 
 # ------------------------------------------------------------
-# Django routing for webhook endpoint (Option A)
+# Django routing (webhook)
 # ------------------------------------------------------------
-# This makes Django load experimentalApp_New/urls.py
 ROOT_URLCONF = "urls"
 
 # ------------------------------------------------------------
-# Deployment safety (Heroku)
+# Heroku / deployment
 # ------------------------------------------------------------
-# Allow webhook requests to hit the app.
-# Heroku sets host automatically, but Django still checks ALLOWED_HOSTS.
-# If you use a custom domain, include it too.
-ALLOWED_HOSTS = environ.get("ALLOWED_HOSTS", "*").split(",")
+# Recommended: set ALLOWED_HOSTS in Heroku config vars, e.g.:
+# ALLOWED_HOSTS=your-app.herokuapp.com,.herokuapp.com
+ALLOWED_HOSTS = [h.strip() for h in environ.get("ALLOWED_HOSTS", ".herokuapp.com").split(",") if h.strip()]
 
-# CSRF isn't required for webhook (we use csrf_exempt), but this avoids issues
-# in some deployments that enforce origin checks.
+# Optional, only needed if you enforce CSRF/origin checks somewhere else.
 CSRF_TRUSTED_ORIGINS = [
     o.strip()
     for o in environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
