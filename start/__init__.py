@@ -19,6 +19,7 @@ def clean_str(x):
         return ""
     return s
 
+
 def _maybe_cast(v):
     """Cast numbers/bools coming from sheets into Python types where sensible."""
     if isinstance(v, str):
@@ -33,7 +34,16 @@ def _maybe_cast(v):
             return s
     return v
 
+
 def _maybe_store_prolific_params(player):
+    """
+    Capture Prolific IDs robustly across different setups.
+
+    Sources checked (in priority order):
+      A) participant.label (if Prolific PID mapped to participant_label)
+      B) participant.vars keys that oTree might already have stored
+      C) query params inside participant._url_i_should_be_on()
+    """
     p = player.participant
 
     # A) Best case: participant_label configured to PROLIFIC_PID
@@ -58,7 +68,12 @@ def _maybe_store_prolific_params(player):
         url = p._url_i_should_be_on()
         if "?" in url:
             qs = url.split("?", 1)[1]
-            params = dict(kv.split("=", 1) for kv in qs.split("&") if "=" in kv)
+            params = {}
+            for kv in qs.split("&"):
+                if "=" not in kv:
+                    continue
+                k, v = kv.split("=", 1)
+                params[k] = v
 
             pid = params.get("PROLIFIC_PID") or params.get("prolific_pid")
             sid = params.get("STUDY_ID") or params.get("study_id")
@@ -72,7 +87,8 @@ def _maybe_store_prolific_params(player):
                 p.vars["prolific_session_id"] = sess
     except Exception:
         pass
-    
+
+
 def build_image_url(player, filename: str) -> str:
     """
     Constructs the full S3 URL for a practice image.
@@ -85,25 +101,21 @@ def build_image_url(player, filename: str) -> str:
     s3_base = clean_str(player.session.vars.get("s3path_base", ""))
     ext = clean_str(player.session.vars.get("extension", "png")) or "png"
 
-    # ensure extension
     if not filename.lower().endswith(f".{ext}"):
         filename = f"{filename}.{ext}"
 
     if not s3_base:
-        # allow local/static fallback if you ever need it:
-        return filename
+        return filename  # fallback
 
     base = s3_base.rstrip("/")
-    # if they accidentally pasted console URL, other code might normalize it earlier,
-    # but keep this safe anyway:
     return f"{base}/practice/{filename}"
+
 
 def _get_right_answers_list(practice_dict: dict) -> list[str]:
     """
-    Reads right_answer_1, right_answer_2... as a list of strings.
-    Example cell: "2;2" or "3; the A"
+    Reads right_answer_1, right_answer_2... into a list of strings.
     """
-    keys = [k for k in practice_dict.keys() if str(k).lower().startswith("right_answer_")]
+    keys = [k for k in (practice_dict or {}).keys() if str(k).lower().startswith("right_answer_")]
 
     def extract_num(k):
         nums = re.findall(r"\d+", str(k))
@@ -113,10 +125,11 @@ def _get_right_answers_list(practice_dict: dict) -> list[str]:
 
     out = []
     for k in keys:
-        v = clean_str(practice_dict.get(k))
+        v = clean_str((practice_dict or {}).get(k))
         if v:
             out.append(v)
     return out
+
 
 def _parse_kv_sheet(rows: list[dict]) -> dict:
     """
@@ -133,6 +146,7 @@ def _parse_kv_sheet(rows: list[dict]) -> dict:
         out[name] = _maybe_cast(val)
     return out
 
+
 def _find_practice_tab(practices_payload: dict, practice_id: int):
     """
     Accept many tab naming styles:
@@ -146,12 +160,11 @@ def _find_practice_tab(practices_payload: dict, practice_id: int):
         f"practice_{pid}", f"Practice_{pid}", f"PRACTICE_{pid}",
         f"practice{pid}", f"Practice{pid}", f"PRACTICE{pid}",
     ]
-    # direct matches
+
     for c in candidates:
         if c in practices_payload:
             return practices_payload[c]
 
-    # case-insensitive fallback
     lower_map = {str(k).lower(): k for k in practices_payload.keys()}
     for c in candidates:
         k = lower_map.get(c.lower())
@@ -197,11 +210,10 @@ def creating_session(subsession: BaseSubsession):
 
     payload = get_data(filename)
 
-    # Global settings
     settings = payload.get("settings", {}) or {}
     session.vars["sheet_settings"] = settings
 
-    # Store globals used across practice templates
+    # Globals used across practice templates
     session.vars["allowed_values"] = settings.get("allowed_values", []) or []
     session.vars["allowed_regex"] = settings.get("allowed_regex", []) or []
     session.vars["suffixes"] = settings.get("suffixes", ["solve/d", "exercises"]) or ["solve/d", "exercises"]
@@ -217,15 +229,14 @@ def creating_session(subsession: BaseSubsession):
             raw_s3 = f"https://{bucket}.s3.eu-central-1.amazonaws.com"
         except Exception:
             pass
+
     session.vars["s3path_base"] = raw_s3
     session.vars["extension"] = clean_str(settings.get("extension", "png")) or "png"
 
-    # ----------------------------------------------------------------
     # Practice settings: build Practice1..Practice7
-    # ----------------------------------------------------------------
     practice_settings = {}
 
-    # Case A: get_data already embedded PracticeX dicts inside settings
+    # Case A: get_data embedded PracticeX dicts inside settings
     for k, v in settings.items():
         if str(k).startswith("Practice") and isinstance(v, dict):
             p = v.copy()
@@ -233,19 +244,18 @@ def creating_session(subsession: BaseSubsession):
             practice_settings[str(k)] = p
 
     # Case B: get_data provides separate practice tabs (payload["practices"])
-    practices_payload = payload.get("practices")  # expected dict: tab_name -> list[dict rows]
+    practices_payload = payload.get("practices")
     if isinstance(practices_payload, dict):
         for pid in range(1, 8):
             key = f"Practice{pid}"
             if key in practice_settings:
-                continue  # already got it from settings dicts
+                continue
 
             tab_rows = _find_practice_tab(practices_payload, pid)
             if not tab_rows:
                 continue
 
             p = _parse_kv_sheet(tab_rows)
-            # normalize right answers into list
             p["right_answer"] = _get_right_answers_list(p)
             practice_settings[key] = p
 
@@ -276,10 +286,8 @@ class _PracticePage(_BasePage):
         key = f"Practice{cls.practice_id}"
         s = (player.session.vars.get("practice_settings") or {}).get(key, {}).copy()
 
-        # image
         s["full_image_path"] = build_image_url(player, s.get("image", ""))
 
-        # required rows defaulting (only used where templates need it)
         if "required_rows" not in s:
             if cls.practice_id == 7:
                 s["required_rows"] = 5
