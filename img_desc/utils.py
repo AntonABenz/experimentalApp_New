@@ -30,7 +30,7 @@ if not PROLIFIC_WEBHOOK_SECRET:
         "PROLIFIC_WEBHOOK_SECRET not set; Prolific webhook verification is disabled."
     )
 
-STUBURL = "https://app.prolific.co/submissions/complete?cc="
+STUBURL = "https://app.prolific.com/submissions/complete?cc="
 
 BASE_HEADERS = {
     "Content-Type": "application/json",
