@@ -1,25 +1,19 @@
 from otree.api import *
-import base64
-import hashlib
-import hmac
 import json
 import logging
 import time
 import re
 from starlette.responses import RedirectResponse
+from .utils import STUBURL
 
 logger = logging.getLogger("benzapp.img_desc")
 
 PRODUCER = "P"
 INTERPRETER = "I"
-STUBURL = "https://app.prolific.co/submissions/complete?cc="
-
 
 class Constants(BaseConstants):
     name_in_url = "img_desc"
     players_per_group = None
-
-    # 10 excel-round blocks * (3 Producer + 5 Interpreter) = 80 oTree rounds
     num_rounds = 80
 
     PLACEMENT_ERR = "ERROR_BATCH_PLACEMENT"
@@ -27,10 +21,7 @@ class Constants(BaseConstants):
     FALLBACK_URL = STUBURL + PLACEMENT_ERR
     API_ERR_URL = STUBURL + API_ERR
 
-    # Prolific submission statuses that mean "participant should not continue"
-    # Status strings come from Prolific submission status enums. :contentReference[oaicite:2]{index=2}
-    BAD_PROLIFIC_STATUSES = {"TIMED-OUT"}  # add "RETURNED" if you also want to discard on returns
-
+    BAD_PROLIFIC_STATUSES = {"TIMED-OUT"}
 
 # ----------------------------------------------------------------------------
 # MODELS
