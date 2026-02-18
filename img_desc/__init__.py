@@ -692,6 +692,8 @@ class FaultyCatcher(Page):
 
 
 class WaitForPrevExperiment(Page):
+    template_name = "img_desc/WaitForPrevExperiment.html"
+
     @staticmethod
     def is_displayed(player):
         csize = cohort_size(player.session)
@@ -702,7 +704,13 @@ class WaitForPrevExperiment(Page):
         if (player.batch_history == "[]" or not player.batch_history) and "batch_history" in player.participant.vars:
             player.batch_history = player.participant.vars["batch_history"]
 
-        needed = required_sentence_keys_for_player(player)
+        # Cache needed keys so we don't re-derive from history every refresh
+        needed = player.participant.vars.get("_needed_sentence_keys_set")
+        if not isinstance(needed, list):
+            needed_set = required_sentence_keys_for_player(player)
+            player.participant.vars["_needed_sentence_keys_set"] = list(needed_set)
+            needed = list(needed_set)
+
         if not needed:
             return False
 
