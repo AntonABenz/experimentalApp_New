@@ -60,7 +60,7 @@ window.props = {
     role: "{{ player.inner_role }}",
     prefix: {{ prefix|json }},
     allowedValues: {{ allowed_values|json }},
-    allowedRegexes: {{ allowed_regexes|json }},
+    allowedRegexes: {{ allowed_regex|json }},
     suffixes: {{ suffixes|json }},
 
     // IMPORTANT: sentence display uses the python resolver
@@ -322,5 +322,6 @@ app.config.compilerOptions.delimiters = ["[[", "]]"];
 app.mount("#app");
 </script>
 {% endblock %}
+
 
 
