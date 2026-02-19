@@ -1,4 +1,4 @@
 from uvicorn.workers import UvicornWorker
 
-class AsyncioUvicornWorker(UvicornWorker):
+class AsyncioWorker(UvicornWorker):
     CONFIG_KWARGS = {"loop": "asyncio", "http": "h11"}
