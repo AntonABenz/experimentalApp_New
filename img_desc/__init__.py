@@ -681,6 +681,7 @@ def creating_session(subsession: Subsession):
             rows_by_exp.setdefault(exp_num, []).append(rr)
 
         session.vars["rows_by_exp"] = rows_by_exp
+        session.vars.pop("excel_rows", None)
 
         # ------------------------------------------------------------------
         # Preload Exp=0 sentence store (baseline sentences)
