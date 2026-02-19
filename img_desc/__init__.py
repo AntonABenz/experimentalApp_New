@@ -71,7 +71,6 @@ class Player(BasePlayer):
                 if int(item.get("round_number", 0)) == rnd:
                     item.update(updates)
                     self.batch_history = json.dumps(hist)
-                    self.save()
                     return
         except Exception:
             pass
@@ -329,7 +328,6 @@ def reset_this_app_for_participant(participant):
         pp.start_decision_time = 0
         pp.end_decision_time = 0
         pp.decision_seconds = 0
-        pp.save()
 
     participant.vars.pop(f"{Constants.name_in_url}_completed", None)
     try:
@@ -810,7 +808,6 @@ def build_batch_history_for_player(player):
         logger.error(f"No rows found for Exp={exp_target} (participant={p.code}).")
         player.batch_history = "[]"
         p.vars["batch_history"] = player.batch_history
-        player.save()
         return
 
     # Group exp rows by Round (as in your original code)
@@ -825,7 +822,6 @@ def build_batch_history_for_player(player):
         logger.error(f"No valid Round>=1 rows for Exp={exp_target} (participant={p.code}).")
         player.batch_history = "[]"
         p.vars["batch_history"] = player.batch_history
-        player.save()
         return
 
     # Build slot->participant_code map for this cohort (for partner lookup)
@@ -951,7 +947,6 @@ def build_batch_history_for_player(player):
     player.batch_history = json.dumps(final_history)
     p.vars.pop("_needed_sentence_keys_set", None)
     p.vars["batch_history"] = player.batch_history
-    player.save()
 
 class Q(Page):
     form_model = "player"
