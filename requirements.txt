@@ -7,6 +7,8 @@ gunicorn==21.2.0
 uvicorn
 whitenoise==6.7.0
 python-dotenv==1.0.1
+uvloop==0.17.0
+httptools==0.6.1
 
 # DB
 psycopg2-binary==2.9.9
