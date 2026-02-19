@@ -1203,6 +1203,9 @@ def custom_export(players):
         "education",
     ]
 
+    # -----------------------
+    # Header row (must yield once)
+    # -----------------------
     any_player = players[0] if players else None
     choice_headers = (
         get_interpreter_choices_from_session(any_player)
@@ -1241,88 +1244,124 @@ def custom_export(players):
         "excel_row_index0",
     ]
 
-    players_by_participant = defaultdict(list)
-    for p in players:
-        players_by_participant[p.participant.code].append(p)
+    if not players:
+        return
 
-    for participant_code, participant_players in players_by_participant.items():
+    # ---------------------------------------------------------
+    # Memory-safe: process ONE participant at a time
+    # ---------------------------------------------------------
+    players_sorted = sorted(players, key=lambda p: p.participant.code)
+
+    def emit_participant(participant_players):
+        """Yield all export rows for one participant, then return."""
+        if not participant_players:
+            return
+
+        first_player = participant_players[0]
+        participant_code = first_player.participant.code
+        prolific_id = first_player.participant.vars.get("prolific_id", "")
+
+        # demographics
+        demo_obj = {}
         try:
-            first_player = participant_players[0]
-            prolific_id = first_player.participant.vars.get("prolific_id", "")
-
-            demo_obj = {}
-            try:
-                if "demographics" in first_player.participant.vars:
-                    demo_obj = safe_json_loads(first_player.participant.vars["demographics"], {})
-                else:
-                    start_players = [
-                        pp for pp in first_player.participant.get_players()
-                        if hasattr(pp, "survey_data")
-                    ]
-                    if start_players:
-                        demo_obj = safe_json_loads(start_players[0].survey_data, {})
-            except Exception:
-                demo_obj = {}
-            demo_cols = [demo_obj.get(k, "") for k in demo_keys]
-
-            history = safe_json_loads(first_player.participant.vars.get("batch_history", "[]"), [])
-            history.sort(key=lambda x: int(x.get("round_number", 0)))
-
-            timing_map = {}
-            feedback_str = ""
-            for pp in participant_players:
-                if pp.round_number:
-                    timing_map[pp.round_number] = pp.decision_seconds or 0
-                    if pp.round_number == Constants.num_rounds and pp.feedback:
-                        feedback_str = pp.feedback
-
-            for item in history:
-                rnd = int(item.get("round_number", 0))
-                if rnd < 1 or rnd > Constants.num_rounds:
-                    continue
-
-                my_role = item.get("role", "")
-                prod_id = safe_int(item.get("producer_slot"), 0)
-                interp_id = safe_int(item.get("interpreter_slot"), 0)
-                exp_num = item.get("exp", "")
-
-                raw_sentences = item.get("producer_sentences") or item.get("sentences") or ""
-                if (not raw_sentences) or (isinstance(raw_sentences, str) and raw_sentences.strip() in {"", "[]"}):
-                    resolved = resolve_lookup_sentences(item, first_player.session.vars)
-                    if resolved:
-                        raw_sentences = resolved
-
-                sentence_cells = extract_sentence_cells(raw_sentences)
-
-                raw_interp = item.get("interpreter_rewards") or item.get("rewards") or ""
-                ans_map = parse_interpreter_answers(raw_interp, choice_headers)
-                interp_cols = [ans_map.get(opt, "") for opt in choice_headers]
-
-                seconds = timing_map.get(rnd, 0)
-
-                yield [
-                    first_player.session.code,
-                    participant_code,
-                    prolific_id,
-                    *demo_cols,
-                    exp_num,
-                    rnd,
-                    my_role,
-                    prod_id,
-                    interp_id,
-                    item.get("condition", ""),
-                    item.get("item_nr", ""),
-                    item.get("image", ""),
-                    *sentence_cells,
-                    *interp_cols,
-                    raw_interp,
-                    seconds,
-                    feedback_str if rnd == Constants.num_rounds else "",
-                    item.get("excel_row_number_guess", ""),
-                    item.get("excel_row_index0", ""),
+            if "demographics" in first_player.participant.vars:
+                demo_obj = safe_json_loads(first_player.participant.vars["demographics"], {})
+            else:
+                start_players = [
+                    pp for pp in first_player.participant.get_players()
+                    if hasattr(pp, "survey_data")
                 ]
-
+                if start_players:
+                    demo_obj = safe_json_loads(start_players[0].survey_data, {})
         except Exception:
-            continue
+            demo_obj = {}
+
+        demo_cols = [demo_obj.get(k, "") for k in demo_keys]
+
+        # timing + feedback
+        timing_map = {}
+        feedback_str = ""
+        for pp in participant_players:
+            if pp.round_number:
+                timing_map[pp.round_number] = pp.decision_seconds or 0
+                if pp.round_number == Constants.num_rounds and pp.feedback:
+                    feedback_str = pp.feedback
+
+        # history (stored in participant.vars)
+        history = safe_json_loads(first_player.participant.vars.get("batch_history", "[]"), [])
+
+        # If you KNOW round_number is always increasing, you can skip sorting.
+        # history.sort(key=lambda x: int(x.get("round_number", 0)))
+
+        session_vars = first_player.session.vars
+
+        for item in history:
+            rnd = int(item.get("round_number", 0))
+            if rnd < 1 or rnd > Constants.num_rounds:
+                continue
+
+            my_role = item.get("role", "")
+            prod_id = safe_int(item.get("producer_slot"), 0)
+            interp_id = safe_int(item.get("interpreter_slot"), 0)
+            exp_num = item.get("exp", "")
+
+            raw_sentences = item.get("producer_sentences") or item.get("sentences") or ""
+            if (not raw_sentences) or (isinstance(raw_sentences, str) and raw_sentences.strip() in {"", "[]"}):
+                resolved = resolve_lookup_sentences(item, session_vars)
+                if resolved:
+                    raw_sentences = resolved
+
+            sentence_cells = extract_sentence_cells(raw_sentences)
+
+            raw_interp = item.get("interpreter_rewards") or item.get("rewards") or ""
+            ans_map = parse_interpreter_answers(raw_interp, choice_headers)
+            interp_cols = [ans_map.get(opt, "") for opt in choice_headers]
+
+            seconds = timing_map.get(rnd, 0)
+
+            yield [
+                first_player.session.code,
+                participant_code,
+                prolific_id,
+                *demo_cols,
+                exp_num,
+                rnd,
+                my_role,
+                prod_id,
+                interp_id,
+                item.get("condition", ""),
+                item.get("item_nr", ""),
+                item.get("image", ""),
+                *sentence_cells,
+                *interp_cols,
+                raw_interp,
+                seconds,
+                feedback_str if rnd == Constants.num_rounds else "",
+                item.get("excel_row_number_guess", ""),
+                item.get("excel_row_index0", ""),
+            ]
+
+    # streaming loop
+    current_code = None
+    bucket = []
+
+    for p in players_sorted:
+        code = p.participant.code
+        if current_code is None:
+            current_code = code
+
+        if code != current_code:
+            # flush previous participant
+            for row in emit_participant(bucket):
+                yield row
+            bucket = []
+            current_code = code
+
+        bucket.append(p)
+
+    # flush last
+    for row in emit_participant(bucket):
+        yield row
+
 
 page_sequence = [ProlificStatusGate, FaultyCatcher, WaitForPrevExperiment, Q, Feedback, FinalForProlific]
