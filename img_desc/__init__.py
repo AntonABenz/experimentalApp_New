@@ -92,20 +92,20 @@ class Player(BasePlayer):
     def _resolve_sentence_lookup(self, lookup):
         """
         Lookup sentences by (source_exp, producer_slot, interpreter_slot, condition).
+        Uses DB-backed SentenceStore (memory safe).
         """
         if not lookup or not isinstance(lookup, dict):
             return "[]"
-
+    
         src_exp = safe_int(lookup.get("source_exp"), -1)
         prod = safe_int(lookup.get("producer_slot"), 0)
         interp = safe_int(lookup.get("interpreter_slot"), 0)
         cond = clean_str(lookup.get("condition"))
-
+    
         key = sentence_key(src_exp, prod, interp, cond)
-        store = self.session.vars.get("sentences_by_key") or {}
-        raw = store.get(key)
-
-        if raw is None:
+        raw = get_sentence(self, key)
+    
+        if not raw:
             return "[]"
         if isinstance(raw, str):
             return raw
@@ -113,6 +113,7 @@ class Player(BasePlayer):
             return json.dumps(raw)
         except Exception:
             return "[]"
+
 
     def get_sentences_data(self):
         """
@@ -173,6 +174,44 @@ class Player(BasePlayer):
             logger.error(f"Error in get_full_sentences: {e}")
             return []
 
+# ----------------------------------------------------------------------------
+# DB-backed sentence store (replaces session.vars["sentences_by_key"])
+# ----------------------------------------------------------------------------
+class SentenceStore(ExtraModel):
+    subsession = models.Link(Subsession)  # we'll use round-1 subsession as the session anchor
+    key = models.StringField()
+    value = models.LongStringField()
+
+
+def _root_subsession(obj):
+    """
+    Anchor all SentenceStore rows to subsession round 1 so they're shared across rounds.
+    obj can be player/subsession.
+    """
+    try:
+        ss = obj.subsession if hasattr(obj, "subsession") else obj
+        return ss.in_round(1)
+    except Exception:
+        return None
+
+
+def set_sentence(obj, key: str, value: str):
+    root = _root_subsession(obj)
+    if not root:
+        return
+    qs = SentenceStore.filter(subsession=root, key=key)
+    if qs:
+        qs[0].value = value
+    else:
+        SentenceStore.create(subsession=root, key=key, value=value)
+
+
+def get_sentence(obj, key: str):
+    root = _root_subsession(obj)
+    if not root:
+        return None
+    qs = SentenceStore.filter(subsession=root, key=key)
+    return qs[0].value if qs else None
 
 # ----------------------------------------------------------------------------
 # UTIL
@@ -664,43 +703,48 @@ def creating_session(subsession: Subsession):
         # ------------------------------------------------------------------
         session.vars["excel_rows"] = rows
 
-        # ------------------------------------------------------------------
-        # Precompute rows grouped by experiment
-        # This allows fast rebuilding of schedules for replacements
-        # ------------------------------------------------------------------
+        KEEP_COLS = {
+        "Exp", "Trial", "Round", "Producer", "Interpreter", "Condition",
+        "Item.Nr", "Item",
+        "Sentence_1_1", "Sentence_1_2",
+        "Sentence_2_1", "Sentence_2_2",
+        "Sentence_3_1", "Sentence_3_2",
+        "Sentence_4_1", "Sentence_4_2",
+        "Sentence_5_1", "Sentence_5_2",
+}
+
+        def slim_row(r: dict) -> dict:
+            rr = {k: r.get(k) for k in KEEP_COLS if k in r}
+            return rr
+
         rows_by_exp = {}
         for idx0, r in enumerate(rows):
             exp_num = get_exp_num(r)
             if exp_num <= 0:
                 continue
-
-            rr = dict(r)
+        
+            rr = slim_row(r)
             rr["_idx0"] = idx0
             rr["_excel_row_number"] = idx0 + 2
-
             rows_by_exp.setdefault(exp_num, []).append(rr)
-
+        
         session.vars["rows_by_exp"] = rows_by_exp
         session.vars.pop("excel_rows", None)
 
         # ------------------------------------------------------------------
         # Preload Exp=0 sentence store (baseline sentences)
         # ------------------------------------------------------------------
-        session.vars["sentences_by_key"] = {}
-
         for r in rows:
             if get_exp_num(r) != 0:
                 continue
-
+        
             prod = safe_int(r.get("Producer"), 0)
             interp = safe_int(r.get("Interpreter"), 0)
             cond = clean_str(r.get("Condition"))
-
+        
             sent = extract_sentences_from_row(r)
             if sent and sent.strip() != "[]":
-                session.vars["sentences_by_key"][
-                    sentence_key(0, prod, interp, cond)
-                ] = sent
+                set_sentence(subsession, sentence_key(0, prod, interp, cond), sent)
 
         # ------------------------------------------------------------------
         # Initialize cohort tracking state
@@ -741,11 +785,7 @@ class WaitForPrevExperiment(Page):
         assign_slot_if_needed(player)
 
         if player.batch_history in {"", "[]"}:
-            if "batch_history" in player.participant.vars and player.participant.vars["batch_history"] not in {"", "[]"}:
-                player.batch_history = player.participant.vars["batch_history"]
-            else:
-                build_batch_history_for_player(player)
-        
+            build_batch_history_for_player(player)
                 
         exp_target = int(player.participant.vars.get("exp_target") or 1)
         if exp_target <= 1:
@@ -946,8 +986,9 @@ def build_batch_history_for_player(player):
         )
 
     player.batch_history = json.dumps(final_history)
+    player.batch_history = json.dumps(final_history)
     p.vars.pop("_needed_sentence_keys_set", None)
-    p.vars["batch_history"] = player.batch_history
+
 
 class Q(Page):
     form_model = "player"
@@ -960,10 +1001,8 @@ class Q(Page):
         assign_slot_if_needed(player)
     
         if player.batch_history in {"", "[]"}:
-            if "batch_history" in player.participant.vars and player.participant.vars["batch_history"] not in {"", "[]"}:
-                player.batch_history = player.participant.vars["batch_history"]
-            else:
-                build_batch_history_for_player(player)
+            build_batch_history_for_player(player)
+
 
         data = player.get_current_batch_data()
         if not data:
@@ -1043,11 +1082,16 @@ class Q(Page):
                 cond = clean_str(store_key.get("condition"))
                 if exp_num >= 1 and prod and interp and cond:
                     k = sentence_key(exp_num, prod, interp, cond)
-                    store = player.session.vars.get("sentences_by_key")
-                    if not isinstance(store, dict):
-                        store = {}
-                        player.session.vars["sentences_by_key"] = store
-                    store[k] = player.producer_decision
+                    store_key = data.get("sentence_store_key")
+                    if isinstance(store_key, dict):
+                        exp_num = safe_int(store_key.get("exp"), -1)
+                        prod = safe_int(store_key.get("producer_slot"), 0)
+                        interp = safe_int(store_key.get("interpreter_slot"), 0)
+                        cond = clean_str(store_key.get("condition"))
+                        if exp_num >= 1 and prod and interp and cond:
+                            k = sentence_key(exp_num, prod, interp, cond)
+                            set_sentence(player, k, player.producer_decision)
+
 
         elif player.inner_role == INTERPRETER:
             choices = player.session.vars.get("interpreter_choices") or []
@@ -1103,7 +1147,7 @@ class Q(Page):
 
         if updates:
             player.update_current_batch_data(updates)
-            player.participant.vars["batch_history"] = player.batch_history
+            
 
 
 class Feedback(Page):
