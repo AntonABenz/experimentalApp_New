@@ -1,19 +1,11 @@
-# oTree stack
 otree==5.10.0
-Django==4.2.16
 
-# Server/runtime
-gunicorn==21.2.0
-uvicorn
+uvicorn>=0.23,<0.30
 whitenoise==6.7.0
 python-dotenv==1.0.1
-uvloop==0.17.0
-httptools==0.6.1
 
-# DB
 psycopg2-binary==2.9.9
 
-# Data / sheets
 pandas==2.2.2
 openpyxl==3.1.5
 gspread==6.1.2
