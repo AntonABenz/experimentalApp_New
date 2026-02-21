@@ -1,1 +1,1 @@
-web: gunicorn asgi:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --workers 1 --worker-tmp-dir /dev/shm --timeout 120 --log-level info --access-logfile - --error-logfile - --env UVICORN_LOOP=asyncio --env UVICORN_HTTP=h11
+web: uvicorn otree.asgi:application --host 0.0.0.0 --port $PORT --workers 1 --loop asyncio
