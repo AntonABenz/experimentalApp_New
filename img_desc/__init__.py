@@ -1140,10 +1140,17 @@ def extract_sentence_cells(raw_sentences_json):
 
 def custom_export(players):
     """
-    Export that DOES NOT read participant.vars["batch_history"].
-    It reads ScheduleItem rows (1..80) per participant.
+    Memory-safe streaming export for oTree.
+
+    IMPORTANT:
+    - oTree passes `players` as a Python list, NOT a QuerySet.
+    - Therefore: no select_related(), no order_by().
+    - We sort minimally and stream per participant to keep RAM low.
     """
 
+    # -----------------------------
+    # Helpers
+    # -----------------------------
     def _get_choices(session_vars):
         ic = session_vars.get("interpreter_choices") or []
         if isinstance(ic, str):
@@ -1170,101 +1177,92 @@ def custom_export(players):
                 out[opt] = normalize_yesno_to_01(d.get("answer"))
         return out
 
-    demo_keys = [
-        "gender", "age", "handedness", "grewUpInCountry", "currentlyLivingInCountry",
-        "nativeLanguage", "nativeLanguageOther", "education",
-    ]
+    def _resolve_lookup(item, player_obj):
+        """
+        Resolve sentence_lookup using DB-backed SentenceStore (NOT session.vars).
+        """
+        lookup = item.get("sentence_lookup")
+        if not isinstance(lookup, dict):
+            return ""
+        src_exp = safe_int(lookup.get("source_exp"), -1)
+        prod = safe_int(lookup.get("producer_slot"), 0)
+        interp = safe_int(lookup.get("interpreter_slot"), 0)
+        cond = clean_str(lookup.get("condition"))
+        k = sentence_key(src_exp, prod, interp, cond)
+        return get_sentence(player_obj, k) or ""
 
-    players = players.select_related("participant", "session").order_by("participant__code", "round_number")
-
-    # determine choice headers from first session
-    first_player = None
-    choice_headers = ["Option_1", "Option_2", "Option_3", "Option_4"]
-    session_vars_cache = {}
-    for p in players:
-        first_player = p
-        sv = session_vars_cache.setdefault(p.session.code, p.session.vars)
-        choice_headers = _get_choices(sv)
-        break
-
-    yield [
-        "session", "participant", "prolific_id",
-        *[f"demo_{k}" for k in demo_keys],
-        "exp_num", "round", "role", "producer_id", "interpreter_id",
-        "condition", "item_nr", "image",
-        "Sentence_1_1", "Sentence_1_2",
-        "Sentence_2_1", "Sentence_2_2",
-        "Sentence_3_1", "Sentence_3_2",
-        "Sentence_4_1", "Sentence_4_2",
-        "Sentence_5_1", "Sentence_5_2",
-        *choice_headers,
-        "rewards_raw", "seconds", "feedback",
-        "excel_row_number_guess", "excel_row_index0",
-    ]
-
-    if first_player is None:
-        return
-
-    # restart query after peeking
-    players = players.select_related("participant", "session").order_by("participant__code", "round_number")
-
-    current_code = None
-    bucket = []
-
-    def _emit_participant(bucket_players):
-        if not bucket_players:
+    def _emit_participant(bucket, choice_headers, demo_keys):
+        if not bucket:
             return
-        first = bucket_players[0]
+
+        # Bucket is already one participant, sorted by round_number
+        first = bucket[0]
         participant = first.participant
+
         prolific_id = participant.vars.get("prolific_id", "")
 
-        demo_obj = safe_json_loads(participant.vars.get("demographics"), {}) or {}
+        # demographics from participant.vars only
+        demo_obj = {}
+        try:
+            raw_demo = participant.vars.get("demographics")
+            if raw_demo:
+                demo_obj = safe_json_loads(raw_demo, {})
+        except Exception:
+            demo_obj = {}
         demo_cols = [demo_obj.get(k, "") for k in demo_keys]
 
+        # timing + feedback from DB fields in bucket
         timing_map = {}
         feedback_str = ""
-        for pp in bucket_players:
+        for pp in bucket:
             rn = pp.round_number or 0
             if rn:
                 timing_map[rn] = pp.decision_seconds or 0
             if rn == Constants.num_rounds and pp.feedback:
                 feedback_str = pp.feedback
 
-        root = _root_subsession(first)
-        if not root:
-            return
+        # use round 1 player's batch_history field if possible
+        round1 = next((pp for pp in bucket if pp.round_number == 1), first)
+        raw_hist = round1.batch_history
+        if not raw_hist or raw_hist in {"", "[]"}:
+            raw_hist = participant.vars.get("batch_history", "[]")
 
-        # pull the 80 ScheduleItem rows
-        items = ScheduleItem.filter(subsession=root, participant_code=participant.code)
-        # sort in python but only up to 80 items (safe)
-        items = sorted(items, key=lambda x: int(x.round_number or 0))
+        history = safe_json_loads(raw_hist, [])
+        if not isinstance(history, list):
+            history = []
 
-        for it in items:
-            d = safe_json_loads(it.data, {}) or {}
-            rnd = int(d.get("round_number", it.round_number or 0) or 0)
+        session_code = first.session.code
+        participant_code = participant.code
+
+        for item in history:
+            rnd = int(item.get("round_number", 0))
             if rnd < 1 or rnd > Constants.num_rounds:
                 continue
 
-            my_role = d.get("role", "")
-            prod_id = safe_int(d.get("producer_slot"), 0)
-            interp_id = safe_int(d.get("interpreter_slot"), 0)
-            exp_num = d.get("exp", "")
+            my_role = item.get("role", "")
+            prod_id = safe_int(item.get("producer_slot"), 0)
+            interp_id = safe_int(item.get("interpreter_slot"), 0)
+            exp_num = item.get("exp", "")
 
-            raw_sentences = d.get("producer_sentences") or ""
+            # sentences
+            raw_sentences = item.get("producer_sentences") or ""
             if not raw_sentences or (isinstance(raw_sentences, str) and raw_sentences.strip() in {"", "[]"}):
-                raw_sentences = first._resolve_sentence_lookup(d.get("sentence_lookup"))
+                resolved = _resolve_lookup(item, round1)
+                if resolved:
+                    raw_sentences = resolved
 
             sentence_cells = extract_sentence_cells(raw_sentences)
 
-            raw_interp = d.get("interpreter_rewards") or ""
+            # interpreter answers
+            raw_interp = item.get("interpreter_rewards") or ""
             ans_map = _parse_interp_answers(raw_interp, choice_headers)
             interp_cols = [ans_map.get(opt, "") for opt in choice_headers]
 
             seconds = timing_map.get(rnd, 0)
 
             yield [
-                first.session.code,
-                participant.code,
+                session_code,
+                participant_code,
                 prolific_id,
                 *demo_cols,
                 exp_num,
@@ -1272,33 +1270,99 @@ def custom_export(players):
                 my_role,
                 prod_id,
                 interp_id,
-                d.get("condition", ""),
-                d.get("item_nr", ""),
-                d.get("image", ""),
+                item.get("condition", ""),
+                item.get("item_nr", ""),
+                item.get("image", ""),
                 *sentence_cells,
                 *interp_cols,
                 raw_interp,
                 seconds,
                 feedback_str if rnd == Constants.num_rounds else "",
-                d.get("excel_row_number_guess", ""),
-                d.get("excel_row_index0", ""),
+                item.get("excel_row_number_guess", ""),
+                item.get("excel_row_index0", ""),
             ]
 
-    for p in players:
-        code = p.participant.code
+    # -----------------------------
+    # Headers
+    # -----------------------------
+    demo_keys = [
+        "gender",
+        "age",
+        "handedness",
+        "grewUpInCountry",
+        "currentlyLivingInCountry",
+        "nativeLanguage",
+        "nativeLanguageOther",
+        "education",
+    ]
+
+    # Choose headers based on first player's session vars if available
+    choice_headers = ["Option_1", "Option_2", "Option_3", "Option_4"]
+    if players:
+        try:
+            choice_headers = _get_choices(players[0].session.vars)
+        except Exception:
+            pass
+
+    yield [
+        "session",
+        "participant",
+        "prolific_id",
+        *[f"demo_{k}" for k in demo_keys],
+        "exp_num",
+        "round",
+        "role",
+        "producer_id",
+        "interpreter_id",
+        "condition",
+        "item_nr",
+        "image",
+        "Sentence_1_1", "Sentence_1_2",
+        "Sentence_2_1", "Sentence_2_2",
+        "Sentence_3_1", "Sentence_3_2",
+        "Sentence_4_1", "Sentence_4_2",
+        "Sentence_5_1", "Sentence_5_2",
+        *choice_headers,
+        "rewards_raw",
+        "seconds",
+        "feedback",
+        "excel_row_number_guess",
+        "excel_row_index0",
+    ]
+
+    if not players:
+        return
+
+    # -----------------------------
+    # STREAMING: sort list minimally
+    # -----------------------------
+    # Sort by participant code, then round_number so we can bucket per participant
+    players_sorted = sorted(
+        players,
+        key=lambda p: (
+            getattr(getattr(p, "participant", None), "code", ""),
+            getattr(p, "round_number", 0) or 0,
+        ),
+    )
+
+    current_code = None
+    bucket = []
+
+    for p in players_sorted:
+        code = getattr(getattr(p, "participant", None), "code", "")
         if current_code is None:
             current_code = code
 
         if code != current_code:
-            yield from _emit_participant(bucket)
+            # flush previous participant
+            yield from _emit_participant(bucket, choice_headers, demo_keys)
             bucket = []
             current_code = code
 
         bucket.append(p)
 
     if bucket:
-        yield from _emit_participant(bucket)
-
+        yield from _emit_participant(bucket, choice_headers, demo_keys)
 
 page_sequence = [
     ProlificStatusGate,
