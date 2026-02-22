@@ -1140,12 +1140,10 @@ def extract_sentence_cells(raw_sentences_json):
 
 def custom_export(players):
     """
-    Memory-safe streaming export for oTree.
-
-    IMPORTANT:
-    - oTree passes `players` as a Python list, NOT a QuerySet.
-    - Therefore: no select_related(), no order_by().
-    - We sort minimally and stream per participant to keep RAM low.
+    Safe export:
+    - oTree passes `players` as a Python list.
+    - /export may call custom_export for multiple apps; some apps won't have batch_history.
+    - Therefore: never assume fields exist. Use getattr everywhere.
     """
 
     # -----------------------------
@@ -1177,9 +1175,10 @@ def custom_export(players):
                 out[opt] = normalize_yesno_to_01(d.get("answer"))
         return out
 
-    def _resolve_lookup(item, player_obj):
+    def _resolve_lookup(item, obj_for_db):
         """
-        Resolve sentence_lookup using DB-backed SentenceStore (NOT session.vars).
+        Resolve sentence_lookup using DB-backed SentenceStore.
+        obj_for_db should be a player (or subsession) that has .subsession.
         """
         lookup = item.get("sentence_lookup")
         if not isinstance(lookup, dict):
@@ -1189,19 +1188,50 @@ def custom_export(players):
         interp = safe_int(lookup.get("interpreter_slot"), 0)
         cond = clean_str(lookup.get("condition"))
         k = sentence_key(src_exp, prod, interp, cond)
-        return get_sentence(player_obj, k) or ""
+        return get_sentence(obj_for_db, k) or ""
+
+    def _safe_get_batch_history_from_bucket(bucket):
+        """
+        Try to read batch_history from round 1 player if it exists,
+        else from participant.vars, else [].
+        """
+        if not bucket:
+            return []
+
+        first = bucket[0]
+        participant = getattr(first, "participant", None)
+
+        # prefer round 1, but do NOT assume the attribute exists
+        round1 = None
+        for pp in bucket:
+            if getattr(pp, "round_number", 0) == 1:
+                round1 = pp
+                break
+        if round1 is None:
+            round1 = first
+
+        raw_hist = getattr(round1, "batch_history", None)
+        if not raw_hist or raw_hist in {"", "[]"}:
+            if participant is not None:
+                raw_hist = participant.vars.get("batch_history", "[]")
+            else:
+                raw_hist = "[]"
+
+        hist = safe_json_loads(raw_hist, [])
+        return hist if isinstance(hist, list) else []
 
     def _emit_participant(bucket, choice_headers, demo_keys):
         if not bucket:
             return
 
-        # Bucket is already one participant, sorted by round_number
         first = bucket[0]
-        participant = first.participant
+        participant = getattr(first, "participant", None)
+        if participant is None:
+            return
 
         prolific_id = participant.vars.get("prolific_id", "")
 
-        # demographics from participant.vars only
+        # demographics
         demo_obj = {}
         try:
             raw_demo = participant.vars.get("demographics")
@@ -1211,28 +1241,24 @@ def custom_export(players):
             demo_obj = {}
         demo_cols = [demo_obj.get(k, "") for k in demo_keys]
 
-        # timing + feedback from DB fields in bucket
+        # timing + feedback
         timing_map = {}
         feedback_str = ""
         for pp in bucket:
-            rn = pp.round_number or 0
+            rn = getattr(pp, "round_number", 0) or 0
             if rn:
-                timing_map[rn] = pp.decision_seconds or 0
-            if rn == Constants.num_rounds and pp.feedback:
-                feedback_str = pp.feedback
+                timing_map[rn] = getattr(pp, "decision_seconds", 0) or 0
+            if rn == Constants.num_rounds and getattr(pp, "feedback", ""):
+                feedback_str = getattr(pp, "feedback", "")
 
-        # use round 1 player's batch_history field if possible
-        round1 = next((pp for pp in bucket if pp.round_number == 1), first)
-        raw_hist = round1.batch_history
-        if not raw_hist or raw_hist in {"", "[]"}:
-            raw_hist = participant.vars.get("batch_history", "[]")
+        history = _safe_get_batch_history_from_bucket(bucket)
 
-        history = safe_json_loads(raw_hist, [])
-        if not isinstance(history, list):
-            history = []
+        # use an object that definitely has .subsession for SentenceStore lookups:
+        obj_for_db = bucket[0]
 
-        session_code = first.session.code
-        participant_code = participant.code
+        session_obj = getattr(first, "session", None)
+        session_code = getattr(session_obj, "code", "")
+        participant_code = getattr(participant, "code", "")
 
         for item in history:
             rnd = int(item.get("round_number", 0))
@@ -1247,7 +1273,7 @@ def custom_export(players):
             # sentences
             raw_sentences = item.get("producer_sentences") or ""
             if not raw_sentences or (isinstance(raw_sentences, str) and raw_sentences.strip() in {"", "[]"}):
-                resolved = _resolve_lookup(item, round1)
+                resolved = _resolve_lookup(item, obj_for_db)
                 if resolved:
                     raw_sentences = resolved
 
@@ -1296,7 +1322,6 @@ def custom_export(players):
         "education",
     ]
 
-    # Choose headers based on first player's session vars if available
     choice_headers = ["Option_1", "Option_2", "Option_3", "Option_4"]
     if players:
         try:
@@ -1334,9 +1359,8 @@ def custom_export(players):
         return
 
     # -----------------------------
-    # STREAMING: sort list minimally
+    # Stream per participant
     # -----------------------------
-    # Sort by participant code, then round_number so we can bucket per participant
     players_sorted = sorted(
         players,
         key=lambda p: (
@@ -1349,12 +1373,12 @@ def custom_export(players):
     bucket = []
 
     for p in players_sorted:
-        code = getattr(getattr(p, "participant", None), "code", "")
+        part = getattr(p, "participant", None)
+        code = getattr(part, "code", "")
         if current_code is None:
             current_code = code
 
         if code != current_code:
-            # flush previous participant
             yield from _emit_participant(bucket, choice_headers, demo_keys)
             bucket = []
             current_code = code
@@ -1363,6 +1387,7 @@ def custom_export(players):
 
     if bucket:
         yield from _emit_participant(bucket, choice_headers, demo_keys)
+
 
 page_sequence = [
     ProlificStatusGate,
