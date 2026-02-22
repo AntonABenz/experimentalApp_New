@@ -513,14 +513,9 @@ def normalize_yesno_to_01(v):
         return ""
     s = str(v).strip().lower()
     if s in {"yes", "y", "1", "true", "t"}:
-        return 1
+        return True
     if s in {"no", "n", "0", "false", "f"}:
-        return 0
-    try:
-        if int(v) in (0, 1):
-            return int(v)
-    except Exception:
-        pass
+        return False
     return ""
 
 
