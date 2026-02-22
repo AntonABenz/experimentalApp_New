@@ -1289,9 +1289,19 @@ def custom_export(players):
 
         demo_obj = {}
         try:
+            # 1) preferred: participant.vars["demographics"] already as JSON/dict
             raw_demo = participant.vars.get("demographics")
             if raw_demo:
                 demo_obj = safe_json_loads(raw_demo, {})
+            else:
+                # 2) fallback: look for a "survey" player in earlier apps
+                #    (adjust attribute name if yours isn't survey_data)
+                start_players = [
+                    pp for pp in participant.get_players()
+                    if hasattr(pp, "survey_data") and getattr(pp, "survey_data", None)
+                ]
+                if start_players:
+                    demo_obj = safe_json_loads(start_players[0].survey_data, {})
         except Exception:
             demo_obj = {}
         demo_cols = [demo_obj.get(k, "") for k in demo_keys]
