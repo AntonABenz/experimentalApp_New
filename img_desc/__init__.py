@@ -1129,16 +1129,28 @@ class Feedback(Page):
         mark_participant_complete_in_cohort(player)
 
 
+PROLIFIC_COMPLETE_BASE = "https://app.prolific.com/submissions/complete?cc="
+
 class FinalForProlific(Page):
     @staticmethod
     def is_displayed(player):
-        return player.session.config.get("for_prolific") and player.round_number == Constants.num_rounds
+        return (
+            player.session.config.get("for_prolific")
+            and player.round_number == Constants.num_rounds
+        )
 
     def get(self):
-        cc = self.player.session.vars.get("completion_code") or self.player.session.config.get("completion_code")
+        cc = (
+            self.player.session.vars.get("completion_code")
+            or self.player.session.config.get("completion_code")
+        )
+
         if not cc:
             return RedirectResponse(Constants.API_ERR_URL, status_code=302)
-        return RedirectResponse(STUBURL + str(cc), status_code=302)
+
+        url = PROLIFIC_COMPLETE_BASE + str(cc).strip()
+        logger.info(f"[FinalForProlific] redirecting to: {url}")
+        return RedirectResponse(url, status_code=302)
 
 
 # ----------------------------------------------------------------------------
