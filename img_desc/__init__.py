@@ -1432,7 +1432,7 @@ def custom_export(players):
             if not isinstance(item, dict):
                 continue
 
-            rnd = int(item.get("round_number", 0))
+            rnd = safe_int(item.get("round_number"), safe_int(getattr(it, "round_number", 0), 0))
             if rnd < 1 or rnd > Constants.num_rounds:
                 continue
 
