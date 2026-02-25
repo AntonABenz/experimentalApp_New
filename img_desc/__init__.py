@@ -11,7 +11,7 @@ logger = logging.getLogger("benzapp.img_desc")
 
 PRODUCER = "P"
 INTERPRETER = "I"
-
+BLOCK_FLAG = "blocked_due_to_return"
 
 class Constants(BaseConstants):
     name_in_url = "img_desc"
@@ -228,31 +228,31 @@ class CohortSlot(ExtraModel):
 
 def _root_subsession(obj):
     """
-    Accept Player/Subsession, and Session-like objects.
+    Return the round-1 Subsession for:
+      - Player
+      - Subsession
+      - Session
     """
     try:
-        if obj is None:
-            return None
-
-        # Player (has .subsession)
-        if hasattr(obj, "subsession") and getattr(obj, "subsession", None):
+        # Player → has .subsession
+        if hasattr(obj, "subsession"):
             return obj.subsession.in_round(1)
 
         # Subsession itself
         if hasattr(obj, "in_round"):
             return obj.in_round(1)
 
-        # Session in oTree typically has get_subsessions()
+        # Session → has get_subsessions()
         if hasattr(obj, "get_subsessions"):
             subs = obj.get_subsessions()
             if subs:
                 return subs[0].in_round(1)
 
     except Exception:
-        return None
+        pass
+
     return None
-
-
+            
 # ---- Schedule store ----
 def get_schedule_item(obj, participant_code: str, round_number: int):
     root = _root_subsession(obj)
@@ -274,12 +274,17 @@ def delete_schedule_for_participant(obj, participant_code: str):
     root = _root_subsession(obj)
     if not root:
         return
+
     items = ScheduleItem.filter(subsession=root, participant_code=participant_code)
+    count = len(items)
+
     for it in items:
-        try:
-            it.delete()
-        except Exception:
-            pass
+        it.delete()
+
+    logger.info(
+        f"delete_schedule_for_participant: deleted {count} schedule rows "
+        f"for participant={participant_code}"
+    )
 
 
 def ensure_schedule_built(player):
@@ -373,9 +378,14 @@ def assign_slot_if_needed(player):
     session = player.session
     root = _root_subsession(player)
     if not root:
-        p.vars["exp_target"] = 1
+        return 1, 1
+
+    # HARD BLOCK: once Prolific marks bad status, never reassign this participant
+    if p.vars.get(BLOCK_FLAG):
+        # local_slot 0 means "wait/blocked"; you can redirect them elsewhere via a gate if desired
+        p.vars["exp_target"] = 0
         p.vars["local_slot"] = 0
-        return 1, 0
+        return 0, 0
 
     # already assigned?
     existing = _participant_active_assignment(root, p.code)
@@ -423,14 +433,24 @@ def assign_slot_if_needed(player):
 
 def free_slot_for_participant(session, participant_code: str):
     """
-    Called when Prolific marks TIMED-OUT / RETURNED / REJECTED.
+    Called when Prolific marks a participant as TIMED-OUT/RETURNED/REJECTED.
     Frees slot so a replacement participant can take it.
     """
     root = _root_subsession(session)
     if not root:
+        logger.warning(f"free_slot_for_participant: no root subsession (participant={participant_code})")
         return
+
     rows = CohortSlot.filter(subsession=root, participant_code=participant_code, active=True)
+    if not rows:
+        logger.info(f"free_slot_for_participant: no active slot found (participant={participant_code})")
+        return
+
     for r in rows:
+        logger.info(
+            f"free_slot_for_participant: freeing exp={int(r.exp_num)} slot={int(r.slot)} "
+            f"participant={participant_code}"
+        )
         r.active = False
         r.completed = False
         try:
@@ -688,6 +708,7 @@ class ProlificStatusGate(Page):
     def get(self):
         # free cohort slot + delete schedule so replacement can take over
         try:
+            self.player.participant.vars[BLOCK_FLAG] = True
             free_slot_for_participant(self.player.session, self.player.participant.code)
             delete_schedule_for_participant(self.player.session, self.player.participant.code)
             reset_this_app_for_participant(self.player.participant)
@@ -701,7 +722,7 @@ class ProlificStatusGate(Page):
 # NEW: WAIT PAGE WHEN NO SLOT AVAILABLE (slot==0)
 # ----------------------------------------------------------------------------
 class WaitForSlot(Page):
-    template_name = "img_desc/WaitForPrevExperiment.html"
+    template_name = "img_desc/WaitForSlot.html"
 
     @staticmethod
     def is_displayed(player):
@@ -1015,13 +1036,16 @@ class WaitForPrevExperiment(Page):
     @staticmethod
     def is_displayed(player):
         # ensure slot assignment + schedule exist (safe on refresh)
-        assign_slot_if_needed(player)
+        exp_target, local_slot = assign_slot_if_needed(player)
+        if int(local_slot or 0) == 0:
+            return False
+        
         ensure_schedule_built(player)
 
-        exp_target = int(player.participant.vars.get("exp_target") or 1)
-        if exp_target <= 1:
+        # only relevant for exp > 1
+        if int(exp_target or 1) <= 1:
             return False
-
+        
         # hard gate: do not proceed until previous cohort is COMPLETE
         if not cohort_complete(player.session, exp_target - 1):
             player.participant.vars["needed_sentence_keys"] = 0
@@ -1216,7 +1240,10 @@ class Feedback(Page):
     @staticmethod
     def before_next_page(player, timeout_happened):
         mark_participant_completed_app(player.participant, Constants.name_in_url)
-        player.participant.save()
+        try:
+            player.participant.save()
+        except Exception:
+            pass
         mark_participant_complete_in_cohort(player)
 
 
