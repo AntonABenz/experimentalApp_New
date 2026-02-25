@@ -1,50 +1,51 @@
-# prolific_webhook.py
 import json
 import logging
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from otree.models import Participant
-
 from img_desc.utils import verify_prolific_webhook
 from img_desc import (
     reset_this_app_for_participant,
-    Constants as ImgDescConstants,
-    free_slot_for_participant,
     delete_schedule_for_participant,
+    free_slot_for_participant,
+    Constants,
 )
 
 logger = logging.getLogger("benzapp.prolific_webhook")
 
+BLOCK_FLAG = "blocked_due_to_return"
+
 
 def _find_participant_by_prolific_id(prolific_pid: str):
     """
-    Prefer a DB-level filter if Participant.vars is a JSONField.
-    Fallback to scanning a limited recent window.
+    Best-effort lookup. Primary: vars['prolific_id'].
+    Fallback: scan recent participants if needed (optional).
     """
     prolific_pid = (prolific_pid or "").strip()
     if not prolific_pid:
         return None
 
-    # Try JSONField contains lookup (works on Django JSONField/Postgres).
+    # Preferred: JSON vars contains
     try:
-        qs = Participant.objects.filter(vars__contains={"prolific_id": prolific_pid}).order_by("-id")
-        return qs.first()
+        qs = Participant.objects.filter(vars__contains={"prolific_id": prolific_pid})
+        if qs.exists():
+            return qs.order_by("-id").first()
     except Exception:
         pass
 
-    # Fallback: scan recent participants (bounded)
-    for p in Participant.objects.all().order_by("-id")[:5000]:
-        try:
+    # Fallback: scan recent participants (keeps it from silently failing)
+    try:
+        for p in Participant.objects.all().order_by("-id")[:3000]:
             if p.vars.get("prolific_id") == prolific_pid:
                 return p
-        except Exception:
-            continue
+    except Exception:
+        pass
+
     return None
 
 
 async def prolific_webhook_view(request: Request):
-    # Health check / endpoint presence
     if request.method == "GET":
         return PlainTextResponse("ok", status_code=200)
 
@@ -85,38 +86,48 @@ async def prolific_webhook_view(request: Request):
         return PlainTextResponse("Missing prolific_pid or status", status_code=400)
 
     participant = _find_participant_by_prolific_id(prolific_pid)
+
     if participant is None:
-        # Acknowledge Prolific but nothing to do.
+        logger.warning(
+            f"Webhook: participant_not_found prolific_pid={prolific_pid} "
+            f"status={status} study_id={study_id} submission_id={submission_id}"
+        )
         return JSONResponse({"ok": True, "note": "participant_not_found"})
 
-    # Store latest webhook info
+    # record status details
     participant.vars["prolific_submission_status"] = status
     participant.vars["prolific_submission_id"] = submission_id
     participant.vars["study_id_from_webhook"] = study_id
+
+    # HARD BLOCK for bad statuses to prevent zombie re-assignment
+    if status in Constants.BAD_PROLIFIC_STATUSES:
+        participant.vars[BLOCK_FLAG] = True
+
     participant.save()
 
-    # Only free slot/reset if participant did NOT complete img_desc.
-    # Otherwise a completed participant could later "return" and we'd incorrectly free a completed slot.
-    completed = bool(participant.vars.get(f"{ImgDescConstants.name_in_url}_completed", False))
+    # If they already completed the app, don't free their slot/schedule
+    already_completed = bool(participant.vars.get(f"{Constants.name_in_url}_completed", False))
+    if already_completed:
+        logger.info(
+            f"Webhook: bad_status={status} but participant already completed app; "
+            f"skip freeing slot. participant={participant.code} prolific_pid={prolific_pid}"
+        )
+        return JSONResponse({"ok": True, "note": "already_completed"})
 
-    if (status in ImgDescConstants.BAD_PROLIFIC_STATUSES) and (not completed):
+    # For bad statuses: free slot + delete schedule so replacement can join immediately
+    if status in Constants.BAD_PROLIFIC_STATUSES:
         try:
-            # Free their cohort slot and delete schedule immediately
-            # (IMPORTANT: do it here, because they might never revisit your oTree pages).
-            session = getattr(participant, "session", None)
-            if session is not None:
-                free_slot_for_participant(session, participant.code)
-                delete_schedule_for_participant(session, participant.code)
-
+            session = participant.session
+            free_slot_for_participant(session, participant.code)
+            delete_schedule_for_participant(session, participant.code)
             reset_this_app_for_participant(participant)
-            participant.save()
-
             logger.info(
-                f"Freed slot + reset for participant={participant.code} prolific_id={prolific_pid} status={status}"
+                f"Webhook: freed slot + deleted schedule for participant={participant.code} "
+                f"status={status} prolific_pid={prolific_pid}"
             )
         except Exception as e:
             logger.error(
-                f"Failed to free slot/reset participant {participant.code}: {e}",
+                f"Webhook: failed to free slot/delete schedule participant={participant.code}: {e}",
                 exc_info=True,
             )
 
