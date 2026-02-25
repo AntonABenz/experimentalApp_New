@@ -5,13 +5,46 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from otree.models import Participant
+
 from img_desc.utils import verify_prolific_webhook
-from img_desc import reset_this_app_for_participant
+from img_desc import (
+    reset_this_app_for_participant,
+    Constants as ImgDescConstants,
+    free_slot_for_participant,
+    delete_schedule_for_participant,
+)
 
 logger = logging.getLogger("benzapp.prolific_webhook")
 
 
+def _find_participant_by_prolific_id(prolific_pid: str):
+    """
+    Prefer a DB-level filter if Participant.vars is a JSONField.
+    Fallback to scanning a limited recent window.
+    """
+    prolific_pid = (prolific_pid or "").strip()
+    if not prolific_pid:
+        return None
+
+    # Try JSONField contains lookup (works on Django JSONField/Postgres).
+    try:
+        qs = Participant.objects.filter(vars__contains={"prolific_id": prolific_pid}).order_by("-id")
+        return qs.first()
+    except Exception:
+        pass
+
+    # Fallback: scan recent participants (bounded)
+    for p in Participant.objects.all().order_by("-id")[:5000]:
+        try:
+            if p.vars.get("prolific_id") == prolific_pid:
+                return p
+        except Exception:
+            continue
+    return None
+
+
 async def prolific_webhook_view(request: Request):
+    # Health check / endpoint presence
     if request.method == "GET":
         return PlainTextResponse("ok", status_code=200)
 
@@ -43,31 +76,48 @@ async def prolific_webhook_view(request: Request):
         or data.get("prolific_pid")
         or data.get("prolific_id")
         or ""
-    )
-    study_id = data.get("study_id") or ""
-    submission_id = data.get("submission_id") or data.get("id") or ""
+    ).strip()
+
+    study_id = (data.get("study_id") or "").strip()
+    submission_id = (data.get("submission_id") or data.get("id") or "").strip()
 
     if not prolific_pid or not status:
         return PlainTextResponse("Missing prolific_pid or status", status_code=400)
 
-    participant = None
-    for p in Participant.objects.all().order_by("-id")[:2000]:
-        if p.vars.get("prolific_id") == prolific_pid:
-            participant = p
-            break
-
+    participant = _find_participant_by_prolific_id(prolific_pid)
     if participant is None:
+        # Acknowledge Prolific but nothing to do.
         return JSONResponse({"ok": True, "note": "participant_not_found"})
 
+    # Store latest webhook info
     participant.vars["prolific_submission_status"] = status
     participant.vars["prolific_submission_id"] = submission_id
     participant.vars["study_id_from_webhook"] = study_id
     participant.save()
 
-    if status == "TIMED-OUT":
+    # Only free slot/reset if participant did NOT complete img_desc.
+    # Otherwise a completed participant could later "return" and we'd incorrectly free a completed slot.
+    completed = bool(participant.vars.get(f"{ImgDescConstants.name_in_url}_completed", False))
+
+    if (status in ImgDescConstants.BAD_PROLIFIC_STATUSES) and (not completed):
         try:
+            # Free their cohort slot and delete schedule immediately
+            # (IMPORTANT: do it here, because they might never revisit your oTree pages).
+            session = getattr(participant, "session", None)
+            if session is not None:
+                free_slot_for_participant(session, participant.code)
+                delete_schedule_for_participant(session, participant.code)
+
             reset_this_app_for_participant(participant)
+            participant.save()
+
+            logger.info(
+                f"Freed slot + reset for participant={participant.code} prolific_id={prolific_pid} status={status}"
+            )
         except Exception as e:
-            logger.error(f"Failed to reset participant {participant.code}: {e}", exc_info=True)
+            logger.error(
+                f"Failed to free slot/reset participant {participant.code}: {e}",
+                exc_info=True,
+            )
 
     return JSONResponse({"ok": True})
