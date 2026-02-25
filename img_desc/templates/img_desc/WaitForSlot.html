@@ -1,0 +1,44 @@
+{% extends "otree/Page.html" %}
+{% load otree static %}
+
+{% block title %}
+Please wait
+{% endblock %}
+
+{% block content %}
+<style>
+  .wait-wrap {
+    max-width: 700px;
+    margin: 40px auto;
+    padding: 25px;
+    border: 1px solid #e5e5e5;
+    border-radius: 10px;
+    background: #ffffff;
+    text-align: center;
+  }
+  .muted {
+    color: #666;
+  }
+</style>
+
+<div class="wait-wrap">
+  <h3>We’re preparing your session…</h3>
+
+  <p class="mt-3">
+    Please wait while we assign you to a group.
+  </p>
+
+  <p class="muted mt-3">
+    This page will update automatically.
+  </p>
+
+  <button type="button" class="btn btn-secondary mt-3" onclick="location.reload()">
+    Reload now
+  </button>
+</div>
+
+<script>
+  // Auto-refresh every 15 seconds
+  setTimeout(() => location.reload(), 15000);
+</script>
+{% endblock %}
