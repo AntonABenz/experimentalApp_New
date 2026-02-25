@@ -23,7 +23,7 @@ class Constants(BaseConstants):
     FALLBACK_URL = STUBURL + PLACEMENT_ERR
     API_ERR_URL = STUBURL + API_ERR
 
-    BAD_PROLIFIC_STATUSES = {"TIMED-OUT"}
+    BAD_PROLIFIC_STATUSES = {"TIMED-OUT", "RETURNED", "REJECTED"}
 
 
 # ----------------------------------------------------------------------------
@@ -38,11 +38,10 @@ class Group(BaseGroup):
 
 
 class Player(BasePlayer):
-    # no batch_history anywhere (DB-backed schedule instead)
     inner_role = models.StringField(blank=True)
     faulty = models.BooleanField(initial=False)
     feedback = models.LongStringField(label="", blank=True)
-
+    completed_experiment = models.BooleanField(initial=False)
     producer_decision = models.LongStringField(blank=True)
     interpreter_decision = models.LongStringField(blank=True)
 
@@ -70,6 +69,10 @@ class Player(BasePlayer):
             d = {}
         d.update(updates or {})
         item.data = json.dumps(d)
+        try:
+            item.save()  # IMPORTANT: persist ExtraModel update
+        except Exception:
+            pass
 
     def get_image_url(self):
         data = self.get_current_batch_data()
@@ -156,7 +159,7 @@ class Player(BasePlayer):
                         parts.append(str(suf).strip())
 
                 if len(sentence) > len(suffixes):
-                    for extra in sentence[len(suffixes):]:
+                    for extra in sentence[len(suffixes) :]:
                         extra_str = clean_str(extra)
                         if not extra_str:
                             extra_str = "None"
@@ -176,7 +179,6 @@ class Player(BasePlayer):
 class TrialRow(ExtraModel):
     """
     Persisted view of Excel rows (slim).
-    This avoids keeping the full Excel in session.vars (RAM).
     """
     subsession = models.Link(Subsession)  # anchor to round-1 subsession
     exp_num = models.IntegerField()
@@ -225,11 +227,30 @@ class CohortSlot(ExtraModel):
 
 
 def _root_subsession(obj):
+    """
+    Accept Player/Subsession, and Session-like objects.
+    """
     try:
-        ss = obj.subsession if hasattr(obj, "subsession") else obj
-        return ss.in_round(1)
+        if obj is None:
+            return None
+
+        # Player (has .subsession)
+        if hasattr(obj, "subsession") and getattr(obj, "subsession", None):
+            return obj.subsession.in_round(1)
+
+        # Subsession itself
+        if hasattr(obj, "in_round"):
+            return obj.in_round(1)
+
+        # Session in oTree typically has get_subsessions()
+        if hasattr(obj, "get_subsessions"):
+            subs = obj.get_subsessions()
+            if subs:
+                return subs[0].in_round(1)
+
     except Exception:
         return None
+    return None
 
 
 # ---- Schedule store ----
@@ -255,7 +276,10 @@ def delete_schedule_for_participant(obj, participant_code: str):
         return
     items = ScheduleItem.filter(subsession=root, participant_code=participant_code)
     for it in items:
-        it.delete()
+        try:
+            it.delete()
+        except Exception:
+            pass
 
 
 def ensure_schedule_built(player):
@@ -275,6 +299,10 @@ def set_sentence(obj, key: str, value: str):
     qs = SentenceStore.filter(subsession=root, key=key)
     if qs:
         qs[0].value = value
+        try:
+            qs[0].save()  # IMPORTANT
+        except Exception:
+            pass
     else:
         SentenceStore.create(subsession=root, key=key, value=value)
 
@@ -335,16 +363,19 @@ def _cohort_has_free_slot(session, exp_num: int) -> bool:
 
 def assign_slot_if_needed(player):
     """
-    Guarantees:
+    Guarantees (fixed):
       - Fill Exp 1 slots first.
       - Exp N only starts AFTER Exp N-1 is COMPLETE.
+      - If a cohort is FULL but NOT complete, new participants WAIT (slot=0).
       - Replacement participants can re-fill freed slots in earlier cohorts.
     """
     p = player.participant
     session = player.session
     root = _root_subsession(player)
     if not root:
-        return 1, 1
+        p.vars["exp_target"] = 1
+        p.vars["local_slot"] = 0
+        return 1, 0
 
     # already assigned?
     existing = _participant_active_assignment(root, p.code)
@@ -355,12 +386,14 @@ def assign_slot_if_needed(player):
 
     exp_num = 1
     while True:
-        # Do not start Exp>1 until previous exp is complete.
+        # Hard ordering: cannot start exp_num>1 until exp_num-1 is complete.
         if exp_num > 1 and not cohort_complete(session, exp_num - 1):
-            exp_num += 1
-            continue
+            # Wait for previous to complete (or for a slot to free there)
+            p.vars["exp_target"] = int(exp_num - 1)
+            p.vars["local_slot"] = 0
+            return int(exp_num - 1), 0
 
-        # if current exp has any free slot, allocate the lowest free slot
+        # If current exp has any free slot, allocate the lowest free slot
         if _cohort_has_free_slot(session, exp_num):
             csize = cohort_size(session)
             for s in range(1, csize + 1):
@@ -377,12 +410,20 @@ def assign_slot_if_needed(player):
                     p.vars["local_slot"] = int(s)
                     return int(exp_num), int(s)
 
+        # Cohort is full.
+        # If it's not complete yet => wait (do NOT skip ahead).
+        if not cohort_complete(session, exp_num):
+            p.vars["exp_target"] = int(exp_num)
+            p.vars["local_slot"] = 0
+            return int(exp_num), 0
+
+        # Full and complete => go to next exp
         exp_num += 1
 
 
 def free_slot_for_participant(session, participant_code: str):
     """
-    Called when Prolific marks TIMED-OUT.
+    Called when Prolific marks TIMED-OUT / RETURNED / REJECTED.
     Frees slot so a replacement participant can take it.
     """
     root = _root_subsession(session)
@@ -392,6 +433,10 @@ def free_slot_for_participant(session, participant_code: str):
     for r in rows:
         r.active = False
         r.completed = False
+        try:
+            r.save()
+        except Exception:
+            pass
 
 
 def mark_participant_complete_in_cohort(player):
@@ -401,6 +446,10 @@ def mark_participant_complete_in_cohort(player):
     rows = CohortSlot.filter(subsession=root, participant_code=player.participant.code, active=True)
     for r in rows:
         r.completed = True
+        try:
+            r.save()
+        except Exception:
+            pass
 
 
 # ----------------------------------------------------------------------------
@@ -593,7 +642,7 @@ def render_full_sentences_from_json(raw_sentences_json, prefix, suffixes):
                 parts.append(str(suf).strip())
 
         if len(pair) > len(suffixes):
-            for extra in pair[len(suffixes):]:
+            for extra in pair[len(suffixes) :]:
                 v = clean_str(extra) or "None"
                 parts.append(v)
 
@@ -625,11 +674,14 @@ def required_sentence_keys_for_participant(player) -> set:
 
 
 # ----------------------------------------------------------------------------
-# PROLIFIC GATE (TIMED-OUT)
+# PROLIFIC GATE (TIMED-OUT / RETURNED / REJECTED)
 # ----------------------------------------------------------------------------
 class ProlificStatusGate(Page):
     @staticmethod
     def is_displayed(player):
+        # don't retroactively gate completed participants
+        if participant_completed_app(player.participant, Constants.name_in_url):
+            return False
         status = clean_str(player.participant.vars.get("prolific_submission_status", ""))
         return status in Constants.BAD_PROLIFIC_STATUSES
 
@@ -637,11 +689,30 @@ class ProlificStatusGate(Page):
         # free cohort slot + delete schedule so replacement can take over
         try:
             free_slot_for_participant(self.player.session, self.player.participant.code)
-            delete_schedule_for_participant(self.player, self.player.participant.code)
+            delete_schedule_for_participant(self.player.session, self.player.participant.code)
             reset_this_app_for_participant(self.player.participant)
+            self.player.participant.save()
         except Exception:
             pass
         return RedirectResponse(Constants.FALLBACK_URL, status_code=302)
+
+
+# ----------------------------------------------------------------------------
+# NEW: WAIT PAGE WHEN NO SLOT AVAILABLE (slot==0)
+# ----------------------------------------------------------------------------
+class WaitForSlot(Page):
+    template_name = "img_desc/WaitForPrevExperiment.html"
+
+    @staticmethod
+    def is_displayed(player):
+        exp_target, local_slot = assign_slot_if_needed(player)
+        # If no slot allocated yet, wait here (replacement/return frees slots)
+        return int(local_slot or 0) == 0
+
+    @staticmethod
+    def vars_for_template(player):
+        # reuse your template variables; keep them at 0
+        return dict(needed=0, missing=0)
 
 
 # ----------------------------------------------------------------------------
@@ -664,6 +735,7 @@ def creating_session(subsession: Subsession):
         except ImportError:
             import sys
             from pathlib import Path
+
             reading_xls_path = Path(__file__).parent.parent / "reading_xls"
             sys.path.insert(0, str(reading_xls_path))
             from get_data import get_data
@@ -672,7 +744,11 @@ def creating_session(subsession: Subsession):
         raw_data = excel_payload.get("data")
         settings = excel_payload.get("settings") or {}
 
-        rows = raw_data.to_dict(orient="records") if hasattr(raw_data, "to_dict") else list(raw_data or [])
+        rows = (
+            raw_data.to_dict(orient="records")
+            if hasattr(raw_data, "to_dict")
+            else list(raw_data or [])
+        )
 
         # Normalize settings into session.vars (small only)
         clean_settings = {}
@@ -687,7 +763,11 @@ def creating_session(subsession: Subsession):
         session.vars["interpreter_title"] = clean_settings.get("interpreter_title") or "Buy medals:"
         session.vars["caseflag"] = _truthy(clean_settings.get("caseflag"))
 
-        session.vars["instructions_url"] = session.config.get("instructions_url") or clean_settings.get("instructions_url") or "https://google.com"
+        session.vars["instructions_url"] = (
+            session.config.get("instructions_url")
+            or clean_settings.get("instructions_url")
+            or "https://google.com"
+        )
         session.vars["introduction_text"] = session.config.get("introduction_text") or ""
         session.vars["doc_link"] = session.config.get("doc_link") or ""
 
@@ -744,7 +824,11 @@ def creating_session(subsession: Subsession):
                 condition=clean_str(r.get("Condition")),
                 item_nr=clean_str(r.get("Item.Nr")),
                 item=clean_str(r.get("Item")),
-                producer_sentences=(extract_sentences_from_row(r) if safe_int(r.get("Producer"), 0) == 0 else "[]"),
+                producer_sentences=(
+                    extract_sentences_from_row(r)
+                    if safe_int(r.get("Producer"), 0) == 0
+                    else "[]"
+                ),
                 excel_row_index0=int(idx0),
                 excel_row_number_guess=int(rrn),
             )
@@ -763,12 +847,15 @@ def build_schedule_for_participant(player):
     """
     Create 80 ScheduleItem rows (DB) for this participant.
     Guaranteed Exp ordering via assign_slot_if_needed().
+    If no slot is available (slot==0), do nothing; they will wait.
     """
     session = player.session
     p = player.participant
     pcode = p.code
 
     exp_target, local_slot = assign_slot_if_needed(player)
+    if int(local_slot or 0) == 0:
+        return
 
     root = _root_subsession(player)
     if not root:
@@ -793,7 +880,6 @@ def build_schedule_for_participant(player):
         return
 
     # snapshot cohort slot mapping exp_target -> participant_code
-    # (partners may be empty if partner hasn't arrived yet; that's fine)
     slots = CohortSlot.filter(subsession=root, exp_num=int(exp_target), active=True)
     slot_to_code = {int(r.slot): r.participant_code for r in slots}
 
@@ -975,7 +1061,11 @@ class Q(Page):
         if player.round_number > Constants.num_rounds:
             return False
 
-        assign_slot_if_needed(player)
+        exp_target, local_slot = assign_slot_if_needed(player)
+        if int(local_slot or 0) == 0:
+            # WaitForSlot will show instead
+            return False
+
         ensure_schedule_built(player)
 
         data = player.get_current_batch_data()
@@ -1126,10 +1216,12 @@ class Feedback(Page):
     @staticmethod
     def before_next_page(player, timeout_happened):
         mark_participant_completed_app(player.participant, Constants.name_in_url)
+        player.participant.save()
         mark_participant_complete_in_cohort(player)
 
 
 PROLIFIC_COMPLETE_BASE = "https://app.prolific.com/submissions/complete?cc="
+
 
 class FinalForProlific(Page):
     @staticmethod
@@ -1151,6 +1243,11 @@ class FinalForProlific(Page):
         url = PROLIFIC_COMPLETE_BASE + str(cc).strip()
         logger.info(f"[FinalForProlific] redirecting to: {url}")
         return RedirectResponse(url, status_code=302)
+
+    @staticmethod
+    def before_next_page(player, timeout_happened):
+        if player.round_number == Constants.num_rounds:
+            player.in_round(1).completed_experiment = True
 
 
 # ----------------------------------------------------------------------------
@@ -1248,11 +1345,16 @@ def custom_export(players):
         "condition",
         "item_nr",
         "image",
-        "Sentence_1_1", "Sentence_1_2",
-        "Sentence_2_1", "Sentence_2_2",
-        "Sentence_3_1", "Sentence_3_2",
-        "Sentence_4_1", "Sentence_4_2",
-        "Sentence_5_1", "Sentence_5_2",
+        "Sentence_1_1",
+        "Sentence_1_2",
+        "Sentence_2_1",
+        "Sentence_2_2",
+        "Sentence_3_1",
+        "Sentence_3_2",
+        "Sentence_4_1",
+        "Sentence_4_2",
+        "Sentence_5_1",
+        "Sentence_5_2",
         *choice_headers,
         "rewards_raw",
         "seconds",
@@ -1296,13 +1398,10 @@ def custom_export(players):
 
         demo_obj = {}
         try:
-            # 1) preferred: participant.vars["demographics"] already as JSON/dict
             raw_demo = participant.vars.get("demographics")
             if raw_demo:
                 demo_obj = safe_json_loads(raw_demo, {})
             else:
-                # 2) fallback: look for a "survey" player in earlier apps
-                #    (adjust attribute name if yours isn't survey_data)
                 start_players = [
                     pp for pp in participant.get_players()
                     if hasattr(pp, "survey_data") and getattr(pp, "survey_data", None)
@@ -1324,7 +1423,6 @@ def custom_export(players):
 
         # schedule from DB
         sched_items = ScheduleItem.filter(subsession=root, participant_code=participant_code)
-        # sort by round_number
         sched_items.sort(key=lambda it: int(getattr(it, "round_number", 0) or 0))
 
         obj_for_db = bucket_players[0]
@@ -1395,6 +1493,7 @@ def custom_export(players):
 
 page_sequence = [
     ProlificStatusGate,
+    WaitForSlot,          
     FaultyCatcher,
     WaitForPrevExperiment,
     Q,
