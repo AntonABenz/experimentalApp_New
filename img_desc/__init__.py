@@ -5,13 +5,16 @@ import logging
 import time
 import re
 from starlette.responses import RedirectResponse
+
 from .utils import STUBURL
+from utils.prolific import maybe_expand_slots  # repo-root utils/
 
 logger = logging.getLogger("benzapp.img_desc")
 
 PRODUCER = "P"
 INTERPRETER = "I"
 BLOCK_FLAG = "blocked_due_to_return"
+
 
 class Constants(BaseConstants):
     name_in_url = "img_desc"
@@ -70,7 +73,7 @@ class Player(BasePlayer):
         d.update(updates or {})
         item.data = json.dumps(d)
         try:
-            item.save() 
+            item.save()
         except Exception:
             pass
 
@@ -226,6 +229,16 @@ class CohortSlot(ExtraModel):
     completed = models.BooleanField(initial=False)
 
 
+class ProlificExpansionMarker(ExtraModel):
+    """
+    DB marker to ensure Prolific expansion is attempted only once per (session, exp_num).
+    Best-effort idempotency across refreshes and multi-worker deploys.
+    """
+    subsession = models.Link(Subsession)  # anchor to round-1 subsession
+    exp_num = models.IntegerField()
+    created_ts = models.FloatField(initial=0)
+
+
 def _root_subsession(obj):
     """
     Return the round-1 Subsession for:
@@ -252,7 +265,8 @@ def _root_subsession(obj):
         pass
 
     return None
-            
+
+
 # ---- Schedule store ----
 def get_schedule_item(obj, participant_code: str, round_number: int):
     root = _root_subsession(obj)
@@ -382,7 +396,7 @@ def assign_slot_if_needed(player):
 
     # HARD BLOCK: once Prolific marks bad status, never reassign this participant
     if p.vars.get(BLOCK_FLAG):
-        # local_slot 0 means "wait/blocked"; you can redirect them elsewhere via a gate if desired
+        # local_slot 0 means "wait/blocked"
         p.vars["exp_target"] = 0
         p.vars["local_slot"] = 0
         return 0, 0
@@ -398,7 +412,6 @@ def assign_slot_if_needed(player):
     while True:
         # Hard ordering: cannot start exp_num>1 until exp_num-1 is complete.
         if exp_num > 1 and not cohort_complete(session, exp_num - 1):
-            # Wait for previous to complete (or for a slot to free there)
             p.vars["exp_target"] = int(exp_num - 1)
             p.vars["local_slot"] = 0
             return int(exp_num - 1), 0
@@ -470,6 +483,70 @@ def mark_participant_complete_in_cohort(player):
             r.save()
         except Exception:
             pass
+
+
+# ---- Prolific expansion (batch completion) ----
+def _current_exp_num_for_participant(player) -> int:
+    root = _root_subsession(player)
+    if not root:
+        return safe_int(player.participant.vars.get("exp_target"), 1) or 1
+
+    row = _participant_active_assignment(root, player.participant.code)
+    if row:
+        return int(getattr(row, "exp_num", 1) or 1)
+
+    return safe_int(player.participant.vars.get("exp_target"), 1) or 1
+
+
+def _expansion_already_marked(player, exp_num: int) -> bool:
+    root = _root_subsession(player)
+    if not root:
+        return False
+    qs = ProlificExpansionMarker.filter(subsession=root, exp_num=int(exp_num))
+    return bool(qs)
+
+
+def _mark_expansion(player, exp_num: int) -> None:
+    root = _root_subsession(player)
+    if not root:
+        return
+    if _expansion_already_marked(player, exp_num):
+        return
+    try:
+        ProlificExpansionMarker.create(
+            subsession=root,
+            exp_num=int(exp_num),
+            created_ts=time.time(),
+        )
+    except Exception:
+        pass
+
+
+def maybe_expand_prolific_when_cohort_complete(player) -> None:
+    session = player.session
+    if not session or not session.config.get("for_prolific"):
+        return
+    if not session.config.get("expand_slots"):
+        return
+
+    exp_num = _current_exp_num_for_participant(player)
+    if exp_num <= 0:
+        return
+
+    # expand only when THIS exp_num cohort is complete
+    if not cohort_complete(session, exp_num):
+        return
+
+    # idempotency guard
+    if _expansion_already_marked(player, exp_num):
+        return
+
+    # mark first to avoid refresh-trigger duplicates; then expand best-effort
+    _mark_expansion(player, exp_num)
+    try:
+        maybe_expand_slots(enabled=True, batch_done=True)
+    except Exception:
+        logger.exception("maybe_expand_slots raised unexpectedly")
 
 
 # ----------------------------------------------------------------------------
@@ -732,7 +809,6 @@ class WaitForSlot(Page):
 
     @staticmethod
     def vars_for_template(player):
-        # reuse your template variables; keep them at 0
         return dict(needed=0, missing=0)
 
 
@@ -1039,13 +1115,13 @@ class WaitForPrevExperiment(Page):
         exp_target, local_slot = assign_slot_if_needed(player)
         if int(local_slot or 0) == 0:
             return False
-        
+
         ensure_schedule_built(player)
 
         # only relevant for exp > 1
         if int(exp_target or 1) <= 1:
             return False
-        
+
         # hard gate: do not proceed until previous cohort is COMPLETE
         if not cohort_complete(player.session, exp_target - 1):
             player.participant.vars["needed_sentence_keys"] = 0
@@ -1196,11 +1272,19 @@ class Q(Page):
                 for d0 in parsed:
                     if not isinstance(d0, dict):
                         continue
-                    opt = d0.get("option") or d0.get("choice") or d0.get("label") or d0.get("text") or d0.get("name")
+                    opt = (
+                        d0.get("option")
+                        or d0.get("choice")
+                        or d0.get("label")
+                        or d0.get("text")
+                        or d0.get("name")
+                    )
                     if opt is None:
                         continue
                     opt = str(opt).strip()
-                    by_label[opt] = normalize_yesno_to_01(d0.get("answer", d0.get("value", d0.get("selected"))))
+                    by_label[opt] = normalize_yesno_to_01(
+                        d0.get("answer", d0.get("value", d0.get("selected")))
+                    )
 
                 if by_label:
                     for opt in choices:
@@ -1212,7 +1296,12 @@ class Q(Page):
                             continue
                         d0 = parsed[i] if isinstance(parsed[i], dict) else {}
                         labeled.append(
-                            {"option": opt, "answer": normalize_yesno_to_01(d0.get("answer", d0.get("value", d0.get("selected"))))}
+                            {
+                                "option": opt,
+                                "answer": normalize_yesno_to_01(
+                                    d0.get("answer", d0.get("value", d0.get("selected")))
+                                ),
+                            }
                         )
             else:
                 s = "" if raw is None else str(raw).strip()
@@ -1244,7 +1333,12 @@ class Feedback(Page):
             player.participant.save()
         except Exception:
             pass
+
+        # mark cohort completion in DB
         mark_participant_complete_in_cohort(player)
+
+        # if cohort now complete, expand Prolific places (once per exp_num)
+        maybe_expand_prolific_when_cohort_complete(player)
 
 
 PROLIFIC_COMPLETE_BASE = "https://app.prolific.com/submissions/complete?cc="
@@ -1525,7 +1619,7 @@ def custom_export(players):
 
 page_sequence = [
     ProlificStatusGate,
-    WaitForSlot,          
+    WaitForSlot,
     FaultyCatcher,
     WaitForPrevExperiment,
     Q,
