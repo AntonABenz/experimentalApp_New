@@ -1422,7 +1422,12 @@ def custom_export(players):
                 feedback_str = getattr(pp, "feedback", "")
 
         # schedule from DB
-        sched_items = ScheduleItem.filter(participant_code=participant_code)
+        sub1 = bucket_players[0].subsession.in_round(1)
+
+        sched_items = ScheduleItem.filter(
+            subsession=sub1,
+            participant_code=participant_code,
+        )
         sched_items.sort(key=lambda it: int(getattr(it, "round_number", 0) or 0))
 
         obj_for_db = bucket_players[0]
