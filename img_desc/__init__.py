@@ -70,7 +70,7 @@ class Player(BasePlayer):
         d.update(updates or {})
         item.data = json.dumps(d)
         try:
-            item.save()  # IMPORTANT: persist ExtraModel update
+            item.save() 
         except Exception:
             pass
 
@@ -1422,7 +1422,7 @@ def custom_export(players):
                 feedback_str = getattr(pp, "feedback", "")
 
         # schedule from DB
-        sched_items = ScheduleItem.filter(subsession=root, participant_code=participant_code)
+        sched_items = ScheduleItem.filter(participant_code=participant_code)
         sched_items.sort(key=lambda it: int(getattr(it, "round_number", 0) or 0))
 
         obj_for_db = bucket_players[0]
