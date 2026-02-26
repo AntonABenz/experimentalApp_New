@@ -51,32 +51,16 @@ def _parse_querystring(qs: str) -> dict:
     return out
 
 
-def _store_prolific_from_request(player) -> None:
+def _extract_prolific_params(player) -> tuple[str, str, str]:
     """
-    REQUIRED INVARIANT:
-    Persist Prolific identifiers immediately on first page load.
-
-    Tries, in priority order:
-      1) request.query_params (best)
-      2) participant.label (if participant_label is set by oTree)
-      3) parse participant._url_i_should_be_on() query string (fallback)
-
-    Stores PID in:
-      - participant.vars["prolific_id"]
-      - participant.prolific_id (Participant field, since you declared it)
-      - participant.label (best for webhook lookup)
+    Extract (pid, study_id, session_id) from request query params if available,
+    otherwise fall back to parsing participant URL.
     """
-    p = player.participant
-
-    # Already stored? nothing to do
-    if p.vars.get("prolific_id") and (getattr(p, "prolific_id", None) or "").strip():
-        return
-
     pid = ""
     study_id = ""
     sess_id = ""
 
-    # 1) Starlette request query params (most reliable)
+    # 1) Starlette request query params (best, if available)
     try:
         req = getattr(player, "request", None)
         if req is not None:
@@ -88,18 +72,10 @@ def _store_prolific_from_request(player) -> None:
     except Exception:
         pass
 
-    # 2) participant.label (if Prolific PID mapped to participant_label)
+    # 2) Fallback: parse URL if it still has query params
     if not pid:
         try:
-            if getattr(p, "label", None):
-                pid = str(p.label).strip()
-        except Exception:
-            pass
-
-    # 3) Fallback: parse URL if it still has query params
-    if not pid:
-        try:
-            url = p._url_i_should_be_on()
+            url = player.participant._url_i_should_be_on()
             if "?" in url:
                 params = _parse_querystring(url.split("?", 1)[1])
                 pid = (params.get("PROLIFIC_PID") or params.get("prolific_pid") or params.get("prolific_id") or "").strip()
@@ -108,17 +84,24 @@ def _store_prolific_from_request(player) -> None:
         except Exception:
             pass
 
+    return pid, study_id, sess_id
+
+
+def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id: str = "") -> None:
+    """
+    Store Prolific identifiers robustly:
+      - participant.vars["prolific_id"]
+      - participant.label (easy lookup in admin / exports)
+      - (optional) also store study/session IDs in vars
+    """
+    p = player.participant
+
+    pid = clean_str(pid)
+    study_id = clean_str(study_id)
+    sess_id = clean_str(sess_id)
+
     if pid:
-        # Store in vars (your webhook currently checks vars)
         p.vars["prolific_id"] = pid
-
-        # Store in Participant field (you declared this in PARTICIPANT_FIELDS)
-        try:
-            p.prolific_id = pid
-        except Exception:
-            pass
-
-        # Store in label as well (very robust lookup strategy)
         try:
             p.label = pid
         except Exception:
@@ -126,17 +109,9 @@ def _store_prolific_from_request(player) -> None:
 
     if study_id:
         p.vars["study_id"] = study_id
-        try:
-            p.study_id = study_id
-        except Exception:
-            pass
 
     if sess_id:
         p.vars["prolific_session_id"] = sess_id
-        try:
-            p.prolific_session_id = sess_id
-        except Exception:
-            pass
 
     try:
         p.save()
@@ -153,10 +128,6 @@ def _store_prolific_from_request(player) -> None:
 
 
 def build_image_url(player, filename: str) -> str:
-    """
-    Constructs the full S3 URL for a practice image.
-    Assumes practice images are under {s3_base}/practice/{filename}.{ext}
-    """
     filename = clean_str(filename)
     if not filename:
         return ""
@@ -175,9 +146,6 @@ def build_image_url(player, filename: str) -> str:
 
 
 def _get_right_answers_list(practice_dict: dict) -> list[str]:
-    """
-    Reads right_answer_1, right_answer_2... into a list of strings.
-    """
     keys = [k for k in (practice_dict or {}).keys() if str(k).lower().startswith("right_answer_")]
 
     def extract_num(k):
@@ -195,11 +163,6 @@ def _get_right_answers_list(practice_dict: dict) -> list[str]:
 
 
 def _parse_kv_sheet(rows: list[dict]) -> dict:
-    """
-    Practice tabs are key/value sheets:
-      name | value | comment
-    Convert to dict {name: value}
-    """
     out = {}
     for r in rows or []:
         name = clean_str(r.get("name") or r.get("Name"))
@@ -211,10 +174,6 @@ def _parse_kv_sheet(rows: list[dict]) -> dict:
 
 
 def _find_practice_tab(practices_payload: dict, practice_id: int):
-    """
-    Accept many tab naming styles:
-      practice_5, Practice_5, PRACTICE_5, practice5, Practice5
-    """
     if not isinstance(practices_payload, dict):
         return None
 
@@ -256,6 +215,7 @@ class Group(BaseGroup):
 
 
 class Player(BasePlayer):
+    prolific_id = models.StringField(blank=True)  # <-- ADDED
     survey_data = models.LongStringField(blank=True)
     practice_response = models.LongStringField(blank=True)
 
@@ -276,7 +236,6 @@ def creating_session(subsession: BaseSubsession):
     settings = payload.get("settings", {}) or {}
     session.vars["sheet_settings"] = settings
 
-    # Globals used across practice templates
     session.vars["allowed_values"] = settings.get("allowed_values", []) or []
     session.vars["allowed_regex"] = settings.get("allowed_regex", []) or []
     session.vars["suffixes"] = settings.get("suffixes", ["solve/d", "exercises"]) or ["solve/d", "exercises"]
@@ -284,7 +243,6 @@ def creating_session(subsession: BaseSubsession):
     session.vars["interpreter_title"] = settings.get("interpreter_title", "Interpretation") or "Interpretation"
     session.vars["EndOfIntroText"] = settings.get("EndOfIntroText", "") or ""
 
-    # S3 base + extension
     raw_s3 = clean_str(settings.get("s3path") or settings.get("s3path_base") or "")
     if "console.aws.amazon.com" in raw_s3 and "buckets/" in raw_s3:
         try:
@@ -296,17 +254,14 @@ def creating_session(subsession: BaseSubsession):
     session.vars["s3path_base"] = raw_s3
     session.vars["extension"] = clean_str(settings.get("extension", "png")) or "png"
 
-    # Practice settings: build Practice1..Practice7
     practice_settings = {}
 
-    # Case A: get_data embedded PracticeX dicts inside settings
     for k, v in settings.items():
         if str(k).startswith("Practice") and isinstance(v, dict):
             p = v.copy()
             p["right_answer"] = _get_right_answers_list(p)
             practice_settings[str(k)] = p
 
-    # Case B: get_data provides separate practice tabs (payload["practices"])
     practices_payload = payload.get("practices")
     if isinstance(practices_payload, dict):
         for pid in range(1, 8):
@@ -335,19 +290,39 @@ class _BasePage(Page):
 
 class CaptureProlific(_BasePage):
     """
-    MUST be first in page_sequence.
-    Ensures Prolific PID exists even if participant quits immediately.
+    First page: capture Prolific PID early for logging/dropout tracking.
+    - Prefills from URL params if available.
+    - Saves typed input to Player.prolific_id.
+    - Mirrors to participant.vars and participant.label for robust lookup.
     """
-    @staticmethod
-    def is_displayed(player):
-        # only once
-        return player.round_number == 1
+    form_model = "player"
+    form_fields = ["prolific_id"]
 
     @staticmethod
-    def vars_for_template(player):
-        if player.session.config.get("for_prolific"):
-            _store_prolific_from_request(player)
+    def get_form_initial(player: Player):
+        # Prefill from URL if possible (only if empty)
+        if not clean_str(player.prolific_id) and player.session.config.get("for_prolific"):
+            pid, study_id, sess_id = _extract_prolific_params(player)
+            if pid:
+                return dict(prolific_id=pid)
         return {}
+
+    @staticmethod
+    def vars_for_template(player: Player):
+        # Optional: store Prolific params immediately on first GET (even before submit)
+        if player.session.config.get("for_prolific"):
+            pid, study_id, sess_id = _extract_prolific_params(player)
+            if pid:
+                _store_prolific_on_participant(player, pid, study_id, sess_id)
+        return {}
+
+    @staticmethod
+    def before_next_page(player: Player, timeout_happened):
+        # After submit: store the final value they provided
+        pid = clean_str(player.prolific_id)
+        if pid:
+            # Keep vars/label synced to the entered PID
+            _store_prolific_on_participant(player, pid)
 
 
 class _PracticePage(_BasePage):
@@ -365,7 +340,6 @@ class _PracticePage(_BasePage):
     def _settings(cls, player: Player):
         key = f"Practice{cls.practice_id}"
         s = (player.session.vars.get("practice_settings") or {}).get(key, {}).copy()
-
         s["full_image_path"] = build_image_url(player, s.get("image", ""))
 
         if "required_rows" not in s:
@@ -441,7 +415,7 @@ class EndOfIntro(_BasePage):
 
 
 page_sequence = [
-    CaptureProlific,   # <-- NEW, must be first
+    CaptureProlific,
     Consent,
     Demographics,
     Instructions,
