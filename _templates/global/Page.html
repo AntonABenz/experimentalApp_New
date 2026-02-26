@@ -2,57 +2,22 @@
 {% load i18n %}
 {% load otree static %}
 
-{% block global_styles %}
-{% endblock %}
-
-{% block global_scripts %}
-{% endblock %}
+{% block global_styles %}{% endblock %}
+{% block global_scripts %}{% endblock %}
 
 {% block body_main %}
-
-{% block progress %}
-
-{# Always include a safe modal stub. The included file can decide to show/hide. #}
-{% include "global/InstructionsModal.html" %}
 
 <nav class="navbar navbar-light bg-light d-flex fixed-top flex-nowrap flex-column">
 
   <div class="d-flex flex-nowrap" style="height:30px;width:100%;margin-top:0px">
-    <div class="progress" style="height:30px;width:100%;margin-top:0px">
-      <div class="progress-bar"
-           role="progressbar"
-           style="width: {{ progress }}%"
-           aria-valuenow="{{ progress }}"
-           aria-valuemin="0"
-           aria-valuemax="100">
-        <b>{{ progress }}%</b>
-      </div>
-    </div>
-
-    {# If the included modal defines a button, it will appear there.
-       We do NOT reference any optional vars here to avoid crashes. #}
+    {# Progress bar removed because 'progress' is not guaranteed to exist in all contexts #}
   </div>
 
   <style>
-    #upper { display: flex; width: 100%; }
     .navbar { padding-top: 2px; padding-bottom: 3px; }
-    .navbar-nav { width: 100%; justify-content: space-between; }
-    .my-navbar { flex-basis: 100%; }
-    .nav-item.active { background: yellow }
-    .nav-link { padding: 0 !important; padding-top: 0 !important; padding-bottom: 0 !important; }
-    #downer { min-width: 500px; }
-    .nav-item {
-      padding: 0 !important;
-      flex-grow: 1;
-      text-align: center;
-      box-shadow: 0 .5rem 1rem rgba(0, 0, 0, .15);
-      margin: 0 5px;
-    }
   </style>
 
 </nav>
-
-{% endblock %}
 
 <div class="otree-body container mt-5" style="margin-top:80px!important;">
   <h2 class="otree-title page-header">{% block title %}{% endblock %}</h2>
