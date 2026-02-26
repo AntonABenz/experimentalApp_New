@@ -8,15 +8,13 @@
 {% block body_main %}
 
 <nav class="navbar navbar-light bg-light d-flex fixed-top flex-nowrap flex-column">
-
   <div class="d-flex flex-nowrap" style="height:30px;width:100%;margin-top:0px">
-    {# Progress bar removed because 'progress' is not guaranteed to exist in all contexts #}
+    {# progress bar removed #}
   </div>
 
   <style>
     .navbar { padding-top: 2px; padding-bottom: 3px; }
   </style>
-
 </nav>
 
 <div class="otree-body container mt-5" style="margin-top:80px!important;">
@@ -38,8 +36,9 @@
   {% endif %}
 
   <form class="otree-form" method="post" role="form" id="form" autocomplete="off">
-    {% csrf_token %}
-    <div class="_otree-content">{% block content %}{% endblock %}</div>
+    <div class="_otree-content">
+      {% block content %}{% endblock %}
+    </div>
   </form>
 
   <br />
