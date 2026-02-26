@@ -52,38 +52,16 @@ def _parse_querystring(qs: str) -> dict:
 
 
 def _extract_prolific_params(player) -> tuple[str, str, str]:
-    """
-    Extract (pid, study_id, session_id) from request query params if available,
-    otherwise fall back to parsing participant URL.
-    """
-    pid = ""
-    study_id = ""
-    sess_id = ""
-
-    # 1) request.query_params (best, if available)
+    pid = study_id = sess_id = ""
     try:
-        req = getattr(player, "request", None)
-        if req is not None:
-            qp = getattr(req, "query_params", None)
-            if qp is not None:
-                pid = (qp.get("PROLIFIC_PID") or qp.get("prolific_pid") or "").strip()
-                study_id = (qp.get("STUDY_ID") or qp.get("study_id") or "").strip()
-                sess_id = (qp.get("SESSION_ID") or qp.get("session_id") or "").strip()
+        url = player.participant._url_i_should_be_on()
+        if "?" in url:
+            params = _parse_querystring(url.split("?", 1)[1])
+            pid = (params.get("PROLIFIC_PID") or params.get("prolific_pid") or "").strip()
+            study_id = (params.get("STUDY_ID") or params.get("study_id") or "").strip()
+            sess_id = (params.get("SESSION_ID") or params.get("session_id") or "").strip()
     except Exception:
         pass
-
-    # 2) fallback: parse participant URL (if it still contains query params)
-    if not pid:
-        try:
-            url = player.participant._url_i_should_be_on()
-            if "?" in url:
-                params = _parse_querystring(url.split("?", 1)[1])
-                pid = (params.get("PROLIFIC_PID") or params.get("prolific_pid") or "").strip()
-                study_id = (params.get("STUDY_ID") or params.get("study_id") or "").strip()
-                sess_id = (params.get("SESSION_ID") or params.get("session_id") or "").strip()
-        except Exception:
-            pass
-
     return pid, study_id, sess_id
 
 
@@ -309,34 +287,25 @@ class _BasePage(Page):
     pass
 
 
-class CaptureProlific(_BasePage):
-    """
-    OPTION 2 (Recommended UX):
-    - Captures Prolific PID from URL query parameters on GET.
-    - Immediately auto-advances to the next page (no button, no input).
-    - No DB schema changes (store in participant.vars / participant.label only).
-    """
-    template_name = "start/CaptureProlific.html"
-
+class _ProlificCaptureMixin:
     @staticmethod
-    def is_displayed(player):
-        return player.round_number == 1
-
-    @staticmethod
-    def vars_for_template(player):
+    def _capture(player):
         if player.session.config.get("for_prolific"):
             pid, study_id, sess_id = _extract_prolific_params(player)
             if pid:
                 _store_prolific_on_participant(player, pid, study_id, sess_id)
+
+    @staticmethod
+    def vars_for_template(player):
+        # runs on GET, so it captures immediately without needing any button/POST
+        _ProlificCaptureMixin._capture(player)
         return {}
 
     @staticmethod
     def before_next_page(player, timeout_happened):
-        # Retry just in case
+        # safety retry
         if player.session.config.get("for_prolific") and not player.participant.vars.get("prolific_id"):
-            pid, study_id, sess_id = _extract_prolific_params(player)
-            if pid:
-                _store_prolific_on_participant(player, pid, study_id, sess_id)
+            _ProlificCaptureMixin._capture(player)
 
 
 class _PracticePage(_BasePage):
@@ -376,8 +345,8 @@ class _PracticePage(_BasePage):
         )
 
 
-class Consent(_BasePage):
-    pass
+class Consent(_ProlificCaptureMixin, _BasePage):
+    template_name = "start/Consent.html"
 
 
 class Demographics(_BasePage):
@@ -433,7 +402,6 @@ class EndOfIntro(_BasePage):
 
 
 page_sequence = [
-    CaptureProlific,  
     Consent,
     Demographics,
     Instructions,
