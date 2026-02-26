@@ -388,8 +388,9 @@ class Demographics(_BasePage):
     form_fields = ["survey_data"]
 
 
-class Instructions(_BasePage):
-    pass
+class Instructions(Page):
+    show_instructions = True
+    instructions_path = "start/Instructions.html"
 
 
 class Practice1(_PracticePage):
