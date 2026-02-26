@@ -92,7 +92,7 @@ def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id
     Store Prolific identifiers robustly WITHOUT adding DB fields.
     Stores into:
       - participant.vars["prolific_id"]
-      - participant.label  (very handy for admin lookup & exports)
+      - participant.label  (handy for admin lookup & exports)
       - participant.vars["study_id"]
       - participant.vars["prolific_session_id"]
     """
@@ -115,7 +115,6 @@ def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id
     if sess_id:
         p.vars["prolific_session_id"] = sess_id
 
-    # save best-effort
     try:
         p.save()
     except Exception:
@@ -153,9 +152,7 @@ def build_image_url(player, filename: str) -> str:
 
 
 def _get_right_answers_list(practice_dict: dict) -> list[str]:
-    """
-    Reads right_answer_1, right_answer_2... into a list of strings.
-    """
+    """Reads right_answer_1, right_answer_2... into a list of strings."""
     keys = [k for k in (practice_dict or {}).keys() if str(k).lower().startswith("right_answer_")]
 
     def extract_num(k):
@@ -234,7 +231,7 @@ class Group(BaseGroup):
 
 
 class Player(BasePlayer):
-    # IMPORTANT: NO prolific_id field here (Option C avoids DB schema changes)
+    # IMPORTANT: NO prolific_id field here (Option 2 avoids DB schema changes)
     survey_data = models.LongStringField(blank=True)
     practice_response = models.LongStringField(blank=True)
 
@@ -314,11 +311,12 @@ class _BasePage(Page):
 
 class CaptureProlific(_BasePage):
     """
-    - Automatically capture Prolific PID from URL query parameters.
-    - Store immediately so early dropouts are logged.
-    - No typed input.
-    - No DB schema changes (store in participant.vars and/or participant.label).
+    OPTION 2 (Recommended UX):
+    - Captures Prolific PID from URL query parameters on GET.
+    - Immediately auto-advances to the next page (no button, no input).
+    - No DB schema changes (store in participant.vars / participant.label only).
     """
+    template_name = "start/CaptureProlific.html"
 
     @staticmethod
     def is_displayed(player):
@@ -339,6 +337,7 @@ class CaptureProlific(_BasePage):
             pid, study_id, sess_id = _extract_prolific_params(player)
             if pid:
                 _store_prolific_on_participant(player, pid, study_id, sess_id)
+
 
 class _PracticePage(_BasePage):
     practice_id = None
@@ -386,7 +385,8 @@ class Demographics(_BasePage):
     form_fields = ["survey_data"]
 
 
-class Instructions(Page):
+class Instructions(_BasePage):
+    # (Optional) expose these for templates that use them
     show_instructions = True
     instructions_path = "start/Instructions.html"
 
@@ -427,12 +427,13 @@ class Practice7(_PracticePage):
 
 
 class EndOfIntro(_BasePage):
-    def vars_for_template(self):
-        return dict(end_of_intro_text=self.session.vars.get("EndOfIntroText", ""))
+    @staticmethod
+    def vars_for_template(player):
+        return dict(end_of_intro_text=player.session.vars.get("EndOfIntroText", ""))
 
 
 page_sequence = [
-    CaptureProlific,   # <-- must be first
+    CaptureProlific,  
     Consent,
     Demographics,
     Instructions,
