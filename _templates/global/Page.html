@@ -10,11 +10,10 @@
 
 {% block body_main %}
 
-{# ---------- Progress + Optional Instructions Modal ---------- #}
 {% block progress %}
 
-{# oTree templating uses default(False), NOT default:False #}
-{% with show_instructions=instructions|default(False) %}
+{# Use view attributes only (safe). Never reference bare "instructions". #}
+{% with show_instructions=view.show_instructions|default(False) %}
 {% with instructions_path=view.instructions_path|default("") %}
 
 {% if show_instructions and instructions_path %}
@@ -88,7 +87,6 @@
 
 {% endblock %}
 
-{# ---------- Main Page Body ---------- #}
 <div class="otree-body container mt-5" style="margin-top:80px!important;">
   <h2 class="otree-title page-header">{% block title %}{% endblock %}</h2>
 
@@ -114,7 +112,6 @@
 
   <br />
 
-  {# need the default(False) for projects with old MTurkLandingPage #}
   {% if view.is_debug|default(False) %}
     <br>
     {% include 'otree/includes/debug_info.html' %}
