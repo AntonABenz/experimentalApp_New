@@ -35,58 +35,121 @@ def _maybe_cast(v):
     return v
 
 
-def _maybe_store_prolific_params(player):
+def _parse_querystring(qs: str) -> dict:
     """
-    Capture Prolific IDs robustly across different setups.
+    Very small querystring parser (no urllib dependency).
+    Assumes qs like "a=1&b=2".
+    """
+    out = {}
+    if not qs:
+        return out
+    for kv in str(qs).split("&"):
+        if "=" not in kv:
+            continue
+        k, v = kv.split("=", 1)
+        out[k] = v
+    return out
 
-    Sources checked (in priority order):
-      A) participant.label (if Prolific PID mapped to participant_label)
-      B) participant.vars keys that oTree might already have stored
-      C) query params inside participant._url_i_should_be_on()
+
+def _store_prolific_from_request(player) -> None:
+    """
+    REQUIRED INVARIANT:
+    Persist Prolific identifiers immediately on first page load.
+
+    Tries, in priority order:
+      1) request.query_params (best)
+      2) participant.label (if participant_label is set by oTree)
+      3) parse participant._url_i_should_be_on() query string (fallback)
+
+    Stores PID in:
+      - participant.vars["prolific_id"]
+      - participant.prolific_id (Participant field, since you declared it)
+      - participant.label (best for webhook lookup)
     """
     p = player.participant
 
-    # A) Best case: participant_label configured to PROLIFIC_PID
-    if p.label and not p.vars.get("prolific_id"):
-        p.vars["prolific_id"] = str(p.label).strip()
+    # Already stored? nothing to do
+    if p.vars.get("prolific_id") and (getattr(p, "prolific_id", None) or "").strip():
+        return
 
-    # B) If oTree already stored params into vars (happens in some setups)
-    for k in ("PROLIFIC_PID", "prolific_pid"):
-        if p.vars.get(k) and not p.vars.get("prolific_id"):
-            p.vars["prolific_id"] = str(p.vars.get(k)).strip()
+    pid = ""
+    study_id = ""
+    sess_id = ""
 
-    for k in ("STUDY_ID", "study_id"):
-        if p.vars.get(k) and not p.vars.get("study_id"):
-            p.vars["study_id"] = str(p.vars.get(k)).strip()
-
-    for k in ("SESSION_ID", "session_id"):
-        if p.vars.get(k) and not p.vars.get("prolific_session_id"):
-            p.vars["prolific_session_id"] = str(p.vars.get(k)).strip()
-
-    # C) Fallback: try parsing URL if it still contains query params
+    # 1) Starlette request query params (most reliable)
     try:
-        url = p._url_i_should_be_on()
-        if "?" in url:
-            qs = url.split("?", 1)[1]
-            params = {}
-            for kv in qs.split("&"):
-                if "=" not in kv:
-                    continue
-                k, v = kv.split("=", 1)
-                params[k] = v
-
-            pid = params.get("PROLIFIC_PID") or params.get("prolific_pid")
-            sid = params.get("STUDY_ID") or params.get("study_id")
-            sess = params.get("SESSION_ID") or params.get("session_id")
-
-            if pid and not p.vars.get("prolific_id"):
-                p.vars["prolific_id"] = pid
-            if sid and not p.vars.get("study_id"):
-                p.vars["study_id"] = sid
-            if sess and not p.vars.get("prolific_session_id"):
-                p.vars["prolific_session_id"] = sess
+        req = getattr(player, "request", None)
+        if req is not None:
+            qp = getattr(req, "query_params", None)
+            if qp is not None:
+                pid = (qp.get("PROLIFIC_PID") or qp.get("prolific_pid") or qp.get("prolific_id") or "").strip()
+                study_id = (qp.get("STUDY_ID") or qp.get("study_id") or "").strip()
+                sess_id = (qp.get("SESSION_ID") or qp.get("session_id") or "").strip()
     except Exception:
         pass
+
+    # 2) participant.label (if Prolific PID mapped to participant_label)
+    if not pid:
+        try:
+            if getattr(p, "label", None):
+                pid = str(p.label).strip()
+        except Exception:
+            pass
+
+    # 3) Fallback: parse URL if it still has query params
+    if not pid:
+        try:
+            url = p._url_i_should_be_on()
+            if "?" in url:
+                params = _parse_querystring(url.split("?", 1)[1])
+                pid = (params.get("PROLIFIC_PID") or params.get("prolific_pid") or params.get("prolific_id") or "").strip()
+                study_id = (params.get("STUDY_ID") or params.get("study_id") or "").strip()
+                sess_id = (params.get("SESSION_ID") or params.get("session_id") or "").strip()
+        except Exception:
+            pass
+
+    if pid:
+        # Store in vars (your webhook currently checks vars)
+        p.vars["prolific_id"] = pid
+
+        # Store in Participant field (you declared this in PARTICIPANT_FIELDS)
+        try:
+            p.prolific_id = pid
+        except Exception:
+            pass
+
+        # Store in label as well (very robust lookup strategy)
+        try:
+            p.label = pid
+        except Exception:
+            pass
+
+    if study_id:
+        p.vars["study_id"] = study_id
+        try:
+            p.study_id = study_id
+        except Exception:
+            pass
+
+    if sess_id:
+        p.vars["prolific_session_id"] = sess_id
+        try:
+            p.prolific_session_id = sess_id
+        except Exception:
+            pass
+
+    try:
+        p.save()
+    except Exception:
+        pass
+
+    logger.info(
+        "Captured Prolific params: pid=%s study_id=%s session_id=%s participant_code=%s",
+        pid or "",
+        study_id or "",
+        sess_id or "",
+        getattr(p, "code", ""),
+    )
 
 
 def build_image_url(player, filename: str) -> str:
@@ -270,6 +333,23 @@ class _BasePage(Page):
     pass
 
 
+class CaptureProlific(_BasePage):
+    """
+    MUST be first in page_sequence.
+    Ensures Prolific PID exists even if participant quits immediately.
+    """
+    @staticmethod
+    def is_displayed(player):
+        # only once
+        return player.round_number == 1
+
+    @staticmethod
+    def vars_for_template(player):
+        if player.session.config.get("for_prolific"):
+            _store_prolific_from_request(player)
+        return {}
+
+
 class _PracticePage(_BasePage):
     practice_id = None
     template_name = None
@@ -308,10 +388,7 @@ class _PracticePage(_BasePage):
 
 
 class Consent(_BasePage):
-    @staticmethod
-    def before_next_page(player, timeout_happened=False):
-        if player.session.config.get("for_prolific"):
-            _maybe_store_prolific_params(player)
+    pass
 
 
 class Demographics(_BasePage):
@@ -364,6 +441,7 @@ class EndOfIntro(_BasePage):
 
 
 page_sequence = [
+    CaptureProlific,   # <-- NEW, must be first
     Consent,
     Demographics,
     Instructions,
