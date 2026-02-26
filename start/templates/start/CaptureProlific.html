@@ -1,18 +1,24 @@
+{% extends "global/Page.html" %}
+
 {% block title %}
-Prolific ID Verification
+Prolific ID
 {% endblock %}
 
+{% block content %}
+<h2>Prolific ID</h2>
+
 <p>
-Before continuing, please confirm your Prolific ID. This ensures that we can correctly match your responses and compensate you for participation.
+Please enter your Prolific ID so we can match your participation to your submission.
 </p>
 
 <form method="post">
+    {% csrf_token %}
     <div class="mb-3">
-        <label for="prolific_id" class="form-label">Your Prolific ID</label>
-        <input type="text" 
-               id="prolific_id" 
-               name="prolific_id" 
-               class="form-control" 
+        <label for="id_prolific_id" class="form-label">Prolific ID</label>
+        <input type="text"
+               id="id_prolific_id"
+               name="prolific_id"
+               class="form-control"
                required>
     </div>
 
