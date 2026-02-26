@@ -314,13 +314,12 @@ class _BasePage(Page):
 
 class CaptureProlific(_BasePage):
     """
-    MUST be first in page_sequence.
-
-    Option C:
     - Automatically capture Prolific PID from URL query parameters.
-    - Store it immediately on first GET so even early dropouts are logged.
-    - No typed input, no DB schema changes.
+    - Store immediately so early dropouts are logged.
+    - No typed input.
+    - No DB schema changes (store in participant.vars and/or participant.label).
     """
+
     @staticmethod
     def is_displayed(player):
         return player.round_number == 1
@@ -335,12 +334,11 @@ class CaptureProlific(_BasePage):
 
     @staticmethod
     def before_next_page(player, timeout_happened):
-        # Safety retry in case first capture didn't run
+        # Retry just in case
         if player.session.config.get("for_prolific") and not player.participant.vars.get("prolific_id"):
             pid, study_id, sess_id = _extract_prolific_params(player)
             if pid:
                 _store_prolific_on_participant(player, pid, study_id, sess_id)
-
 
 class _PracticePage(_BasePage):
     practice_id = None
