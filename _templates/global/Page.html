@@ -13,9 +13,9 @@
 {# ---------- Progress + Optional Instructions Modal ---------- #}
 {% block progress %}
 
-{# Only show instructions if both the flag AND the template path exist #}
-{% with show_instructions=instructions|default:False %}
-{% with instructions_path=view.instructions_path|default:"" %}
+{# oTree templating uses default(False), NOT default:False #}
+{% with show_instructions=instructions|default(False) %}
+{% with instructions_path=view.instructions_path|default("") %}
 
 {% if show_instructions and instructions_path %}
 
@@ -42,6 +42,7 @@
 {% endif %}
 
 <nav class="navbar navbar-light bg-light d-flex fixed-top flex-nowrap flex-column">
+
   <div class="d-flex flex-nowrap" style="height:30px;width:100%;margin-top:0px">
     <div class="progress" style="height:30px;width:100%;margin-top:0px">
       <div class="progress-bar"
@@ -79,6 +80,7 @@
       margin: 0 5px;
     }
   </style>
+
 </nav>
 
 {% endwith %}
@@ -101,7 +103,7 @@
     </div>
   {% endif %}
 
-  {% if js_vars|default:False %}
+  {% if js_vars|default(False) %}
     <script>var js_vars = {{ js_vars|json }};</script>
   {% endif %}
 
@@ -113,7 +115,7 @@
   <br />
 
   {# need the default(False) for projects with old MTurkLandingPage #}
-  {% if view.is_debug|default:False %}
+  {% if view.is_debug|default(False) %}
     <br>
     {% include 'otree/includes/debug_info.html' %}
   {% endif %}
