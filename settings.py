@@ -7,8 +7,8 @@ def as_bool(v, default=False):
     return v in ("1", "true", "True", True)
 
 
-INSTRUCTIONS_URL = "https://docs.google.com/document/d/1PBL73XGMwln6uTFBXW2UaGoeb5-pM5OClvXXUe6YCP0/edit?tab=t.0"
-INTRODUCTION_URL = "https://docs.google.com/document/d/1frtr8zzT1KehperGjaNJNKgEh9fpZvHc0OvPuUgPblo/edit?tab=t.0"
+INSTRUCTIONS_URL = "https://docs.google.com/document/d/1PBL73XGMwln6uTFBXW2UaGoeb5-pM5OClvXXUe6YCP0/preview"
+INTRODUCTION_URL = "https://docs.google.com/document/d/1frtr8zzT1KehperGjaNJNKgEh9fpZvHc0OvPuUgPblo/preview"
 
 
 SESSION_CONFIGS = [
