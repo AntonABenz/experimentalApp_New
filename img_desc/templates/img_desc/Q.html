@@ -30,25 +30,27 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         display: flex; align-items: center; justify-content: center;
         z-index: 5000; padding: 12px;
     }
-    .modal-box{
-        background:#fff;
-        width:96%;
-        max-width:1100px;
+    .modal-box {
+        background: #fff;
+        width: 96%;
+        max-width: 1100px;
     
-        height:92vh;          
-        max-height:92vh;
+        height: 92vh;
+        max-height: 92vh;
     
-        border-radius:10px;
-        overflow:hidden;
+        border-radius: 10px;
+        overflow: hidden;
     
-        display:flex;
-        flex-direction:column;
+        display: flex;
+        flex-direction: column;
     }
     
-    .modal-body{
-        flex:1 1 auto;        /* take remaining height */
-        overflow:hidden;      /* iframe handles scrolling */
-        padding:0;            /* you already set inline padding:0 */
+    .modal-body {
+        flex: 1 1 auto;
+        overflow: hidden;     
+        padding: 0;
+    
+        display: flex;       
     }
     .modal-header {
         padding: 10px 12px; border-bottom: 1px solid #e5e5e5;
@@ -110,7 +112,7 @@ window.props = {
             </div>
             <div class="modal-body" style="padding:0;">
                <iframe :src="instructionsSrc"
-                        style="width:100%; height:100%; border:0; display:block;"></iframe>
+                        style="width:100%; height:100%; flex: 1; border:0; display:block;"></iframe>
             </div>
         </div>
     </div>
@@ -337,6 +339,7 @@ app.config.compilerOptions.delimiters = ["[[", "]]"];
 app.mount("#app");
 </script>
 {% endblock %}
+
 
 
 
