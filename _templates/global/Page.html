@@ -12,33 +12,8 @@
 
 {% block progress %}
 
-{# Use view attributes only (safe). Never reference bare "instructions". #}
-{% with show_instructions=view.show_instructions|default(False) %}
-{% with instructions_path=view.instructions_path|default("") %}
-
-{% if show_instructions and instructions_path %}
-
-<!-- Instructions Modal -->
-<div class="modal fade" id="exampleModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="exampleModalLabel">Instructions</h5>
-        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
-          <span aria-hidden="true">&times;</span>
-        </button>
-      </div>
-      <div class="modal-body">
-        {% include instructions_path %}
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-{% endif %}
+{# Always include a safe modal stub. The included file can decide to show/hide. #}
+{% include "global/InstructionsModal.html" %}
 
 <nav class="navbar navbar-light bg-light d-flex fixed-top flex-nowrap flex-column">
 
@@ -54,13 +29,8 @@
       </div>
     </div>
 
-    {% if show_instructions and instructions_path %}
-      <button class="btn btn-success btn-sm mx-2"
-              data-toggle="modal"
-              data-target="#exampleModal">
-        Instructions
-      </button>
-    {% endif %}
+    {# If the included modal defines a button, it will appear there.
+       We do NOT reference any optional vars here to avoid crashes. #}
   </div>
 
   <style>
@@ -82,9 +52,6 @@
 
 </nav>
 
-{% endwith %}
-{% endwith %}
-
 {% endblock %}
 
 <div class="otree-body container mt-5" style="margin-top:80px!important;">
@@ -101,7 +68,7 @@
     </div>
   {% endif %}
 
-  {% if js_vars|default(False) %}
+  {% if js_vars %}
     <script>var js_vars = {{ js_vars|json }};</script>
   {% endif %}
 
@@ -112,7 +79,7 @@
 
   <br />
 
-  {% if view.is_debug|default(False) %}
+  {% if view.is_debug %}
     <br>
     {% include 'otree/includes/debug_info.html' %}
   {% endif %}
