@@ -1,0 +1,24 @@
+{% block title %}
+Prolific Verification
+{% endblock %}
+
+{% block content %}
+<h2>Prolific ID Verification</h2>
+
+<p>
+Before continuing, please confirm your Prolific ID. This ensures that we can correctly match your responses and compensate you for participation.
+</p>
+
+<form method="post">
+    <div class="mb-3">
+        <label for="prolific_id" class="form-label">Your Prolific ID</label>
+        <input type="text" 
+               id="prolific_id" 
+               name="prolific_id" 
+               class="form-control" 
+               required>
+    </div>
+
+    <button class="btn btn-primary">Continue</button>
+</form>
+{% endblock %}
