@@ -1,18 +1,22 @@
 {% extends "global/Page.html" %}
 
 {% block title %}
-Linking your Prolific submission
+Prolific ID
 {% endblock %}
 
 {% block content %}
-<h2>Linking your Prolific submission</h2>
+<h2>Prolific ID</h2>
 
-<p>
-Please click Continue to begin. Your Prolific ID will be captured automatically.
-</p>
+<p>Please enter your Prolific ID so we can match your participation to your submission.</p>
 
-<form method="post">
-    {% csrf_token %}
-    <button class="btn btn-primary">Continue</button>
-</form>
+<div class="mb-3">
+    <label for="id_prolific_id" class="form-label">Prolific ID</label>
+    <input type="text"
+           id="id_prolific_id"
+           name="prolific_id"
+           class="form-control"
+           required>
+</div>
+
+<button class="btn btn-primary">Continue</button>
 {% endblock %}
