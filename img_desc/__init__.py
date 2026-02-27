@@ -382,7 +382,7 @@ def _cohort_has_free_slot(session, exp_num: int) -> bool:
 
 def assign_slot_if_needed(player):
     """
-    Guarantees (fixed):
+    Guarantees:
       - Fill Exp 1 slots first.
       - Exp N only starts AFTER Exp N-1 is COMPLETE.
       - If a cohort is FULL but NOT complete, new participants WAIT (slot=0).
@@ -396,7 +396,6 @@ def assign_slot_if_needed(player):
 
     # HARD BLOCK: once Prolific marks bad status, never reassign this participant
     if p.vars.get(BLOCK_FLAG):
-        # local_slot 0 means "wait/blocked"
         p.vars["exp_target"] = 0
         p.vars["local_slot"] = 0
         return 0, 0
@@ -411,10 +410,11 @@ def assign_slot_if_needed(player):
     exp_num = 1
     while True:
         # Hard ordering: cannot start exp_num>1 until exp_num-1 is complete.
+        # IMPORTANT FIX: keep exp_target = exp_num (the cohort we'd start), and wait with slot=0.
         if exp_num > 1 and not cohort_complete(session, exp_num - 1):
-            p.vars["exp_target"] = int(exp_num - 1)
+            p.vars["exp_target"] = int(exp_num)
             p.vars["local_slot"] = 0
-            return int(exp_num - 1), 0
+            return int(exp_num), 0
 
         # If current exp has any free slot, allocate the lowest free slot
         if _cohort_has_free_slot(session, exp_num):
@@ -487,15 +487,19 @@ def mark_participant_complete_in_cohort(player):
 
 # ---- Prolific expansion (batch completion) ----
 def _current_exp_num_for_participant(player) -> int:
+    """
+    Return cohort exp_num only if we have an ACTIVE assignment row.
+    Do not guess from participant.vars (can be stale under replacements/refresh).
+    """
     root = _root_subsession(player)
     if not root:
-        return safe_int(player.participant.vars.get("exp_target"), 1) or 1
+        return 0
 
     row = _participant_active_assignment(root, player.participant.code)
-    if row:
-        return int(getattr(row, "exp_num", 1) or 1)
+    if not row:
+        return 0
 
-    return safe_int(player.participant.vars.get("exp_target"), 1) or 1
+    return int(getattr(row, "exp_num", 0) or 0)
 
 
 def _expansion_already_marked(player, exp_num: int) -> bool:
@@ -795,22 +799,6 @@ class ProlificStatusGate(Page):
         return RedirectResponse(Constants.FALLBACK_URL, status_code=302)
 
 
-# ----------------------------------------------------------------------------
-# NEW: WAIT PAGE WHEN NO SLOT AVAILABLE (slot==0)
-# ----------------------------------------------------------------------------
-class WaitForSlot(Page):
-    template_name = "img_desc/WaitForSlot.html"
-
-    @staticmethod
-    def is_displayed(player):
-        exp_target, local_slot = assign_slot_if_needed(player)
-        # If no slot allocated yet, wait here (replacement/return frees slots)
-        return int(local_slot or 0) == 0
-
-    @staticmethod
-    def vars_for_template(player):
-        return dict(needed=0, missing=0)
-
 
 # ----------------------------------------------------------------------------
 # SESSION CREATION (store Excel rows in DB, not in memory)
@@ -952,6 +940,8 @@ def build_schedule_for_participant(player):
 
     exp_target, local_slot = assign_slot_if_needed(player)
     if int(local_slot or 0) == 0:
+        return
+    if int(exp_target or 1) > 1 and not cohort_complete(session, int(exp_target) - 1):
         return
 
     root = _root_subsession(player)
@@ -1106,52 +1096,46 @@ class FaultyCatcher(Page):
         return RedirectResponse(Constants.FALLBACK_URL, status_code=302)
 
 
-class WaitForPrevExperiment(Page):
-    template_name = "img_desc/WaitForPrevExperiment.html"
+class WaitForCohort(Page):
+    template_name = "img_desc/WaitForCohort.html"
 
     @staticmethod
     def is_displayed(player):
-        # ensure slot assignment + schedule exist (safe on refresh)
         exp_target, local_slot = assign_slot_if_needed(player)
+
+        # blocked participants are handled by ProlificStatusGate
+        if int(exp_target or 0) == 0:
+            return False
+
+        # Case A: no slot yet
         if int(local_slot or 0) == 0:
-            return False
-
-        ensure_schedule_built(player)
-
-        # only relevant for exp > 1
-        if int(exp_target or 1) <= 1:
-            return False
-
-        # hard gate: do not proceed until previous cohort is COMPLETE
-        if not cohort_complete(player.session, exp_target - 1):
-            player.participant.vars["needed_sentence_keys"] = 0
-            player.participant.vars["missing_sentence_keys"] = 0
             return True
 
-        # secondary gate: ensure needed sentences exist (if you use lookup across cohorts)
-        needed = player.participant.vars.get("_needed_sentence_keys_set")
-        if not isinstance(needed, list):
-            needed_set = required_sentence_keys_for_participant(player)
-            player.participant.vars["_needed_sentence_keys_set"] = list(needed_set)
-            needed = list(needed_set)
-
-        if not needed:
-            return False
-
-        missing = [k for k in needed if not has_sentence(player, k)]
-
-        player.participant.vars["needed_sentence_keys"] = len(needed)
-        player.participant.vars["missing_sentence_keys"] = len(missing)
-
-        return len(missing) > 0
-
+        # Case B: have slot but previous cohort not complete -> must wait
+        if int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1):
+            return True
+        # Eligible to proceed -> ensure schedule exists so next page loads cleanly
+        ensure_schedule_built(player)
+        return False
+    
     @staticmethod
     def vars_for_template(player):
+        exp_target, local_slot = assign_slot_if_needed(player)
+    
+        waiting_for_prev = False
+        prev_exp = int(exp_target) - 1
+        prev_done = True
+        if int(exp_target) > 1:
+            prev_done = cohort_complete(player.session, prev_exp)
+            waiting_for_prev = not prev_done
+    
         return dict(
-            needed=player.participant.vars.get("needed_sentence_keys", 0),
-            missing=player.participant.vars.get("missing_sentence_keys", 0),
+            exp_target=int(exp_target),
+            local_slot=int(local_slot),
+            waiting_for_prev=waiting_for_prev,
+            prev_exp=prev_exp,
+            prev_done=prev_done,
         )
-
 
 class Q(Page):
     form_model = "player"
@@ -1160,20 +1144,25 @@ class Q(Page):
     def is_displayed(player):
         if player.round_number > Constants.num_rounds:
             return False
-
+    
         exp_target, local_slot = assign_slot_if_needed(player)
+    
+        # MUST wait if no slot yet
         if int(local_slot or 0) == 0:
-            # WaitForSlot will show instead
             return False
-
+    
+        # MUST wait if previous cohort not complete
+        if int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1):
+            return False
+    
         ensure_schedule_built(player)
-
+    
         data = player.get_current_batch_data()
         if not data:
             if player.round_number == 1:
                 player.faulty = True
             return False
-
+    
         player.inner_role = data.get("role", "")
         if player.start_decision_time == 0:
             player.start_decision_time = time.time()
@@ -1619,9 +1608,8 @@ def custom_export(players):
 
 page_sequence = [
     ProlificStatusGate,
-    WaitForSlot,
+    WaitForCohort,
     FaultyCatcher,
-    WaitForPrevExperiment,
     Q,
     Feedback,
     FinalForProlific,
