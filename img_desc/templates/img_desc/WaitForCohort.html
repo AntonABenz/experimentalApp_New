@@ -1,9 +1,7 @@
 {% extends "otree/Page.html" %}
 {% load otree static %}
 
-{% block title %}
-Please wait
-{% endblock %}
+{% block title %}Please wait{% endblock %}
 
 {% block content %}
 <style>
@@ -31,7 +29,7 @@ Please wait
   {% if waiting_for_prev %}
     <h3 class="mb-3">Waiting for the previous group to finish…</h3>
     <p class="big">
-      Your cohort is ready, but the previous cohort ({{ prev_exp }}) must complete before the next cohort can start.
+      The previous cohort ({{ prev_exp }}) must complete before cohort {{ exp_target }} can start.
       This page will update automatically.
     </p>
   {% else %}
@@ -47,9 +45,7 @@ Please wait
     <span class="pill">{{ exp_target }}</span>
     &nbsp; | &nbsp;
     Slot:
-    <span class="pill">
-      {% if local_slot %}{{ local_slot }}{% else %}pending{% endif %}
-    </span>
+    <span class="pill">{% if local_slot %}{{ local_slot }}{% else %}pending{% endif %}</span>
   </div>
 
   <hr>
