@@ -228,16 +228,13 @@ class CohortSlot(ExtraModel):
     active = models.BooleanField(initial=True)
     completed = models.BooleanField(initial=False)
 
-
-class ProlificExpansionMarker(ExtraModel):
-    """
-    DB marker to ensure Prolific expansion is attempted only once per (session, exp_num).
-    Best-effort idempotency across refreshes and multi-worker deploys.
-    """
+class ProlificExpansionState(ExtraModel):
     subsession = models.Link(Subsession)  # anchor to round-1 subsession
     exp_num = models.IntegerField()
-    created_ts = models.FloatField(initial=0)
-
+    status = models.StringField()  # "success" | "failed"
+    attempts = models.IntegerField(initial=0)
+    last_attempt_ts = models.FloatField(initial=0)
+    last_message = models.LongStringField(blank=True)
 
 def _root_subsession(obj):
     """
@@ -247,25 +244,20 @@ def _root_subsession(obj):
       - Session
     """
     try:
-        # Player → has .subsession
         if hasattr(obj, "subsession"):
             return obj.subsession.in_round(1)
 
-        # Subsession itself
         if hasattr(obj, "in_round"):
             return obj.in_round(1)
 
-        # Session → has get_subsessions()
         if hasattr(obj, "get_subsessions"):
             subs = obj.get_subsessions()
             if subs:
                 return subs[0].in_round(1)
-
     except Exception:
         pass
 
     return None
-
 
 # ---- Schedule store ----
 def get_schedule_item(obj, participant_code: str, round_number: int):
@@ -502,28 +494,55 @@ def _current_exp_num_for_participant(player) -> int:
     return int(getattr(row, "exp_num", 0) or 0)
 
 
-def _expansion_already_marked(player, exp_num: int) -> bool:
+def _get_expansion_state(player, exp_num: int):
     root = _root_subsession(player)
     if not root:
-        return False
-    qs = ProlificExpansionMarker.filter(subsession=root, exp_num=int(exp_num))
-    return bool(qs)
+        return None
+    qs = ProlificExpansionState.filter(subsession=root, exp_num=int(exp_num))
+    return qs[0] if qs else None
 
 
-def _mark_expansion(player, exp_num: int) -> None:
+def _set_expansion_state(player, exp_num: int, status: str, ok_message: str = "", bump_attempt: bool = False):
+    """
+    status: "success" or "failed"
+    bump_attempt: if True, increments attempts and updates last_attempt_ts
+    """
     root = _root_subsession(player)
     if not root:
         return
-    if _expansion_already_marked(player, exp_num):
+
+    row = _get_expansion_state(player, exp_num)
+    now = time.time()
+
+    if row:
+        if bump_attempt:
+            row.attempts = int(getattr(row, "attempts", 0) or 0) + 1
+            row.last_attempt_ts = now
+        row.status = status
+        row.last_message = ok_message or ""
+        try:
+            row.save()
+        except Exception:
+            pass
         return
+
+    # create new
     try:
-        ProlificExpansionMarker.create(
+        ProlificExpansionState.create(
             subsession=root,
             exp_num=int(exp_num),
-            created_ts=time.time(),
+            status=status,
+            attempts=1 if bump_attempt else 0,
+            last_attempt_ts=now if bump_attempt else 0,
+            last_message=ok_message or "",
         )
     except Exception:
         pass
+
+
+def _expansion_succeeded(player, exp_num: int) -> bool:
+    row = _get_expansion_state(player, exp_num)
+    return bool(row and str(getattr(row, "status", "")).lower() == "success")
 
 
 def maybe_expand_prolific_when_cohort_complete(player) -> None:
@@ -537,20 +556,29 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
     if exp_num <= 0:
         return
 
-    # expand only when THIS exp_num cohort is complete
+    # only expand when THIS exp cohort is complete
     if not cohort_complete(session, exp_num):
         return
 
-    # idempotency guard
-    if _expansion_already_marked(player, exp_num):
+    # IMPORTANT: Only skip if we've recorded a SUCCESS.
+    if _expansion_succeeded(player, exp_num):
         return
 
-    # mark first to avoid refresh-trigger duplicates; then expand best-effort
-    _mark_expansion(player, exp_num)
+    # Record an attempt (so you can debug how often this triggers).
+    _set_expansion_state(player, exp_num, status="failed", ok_message="attempt_started", bump_attempt=True)
+
     try:
-        maybe_expand_slots(enabled=True, batch_done=True)
+        ok, msg = maybe_expand_slots(enabled=True, batch_done=True)
+        if ok:
+            _set_expansion_state(player, exp_num, status="success", ok_message=msg, bump_attempt=False)
+        else:
+            # Do NOT mark as success; allow future retries
+            _set_expansion_state(player, exp_num, status="failed", ok_message=msg, bump_attempt=False)
+
     except Exception:
         logger.exception("maybe_expand_slots raised unexpectedly")
+        # Keep failed status; allow retries
+        _set_expansion_state(player, exp_num, status="failed", ok_message="exception_in_wrapper", bump_attempt=False)
 
 
 # ----------------------------------------------------------------------------
@@ -798,8 +826,7 @@ class ProlificStatusGate(Page):
             pass
         return RedirectResponse(Constants.FALLBACK_URL, status_code=302)
 
-
-
+    
 # ----------------------------------------------------------------------------
 # SESSION CREATION (store Excel rows in DB, not in memory)
 # ----------------------------------------------------------------------------
@@ -1342,6 +1369,11 @@ class FinalForProlific(Page):
         )
 
     def get(self):
+        try:
+            mark_participant_complete_in_cohort(self.player)
+            maybe_expand_prolific_when_cohort_complete(self.player)
+        except Exception:
+            pass
         cc = (
             self.player.session.vars.get("completion_code")
             or self.player.session.config.get("completion_code")
