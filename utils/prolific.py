@@ -10,8 +10,6 @@ import requests
 logger = logging.getLogger(__name__)
 
 PROLIFIC_API_BASE = "https://api.prolific.com/api/v1"
-
-# Prevent double-expansion inside ONE Python process (not across multiple dynos).
 _expansion_lock = threading.Lock()
 
 
@@ -63,7 +61,7 @@ def maybe_expand_slots(enabled: bool, batch_done: bool) -> Tuple[bool, str]:
     Optional env vars:
       - PROLIFIC_EXPAND_BY (default: 4)
       - PROLIFIC_MAX_PLACES (optional cap, default: unset)
-      - PROLIFIC_ALLOWED_STATUSES (default: "ACTIVE") e.g. "ACTIVE,PAUSED"
+      - PROLIFIC_ALLOWED_STATUSES (default: "ACTIVE")
 
     Returns:
       (ok, message)
@@ -94,7 +92,11 @@ def maybe_expand_slots(enabled: bool, batch_done: bool) -> Tuple[bool, str]:
         status = (study.get("status") or "").strip().upper()
         allowed = _allowed_statuses()
         if status and status not in allowed:
-            logger.warning("Study status=%s not in allowed=%s; skipping expansion.", status, sorted(allowed))
+            logger.warning(
+                "Study status=%s not in allowed=%s; skipping expansion.",
+                status,
+                sorted(allowed),
+            )
             return False, f"status_not_allowed:{status}"
 
         current = int(study.get("total_available_places") or 0)
@@ -112,13 +114,22 @@ def maybe_expand_slots(enabled: bool, batch_done: bool) -> Tuple[bool, str]:
 
         logger.info(
             "Attempting Prolific expansion: study_id=%s status=%s current=%s expand_by=%s new_total=%s",
-            study_id, status, current, expand_by, new_total
+            study_id,
+            status,
+            current,
+            expand_by,
+            new_total,
         )
 
         updated = _patch_study(token, study_id, {"total_available_places": new_total})
         updated_total = int(updated.get("total_available_places") or new_total)
 
-        logger.info("Expanded Prolific places: study_id=%s %s -> %s", study_id, current, updated_total)
+        logger.info(
+            "Expanded Prolific places: study_id=%s %s -> %s",
+            study_id,
+            current,
+            updated_total,
+        )
         return True, f"expanded:{current}->{updated_total}"
 
     except RuntimeError as e:
