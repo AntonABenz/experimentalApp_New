@@ -229,7 +229,7 @@ class CohortSlot(ExtraModel):
     completed = models.BooleanField(initial=False)
 
 class ProlificExpansionState(ExtraModel):
-    subsession = models.Link(Subsession)  # anchor to round-1 subsession
+    subsession = models.Link(Subsession)
     exp_num = models.IntegerField()
     status = models.StringField()  # "success" | "failed"
     attempts = models.IntegerField(initial=0)
@@ -502,11 +502,7 @@ def _get_expansion_state(player, exp_num: int):
     return qs[0] if qs else None
 
 
-def _set_expansion_state(player, exp_num: int, status: str, ok_message: str = "", bump_attempt: bool = False):
-    """
-    status: "success" or "failed"
-    bump_attempt: if True, increments attempts and updates last_attempt_ts
-    """
+def _set_expansion_state(player, exp_num: int, status: str, message: str = "", bump_attempt: bool = False):
     root = _root_subsession(player)
     if not root:
         return
@@ -519,14 +515,13 @@ def _set_expansion_state(player, exp_num: int, status: str, ok_message: str = ""
             row.attempts = int(getattr(row, "attempts", 0) or 0) + 1
             row.last_attempt_ts = now
         row.status = status
-        row.last_message = ok_message or ""
+        row.last_message = message or ""
         try:
             row.save()
         except Exception:
             pass
         return
 
-    # create new
     try:
         ProlificExpansionState.create(
             subsession=root,
@@ -534,7 +529,7 @@ def _set_expansion_state(player, exp_num: int, status: str, ok_message: str = ""
             status=status,
             attempts=1 if bump_attempt else 0,
             last_attempt_ts=now if bump_attempt else 0,
-            last_message=ok_message or "",
+            last_message=message or "",
         )
     except Exception:
         pass
@@ -556,29 +551,31 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
     if exp_num <= 0:
         return
 
-    # only expand when THIS exp cohort is complete
     if not cohort_complete(session, exp_num):
         return
 
-    # IMPORTANT: Only skip if we've recorded a SUCCESS.
     if _expansion_succeeded(player, exp_num):
         return
 
-    # Record an attempt (so you can debug how often this triggers).
-    _set_expansion_state(player, exp_num, status="failed", ok_message="attempt_started", bump_attempt=True)
+    _set_expansion_state(
+        player,
+        exp_num,
+        status="failed",
+        message="attempt_started",
+        bump_attempt=True,
+    )
 
     try:
         ok, msg = maybe_expand_slots(enabled=True, batch_done=True)
+        logger.info("Prolific expansion result: exp_num=%s ok=%s msg=%s", exp_num, ok, msg)
         if ok:
-            _set_expansion_state(player, exp_num, status="success", ok_message=msg, bump_attempt=False)
+            _set_expansion_state(player, exp_num, status="success", message=msg)
         else:
-            # Do NOT mark as success; allow future retries
-            _set_expansion_state(player, exp_num, status="failed", ok_message=msg, bump_attempt=False)
+            _set_expansion_state(player, exp_num, status="failed", message=msg)
 
     except Exception:
         logger.exception("maybe_expand_slots raised unexpectedly")
-        # Keep failed status; allow retries
-        _set_expansion_state(player, exp_num, status="failed", ok_message="exception_in_wrapper", bump_attempt=False)
+        _set_expansion_state(player, exp_num, status="failed", message="exception")
 
 
 # ----------------------------------------------------------------------------
@@ -1359,7 +1356,6 @@ class Feedback(Page):
 
 PROLIFIC_COMPLETE_BASE = "https://app.prolific.com/submissions/complete?cc="
 
-
 class FinalForProlific(Page):
     @staticmethod
     def is_displayed(player):
@@ -1374,6 +1370,7 @@ class FinalForProlific(Page):
             maybe_expand_prolific_when_cohort_complete(self.player)
         except Exception:
             pass
+
         cc = (
             self.player.session.vars.get("completion_code")
             or self.player.session.config.get("completion_code")
@@ -1389,8 +1386,12 @@ class FinalForProlific(Page):
     @staticmethod
     def before_next_page(player, timeout_happened):
         if player.round_number == Constants.num_rounds:
-            player.in_round(1).completed_experiment = True
-
+            p1 = player.in_round(1)
+            p1.completed_experiment = True
+            try:
+                p1.save()
+            except Exception:
+                pass
 
 # ----------------------------------------------------------------------------
 # EXPORT (reads ScheduleItem, not batch_history)
