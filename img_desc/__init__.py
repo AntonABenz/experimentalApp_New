@@ -51,7 +51,8 @@ class Player(BasePlayer):
     start_decision_time = models.FloatField(initial=0)
     end_decision_time = models.FloatField(initial=0)
     decision_seconds = models.FloatField(initial=0)
-
+    client_start_ts = models.FloatField(initial=0)
+    
     full_return_url = models.StringField(blank=True)
 
     # ---- schedule access (DB-backed) ----
@@ -1171,11 +1172,9 @@ class Q(Page):
     
         exp_target, local_slot = assign_slot_if_needed(player)
     
-        # MUST wait if no slot yet
         if int(local_slot or 0) == 0:
             return False
     
-        # MUST wait if previous cohort not complete
         if int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1):
             return False
     
@@ -1188,16 +1187,15 @@ class Q(Page):
             return False
     
         player.inner_role = data.get("role", "")
-        if player.start_decision_time == 0:
-            player.start_decision_time = time.time()
         return True
+
 
     @staticmethod
     def get_form_fields(player):
         if player.inner_role == PRODUCER:
-            return ["producer_decision"]
+            return ["client_start_ts", "producer_decision"]
         if player.inner_role == INTERPRETER:
-            return ["interpreter_decision"]
+            return ["client_start_ts", "interpreter_decision"]
         return []
 
     @staticmethod
@@ -1242,8 +1240,14 @@ class Q(Page):
     @staticmethod
     def before_next_page(player, timeout_happened):
         player.end_decision_time = time.time()
-        if player.start_decision_time:
-            player.decision_seconds = player.end_decision_time - player.start_decision_time
+
+        if player.client_start_ts and player.client_start_ts > 0:
+            player.start_decision_time = float(player.client_start_ts)
+        else:
+            # fallback if hidden field is missing
+            player.start_decision_time = player.end_decision_time
+        
+        player.decision_seconds = max(0, player.end_decision_time - player.start_decision_time)
 
         data = player.get_current_batch_data() or {}
         updates = {}
@@ -1398,7 +1402,8 @@ class CaptureProlificID(Page):
     @staticmethod
     def is_displayed(player):
         return player.round_number == 1
-
+    
+    @staticmethod
     def vars_for_template(player):
         req = player.request.GET
         p = player.participant
