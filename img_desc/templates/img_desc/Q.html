@@ -96,7 +96,7 @@ window.props = {
 
 
 <div id="app" v-cloak>
-
+    <input type="hidden" name="client_start_ts" id="client_start_ts">
     <button type="button" class="btn btn-success instructions-btn" @click="openInstructions">
         Instructions
     </button>
@@ -241,6 +241,12 @@ const app = Vue.createApp({
             showConfirmModal: false
         };
     },
+    mounted() {
+        const el = document.getElementById("client_start_ts");
+        if (el && !el.value) {
+            el.value = (Date.now() / 1000).toString();
+        }
+    },
     computed: {
         producerPayload() { return JSON.stringify(this.items.map(i => i.fields.map(f => f.value))); },
         interpreterPayload() {
@@ -339,6 +345,7 @@ app.config.compilerOptions.delimiters = ["[[", "]]"];
 app.mount("#app");
 </script>
 {% endblock %}
+
 
 
 
