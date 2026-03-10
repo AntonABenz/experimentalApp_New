@@ -1393,6 +1393,27 @@ class FinalForProlific(Page):
             except Exception:
                 pass
 
+class CaptureProlificID(Page):
+
+    @staticmethod
+    def is_displayed(player):
+        return player.round_number == 1
+
+    def vars_for_template(player):
+        req = player.request.GET
+        p = player.participant
+
+        p.vars["prolific_id"] = req.get("PROLIFIC_PID")
+        p.vars["study_id"] = req.get("STUDY_ID")
+        p.vars["session_id"] = req.get("SESSION_ID")
+
+        try:
+            p.save()
+        except:
+            pass
+
+        return {}
+
 # ----------------------------------------------------------------------------
 # EXPORT (reads ScheduleItem, not batch_history)
 # ----------------------------------------------------------------------------
@@ -1640,6 +1661,7 @@ def custom_export(players):
 
 
 page_sequence = [
+    CaptureProlificID,
     ProlificStatusGate,
     WaitForCohort,
     FaultyCatcher,
