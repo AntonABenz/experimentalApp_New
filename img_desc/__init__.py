@@ -813,12 +813,9 @@ class ProlificStatusGate(Page):
         return status in Constants.BAD_PROLIFIC_STATUSES
 
     def get(self):
-        # free cohort slot + delete schedule so replacement can take over
         try:
             self.player.participant.vars[BLOCK_FLAG] = True
             free_slot_for_participant(self.player.session, self.player.participant.code)
-            delete_schedule_for_participant(self.player.session, self.player.participant.code)
-            reset_this_app_for_participant(self.player.participant)
             self.player.participant.save()
         except Exception:
             pass
