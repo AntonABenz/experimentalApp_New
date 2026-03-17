@@ -52,7 +52,11 @@ class Player(BasePlayer):
     end_decision_time = models.FloatField(initial=0)
     decision_seconds = models.FloatField(initial=0)
     client_start_ts = models.FloatField(initial=0)
-    
+
+    prolific_id_field = models.StringField(blank=True)
+    study_id_field = models.StringField(blank=True)
+    session_id_field = models.StringField(blank=True)
+        
     full_return_url = models.StringField(blank=True)
 
     # ---- schedule access (DB-backed) ----
@@ -278,19 +282,9 @@ def schedule_exists(obj, participant_code: str) -> bool:
 
 
 def delete_schedule_for_participant(obj, participant_code: str):
-    root = _root_subsession(obj)
-    if not root:
-        return
-
-    items = ScheduleItem.filter(subsession=root, participant_code=participant_code)
-    count = len(items)
-
-    for it in items:
-        it.delete()
-
-    logger.info(
-        f"delete_schedule_for_participant: deleted {count} schedule rows "
-        f"for participant={participant_code}"
+    logger.warning(
+        "delete_schedule_for_participant called for participant=%s, but schedule deletion is disabled",
+        participant_code,
     )
 
 
@@ -1369,8 +1363,15 @@ class FinalForProlific(Page):
         try:
             mark_participant_complete_in_cohort(self.player)
             maybe_expand_prolific_when_cohort_complete(self.player)
+
+            p1 = self.player.in_round(1)
+            p1.completed_experiment = True
+            p1.save()
+
+            self.player.participant.vars[f"{Constants.name_in_url}_completed"] = True
+            self.player.participant.save()
         except Exception:
-            pass
+            logger.exception("FinalForProlific failed before redirect")
 
         cc = (
             self.player.session.vars.get("completion_code")
@@ -1384,37 +1385,37 @@ class FinalForProlific(Page):
         logger.info(f"[FinalForProlific] redirecting to: {url}")
         return RedirectResponse(url, status_code=302)
 
-    @staticmethod
-    def before_next_page(player, timeout_happened):
-        if player.round_number == Constants.num_rounds:
-            p1 = player.in_round(1)
-            p1.completed_experiment = True
-            try:
-                p1.save()
-            except Exception:
-                pass
-
 class CaptureProlificID(Page):
+    form_model = "player"
+    form_fields = ["prolific_id_field", "study_id_field", "session_id_field"]
 
     @staticmethod
     def is_displayed(player):
         return player.round_number == 1
-    
+
     @staticmethod
     def vars_for_template(player):
-        req = player.request.GET
+        return dict(
+            prolific_pid=player.request.GET.get("PROLIFIC_PID", ""),
+            study_id=player.request.GET.get("STUDY_ID", ""),
+            session_id=player.request.GET.get("SESSION_ID", ""),
+        )
+
+    @staticmethod
+    def before_next_page(player, timeout_happened):
         p = player.participant
 
-        p.vars["prolific_id"] = req.get("PROLIFIC_PID")
-        p.vars["study_id"] = req.get("STUDY_ID")
-        p.vars["session_id"] = req.get("SESSION_ID")
+        if player.prolific_id_field:
+            p.vars["prolific_id"] = player.prolific_id_field
+        if player.study_id_field:
+            p.vars["study_id"] = player.study_id_field
+        if player.session_id_field:
+            p.vars["session_id"] = player.session_id_field
 
         try:
             p.save()
-        except:
+        except Exception:
             pass
-
-        return {}
 
 # ----------------------------------------------------------------------------
 # EXPORT (reads ScheduleItem, not batch_history)
