@@ -1,15 +1,19 @@
+from __future__ import annotations
+
 import json
 import logging
+
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from otree.models import Participant
+
 from img_desc.utils import verify_prolific_webhook
 from img_desc import (
     reset_this_app_for_participant,
-    delete_schedule_for_participant,
     free_slot_for_participant,
     Constants,
+    clean_str,
 )
 
 logger = logging.getLogger("benzapp.prolific_webhook")
@@ -17,16 +21,19 @@ logger = logging.getLogger("benzapp.prolific_webhook")
 BLOCK_FLAG = "blocked_due_to_return"
 
 
+def normalize_prolific_status(raw) -> str:
+    return clean_str(raw).upper().replace("_", "-")
+
+
 def _find_participant_by_prolific_id(prolific_pid: str):
     """
     Best-effort lookup. Primary: vars['prolific_id'].
-    Fallback: scan recent participants if needed (optional).
+    Fallback: scan recent participants if needed.
     """
     prolific_pid = (prolific_pid or "").strip()
     if not prolific_pid:
         return None
 
-    # Preferred: JSON vars contains
     try:
         qs = Participant.objects.filter(vars__contains={"prolific_id": prolific_pid})
         if qs.exists():
@@ -34,7 +41,6 @@ def _find_participant_by_prolific_id(prolific_pid: str):
     except Exception:
         pass
 
-    # Fallback: scan recent participants (keeps it from silently failing)
     try:
         for p in Participant.objects.all().order_by("-id")[:3000]:
             if p.vars.get("prolific_id") == prolific_pid:
@@ -71,7 +77,10 @@ async def prolific_webhook_view(request: Request):
     if not isinstance(data, dict):
         data = payload if isinstance(payload, dict) else {}
 
-    status = (data.get("status") or data.get("submission_status") or "").strip()
+    status = normalize_prolific_status(
+        data.get("status") or data.get("submission_status") or ""
+    )
+
     prolific_pid = (
         data.get("participant_id")
         or data.get("prolific_pid")
@@ -89,45 +98,63 @@ async def prolific_webhook_view(request: Request):
 
     if participant is None:
         logger.warning(
-            f"Webhook: participant_not_found prolific_pid={prolific_pid} "
-            f"status={status} study_id={study_id} submission_id={submission_id}"
+            "Webhook: participant_not_found prolific_pid=%s status=%s study_id=%s submission_id=%s",
+            prolific_pid,
+            status,
+            study_id,
+            submission_id,
         )
         return JSONResponse({"ok": True, "note": "participant_not_found"})
 
-    # record status details
     participant.vars["prolific_submission_status"] = status
     participant.vars["prolific_submission_id"] = submission_id
     participant.vars["study_id_from_webhook"] = study_id
 
-    # HARD BLOCK for bad statuses to prevent zombie re-assignment
     if status in Constants.BAD_PROLIFIC_STATUSES:
         participant.vars[BLOCK_FLAG] = True
 
-    participant.save()
+    try:
+        participant.save()
+    except Exception:
+        logger.exception(
+            "Webhook: failed saving participant status. participant=%s prolific_pid=%s",
+            participant.code,
+            prolific_pid,
+        )
 
-    # If they already completed the app, don't free their slot/schedule
-    already_completed = bool(participant.vars.get(f"{Constants.name_in_url}_completed", False))
+    already_completed = bool(
+        participant.vars.get(f"{Constants.name_in_url}_completed", False)
+    )
     if already_completed:
         logger.info(
-            f"Webhook: bad_status={status} but participant already completed app; "
-            f"skip freeing slot. participant={participant.code} prolific_pid={prolific_pid}"
+            "Webhook: bad_status=%s but participant already completed app; skip freeing slot. participant=%s prolific_pid=%s",
+            status,
+            participant.code,
+            prolific_pid,
         )
         return JSONResponse({"ok": True, "note": "already_completed"})
 
-    # For bad statuses: free slot + delete schedule so replacement can join immediately
     if status in Constants.BAD_PROLIFIC_STATUSES:
         try:
             session = participant.session
+            participant.vars["returned_from_prolific"] = True
+
             free_slot_for_participant(session, participant.code)
-            delete_schedule_for_participant(session, participant.code)
             reset_this_app_for_participant(participant)
+            participant.save()
+
             logger.info(
-                f"Webhook: freed slot + deleted schedule for participant={participant.code} "
-                f"status={status} prolific_pid={prolific_pid}"
+                "Webhook: freed slot without deleting schedule for participant=%s status=%s prolific_pid=%s",
+                participant.code,
+                status,
+                prolific_pid,
             )
         except Exception as e:
             logger.error(
-                f"Webhook: failed to free slot/delete schedule participant={participant.code}: {e}",
+                "Webhook: failed to free slot safely participant=%s prolific_pid=%s error=%s",
+                participant.code,
+                prolific_pid,
+                e,
                 exc_info=True,
             )
 
