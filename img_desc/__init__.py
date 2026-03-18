@@ -1666,7 +1666,7 @@ def custom_export(players):
 
 
 page_sequence = [
-    CaptureProlificID,
+    # CaptureProlificID (removed),
     ProlificStatusGate,
     WaitForCohort,
     FaultyCatcher,
