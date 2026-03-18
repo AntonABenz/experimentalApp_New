@@ -1395,11 +1395,13 @@ class CaptureProlificID(Page):
 
     @staticmethod
     def vars_for_template(player):
+        p = player.participant
         return dict(
-            prolific_pid=player.request.GET.get("PROLIFIC_PID", ""),
-            study_id=player.request.GET.get("STUDY_ID", ""),
-            session_id=player.request.GET.get("SESSION_ID", ""),
+            prolific_pid=p.vars.get("prolific_id", ""),
+            study_id=p.vars.get("study_id", ""),
+            session_id=p.vars.get("session_id", ""),
         )
+
 
     @staticmethod
     def before_next_page(player, timeout_happened):
