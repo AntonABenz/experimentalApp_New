@@ -116,6 +116,25 @@ def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id
     )
 
 
+def _cohort_entry_state(player) -> dict:
+    if not player.session.config.get("for_prolific"):
+        return dict(blocked=False, exp_target=1, local_slot=1, waiting_for_prev=False)
+
+    from img_desc import assign_slot_for_participant, cohort_complete
+
+    exp_target, local_slot = assign_slot_for_participant(player.session, player.participant)
+    waiting_for_prev = bool(
+        int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1)
+    )
+
+    return dict(
+        blocked=bool(int(local_slot or 0) == 0 or waiting_for_prev),
+        exp_target=int(exp_target or 0),
+        local_slot=int(local_slot or 0),
+        waiting_for_prev=waiting_for_prev,
+    )
+
+
 def build_image_url(player, filename: str) -> str:
     """
     Constructs the full S3 URL for a practice image.
@@ -358,6 +377,22 @@ class Consent(_ProlificCaptureMixin, _BasePage):
     template_name = "start/Consent.html"
 
 
+class CohortEntryGate(_ProlificCaptureMixin, _BasePage):
+    template_name = "start/CohortEntryGate.html"
+
+    @staticmethod
+    def is_displayed(player):
+        if not player.session.config.get("for_prolific"):
+            return False
+        _ProlificCaptureMixin._capture(player)
+        return _cohort_entry_state(player)["blocked"]
+
+    @staticmethod
+    def vars_for_template(player):
+        _ProlificCaptureMixin._capture(player)
+        return _cohort_entry_state(player)
+
+
 class Demographics(_BasePage):
     form_model = "player"
     form_fields = ["survey_data"]
@@ -412,6 +447,7 @@ class EndOfIntro(_BasePage):
 
 page_sequence = [
     Consent,
+    CohortEntryGate,
     Demographics,
     Instructions,
     Practice1,
@@ -423,3 +459,30 @@ page_sequence = [
     Practice7,
     EndOfIntro,
 ]
+
+
+def custom_export(players):
+    yield [
+        "session_code",
+        "participant_code",
+        "prolific_id",
+        "study_id",
+        "prolific_session_id",
+        "participant_status",
+        "survey_data",
+        "practice_response",
+    ]
+
+    for player in players:
+        participant = player.participant
+        session_obj = player.session
+        yield [
+            getattr(session_obj, "code", ""),
+            getattr(participant, "code", ""),
+            participant.vars.get("prolific_id", "") or getattr(participant, "label", ""),
+            participant.vars.get("study_id", ""),
+            participant.vars.get("prolific_session_id", ""),
+            participant.vars.get(PARTICIPANT_STATUS_FIELD, ""),
+            player.survey_data or "",
+            player.practice_response or "",
+        ]

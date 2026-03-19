@@ -373,7 +373,70 @@ def _cohort_has_free_slot(session, exp_num: int) -> bool:
     return False
 
 
-def assign_slot_if_needed(player):
+def _exp_slot_summary(session, exp_num: int) -> str:
+    root = _root_subsession(session)
+    if not root:
+        return f"exp={int(exp_num)}[no-root]"
+
+    csize = cohort_size(session)
+    rows = CohortSlot.filter(subsession=root, exp_num=int(exp_num), active=True)
+    rows_by_slot = {int(r.slot): r for r in rows}
+
+    parts = []
+    for s in range(1, csize + 1):
+        row = rows_by_slot.get(s)
+        if not row:
+            parts.append(f"{s}:open")
+            continue
+        state = "done" if bool(row.completed) else "pending"
+        parts.append(f"{s}:{clean_str(row.participant_code)}:{state}")
+    return f"exp={int(exp_num)}[" + ",".join(parts) + "]"
+
+
+def cohort_debug_snapshot(session, exp_num: int) -> str:
+    exp_num = max(int(exp_num or 1), 1)
+    parts = []
+    if exp_num > 1:
+        parts.append(_exp_slot_summary(session, exp_num - 1))
+    parts.append(_exp_slot_summary(session, exp_num))
+    return " ".join(parts)
+
+
+def _log_cohort_event_for_participant(session, participant, event: str, exp_target=None, local_slot=None, reason: str = ""):
+    exp_target = safe_int(
+        exp_target if exp_target is not None else participant.vars.get("exp_target"),
+        0,
+    )
+    local_slot = safe_int(
+        local_slot if local_slot is not None else participant.vars.get("local_slot"),
+        0,
+    )
+
+    logger.info(
+        "CohortFlow: event=%s participant=%s prolific_id=%s status=%s exp_target=%s local_slot=%s reason=%s snapshot=%s",
+        clean_str(event),
+        clean_str(participant.code),
+        get_participant_prolific_id(participant),
+        get_participant_status(participant) or "unknown",
+        exp_target,
+        local_slot,
+        clean_str(reason) or "-",
+        cohort_debug_snapshot(session, exp_target or 1),
+    )
+
+
+def _log_cohort_event(player, event: str, exp_target=None, local_slot=None, reason: str = ""):
+    _log_cohort_event_for_participant(
+        player.session,
+        player.participant,
+        event=event,
+        exp_target=exp_target,
+        local_slot=local_slot,
+        reason=reason,
+    )
+
+
+def assign_slot_for_participant(session, participant):
     """
     Guarantees:
       - Fill Exp 1 slots first.
@@ -381,9 +444,8 @@ def assign_slot_if_needed(player):
       - If a cohort is FULL but NOT complete, new participants WAIT (slot=0).
       - Replacement participants can re-fill freed slots in earlier cohorts.
     """
-    p = player.participant
-    session = player.session
-    root = _root_subsession(player)
+    p = participant
+    root = _root_subsession(session)
     if not root:
         return 1, 1
 
@@ -391,6 +453,14 @@ def assign_slot_if_needed(player):
     if participant_status == Constants.STATUS_DROP_OUT or p.vars.get(BLOCK_FLAG):
         p.vars["exp_target"] = 0
         p.vars["local_slot"] = 0
+        _log_cohort_event_for_participant(
+            session,
+            p,
+            "blocked_before_assignment",
+            exp_target=0,
+            local_slot=0,
+            reason="participant_status_drop_out_or_block_flag",
+        )
         return 0, 0
     if participant_status != Constants.STATUS_FINISHED:
         mark_participant_active(p)
@@ -409,6 +479,14 @@ def assign_slot_if_needed(player):
         if exp_num > 1 and not cohort_complete(session, exp_num - 1):
             p.vars["exp_target"] = int(exp_num)
             p.vars["local_slot"] = 0
+            _log_cohort_event_for_participant(
+                session,
+                p,
+                "waiting_previous_cohort_incomplete",
+                exp_target=exp_num,
+                local_slot=0,
+                reason=f"previous_exp_{int(exp_num) - 1}_incomplete",
+            )
             return int(exp_num), 0
 
         # If current exp has any free slot, allocate the lowest free slot
@@ -426,6 +504,14 @@ def assign_slot_if_needed(player):
                     )
                     p.vars["exp_target"] = int(exp_num)
                     p.vars["local_slot"] = int(s)
+                    _log_cohort_event_for_participant(
+                        session,
+                        p,
+                        "slot_assigned",
+                        exp_target=exp_num,
+                        local_slot=s,
+                        reason="allocated_lowest_free_slot",
+                    )
                     return int(exp_num), int(s)
 
         # Cohort is full.
@@ -433,10 +519,22 @@ def assign_slot_if_needed(player):
         if not cohort_complete(session, exp_num):
             p.vars["exp_target"] = int(exp_num)
             p.vars["local_slot"] = 0
+            _log_cohort_event_for_participant(
+                session,
+                p,
+                "waiting_current_cohort_full",
+                exp_target=exp_num,
+                local_slot=0,
+                reason="current_cohort_full_not_complete",
+            )
             return int(exp_num), 0
 
         # Full and complete => go to next exp
         exp_num += 1
+
+
+def assign_slot_if_needed(player):
+    return assign_slot_for_participant(player.session, player.participant)
 
 
 def free_slot_for_participant(session, participant_code: str):
@@ -457,7 +555,7 @@ def free_slot_for_participant(session, participant_code: str):
     for r in rows:
         logger.info(
             f"free_slot_for_participant: freeing exp={int(r.exp_num)} slot={int(r.slot)} "
-            f"participant={participant_code}"
+            f"participant={participant_code} snapshot_before={cohort_debug_snapshot(session, int(r.exp_num))}"
         )
         r.active = False
         r.completed = False
@@ -465,6 +563,10 @@ def free_slot_for_participant(session, participant_code: str):
             r.save()
         except Exception:
             pass
+        logger.info(
+            f"free_slot_for_participant: freed exp={int(r.exp_num)} slot={int(r.slot)} "
+            f"participant={participant_code} snapshot_after={cohort_debug_snapshot(session, int(r.exp_num))}"
+        )
 
 
 def mark_participant_complete_in_cohort(player_or_session, participant_code: str = "", completed: bool = True):
@@ -666,6 +768,61 @@ def mark_participant_drop_out(participant):
     set_participant_status(participant, Constants.STATUS_DROP_OUT)
     participant.vars[BLOCK_FLAG] = True
     participant.vars["returned_from_prolific"] = True
+
+
+def get_participant_prolific_id(participant) -> str:
+    return clean_str(participant.vars.get("prolific_id", "") or getattr(participant, "label", ""))
+
+
+def get_participant_slot_rows(player_or_session, participant_code: str):
+    root = _root_subsession(player_or_session)
+    if not root or not participant_code:
+        return []
+
+    rows = CohortSlot.filter(subsession=root, participant_code=participant_code)
+    result = []
+    for row in sorted(rows, key=lambda r: (int(r.exp_num or 0), int(r.slot or 0), not bool(r.active))):
+        result.append(
+            dict(
+                exp_num=int(row.exp_num or 0),
+                slot=int(row.slot or 0),
+                active=bool(row.active),
+                completed=bool(row.completed),
+            )
+        )
+    return result
+
+
+def get_cohort_snapshot_data(session, exp_num: int):
+    exp_num = max(int(exp_num or 1), 1)
+    root = _root_subsession(session)
+    csize = cohort_size(session)
+
+    rows_by_slot = {}
+    if root:
+        rows = CohortSlot.filter(subsession=root, exp_num=exp_num, active=True)
+        rows_by_slot = {int(r.slot): r for r in rows}
+
+    slots = []
+    for s in range(1, csize + 1):
+        row = rows_by_slot.get(s)
+        slots.append(
+            dict(
+                slot=s,
+                open=row is None,
+                participant_code=clean_str(getattr(row, "participant_code", "")) if row else "",
+                completed=bool(getattr(row, "completed", False)) if row else False,
+            )
+        )
+
+    return dict(
+        exp_num=exp_num,
+        cohort_size=int(csize),
+        complete=cohort_complete(session, exp_num),
+        has_free_slot=_cohort_has_free_slot(session, exp_num),
+        summary=_exp_slot_summary(session, exp_num),
+        slots=slots,
+    )
 
 
 def normalize_key(key):
@@ -1195,10 +1352,27 @@ class WaitForCohort(Page):
 
         # Case A: no slot yet
         if int(local_slot or 0) == 0:
+            reason = "current_cohort_full_not_complete"
+            if int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1):
+                reason = f"previous_exp_{int(exp_target) - 1}_incomplete"
+            _log_cohort_event(
+                player,
+                "wait_page_displayed",
+                exp_target=exp_target,
+                local_slot=local_slot,
+                reason=reason,
+            )
             return True
 
         # Case B: have slot but previous cohort not complete -> must wait
         if int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1):
+            _log_cohort_event(
+                player,
+                "wait_page_displayed",
+                exp_target=exp_target,
+                local_slot=local_slot,
+                reason=f"previous_exp_{int(exp_target) - 1}_incomplete_with_reserved_slot",
+            )
             return True
         # Eligible to proceed -> ensure schedule exists so next page loads cleanly
         ensure_schedule_built(player)
@@ -1438,7 +1612,6 @@ class FinalForProlific(Page):
 
             p1 = self.player.in_round(1)
             p1.completed_experiment = True
-            p1.save()
 
             self.player.participant.vars[f"{Constants.name_in_url}_completed"] = True
             self.player.participant.save()
@@ -1481,6 +1654,10 @@ class CaptureProlificID(Page):
 
         if player.prolific_id_field:
             p.vars["prolific_id"] = player.prolific_id_field
+            try:
+                p.label = player.prolific_id_field
+            except Exception:
+                pass
         if player.study_id_field:
             p.vars["study_id"] = player.study_id_field
         if player.session_id_field:
@@ -1641,7 +1818,7 @@ def custom_export(players):
         session_code = getattr(session_obj, "code", "")
         participant_code = getattr(participant, "code", "")
 
-        prolific_id = participant.vars.get("prolific_id", "")
+        prolific_id = participant.vars.get("prolific_id", "") or getattr(participant, "label", "")
         participant_status = get_participant_status(participant)
         prolific_submission_status = participant.vars.get("prolific_submission_status", "")
         returned_from_prolific = participant.vars.get("returned_from_prolific", False)

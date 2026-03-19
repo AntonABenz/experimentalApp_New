@@ -23,6 +23,15 @@
     font-weight: 700;
     margin-left: 6px;
   }
+  .help-box {
+    display: none;
+    margin-top: 18px;
+    padding: 14px 16px;
+    border: 1px solid #f0d5a8;
+    border-radius: 8px;
+    background: #fff8e8;
+    color: #5c4400;
+  }
 </style>
 
 <div class="wait-wrap">
@@ -54,12 +63,23 @@
     If this page doesn’t advance after a few minutes, please contact the experimenter.
   </p>
 
+  <div id="wait-help" class="help-box">
+    If you have been waiting for more than 30 seconds, this may indicate a technical problem.
+    Please send us a short message and return the task on Prolific.
+    We are sorry for the inconvenience, and thank you for your help.
+  </div>
+
   <button type="button" class="btn btn-secondary" onclick="location.reload()">
     Reload now
   </button>
 </div>
 
 <script>
+  setTimeout(() => {
+    const box = document.getElementById('wait-help');
+    if (box) box.style.display = 'block';
+  }, 30000);
+
   setTimeout(() => location.reload(), 15000);
 </script>
 {% endblock %}
