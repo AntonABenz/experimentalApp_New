@@ -263,6 +263,12 @@ def _root_subsession(obj):
 
         if hasattr(obj, "get_subsessions"):
             subs = obj.get_subsessions()
+            for ss in subs or []:
+                try:
+                    if getattr(getattr(ss, "_meta", None), "app_label", "") == Constants.name_in_url:
+                        return ss.in_round(1)
+                except Exception:
+                    pass
             if subs:
                 return subs[0].in_round(1)
     except Exception:
