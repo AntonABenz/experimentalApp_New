@@ -1,0 +1,605 @@
+﻿Concrete Paste-In Fixes For Developer
+Project: experimentalApp_New
+Date: 2026-03-16
+
+Purpose
+This file contains targeted code that can be pasted into the existing codebase.
+It is intentionally limited to the highest-risk fixes:
+1. stop deleting schedule-backed data on return/time-out
+2. stop overwriting prolific_id with empty request params
+3. normalize Prolific statuses
+4. reduce sentence overwrite risk by keying sentence storage with source participant code
+5. make schedule-building less error-prone
+6. prevent zero timings when client timestamp is missing
+
+Important note
+These snippets are designed to be pasted into the existing files, not to replace the full files.
+The most important files are:
+- img_desc/__init__.py
+- prolific_webhook.py
+
+======================================================================
+1. img_desc/__init__.py
+======================================================================
+
+1A. Replace BAD_PROLIFIC_STATUSES handling with normalized status helper
+
+Keep the constant, but add this helper in img_desc/__init__.py below clean_str():
+
+```python
+def normalize_prolific_status(raw) -> str:
+    s = clean_str(raw).upper().replace("_", "-")
+    return s
+```
+
+Then replace this line inside ProlificStatusGate.is_displayed():
+
+```python
+status = clean_str(player.participant.vars.get("prolific_submission_status", ""))
+return status in Constants.BAD_PROLIFIC_STATUSES
+```
+
+with:
+
+```python
+status = normalize_prolific_status(player.participant.vars.get("prolific_submission_status", ""))
+return status in Constants.BAD_PROLIFIC_STATUSES
+```
+
+
+1B. Replace delete_schedule_for_participant() with a non-destructive version
+
+Replace the full function:
+
+```python
+def delete_schedule_for_participant(obj, participant_code: str):
+    root = _root_subsession(obj)
+    if not root:
+        return
+
+    items = ScheduleItem.filter(subsession=root, participant_code=participant_code)
+    count = len(items)
+
+    for it in items:
+        it.delete()
+
+    logger.info(
+        f"delete_schedule_for_participant: deleted {count} schedule rows "
+        f"for participant={participant_code}"
+    )
+```
+
+with:
+
+```python
+def delete_schedule_for_participant(obj, participant_code: str):
+    """
+    Historical compatibility shim.
+    We no longer delete ScheduleItem rows because they are the canonical
+    source used by export and may already contain collected data.
+    """
+    root = _root_subsession(obj)
+    if not root:
+        return
+
+    count = len(ScheduleItem.filter(subsession=root, participant_code=participant_code))
+    logger.warning(
+        "delete_schedule_for_participant: SKIPPED deletion of %s schedule rows for participant=%s",
+        count,
+        participant_code,
+    )
+```
+
+
+1C. Replace CaptureProlificID with a non-destructive version
+
+Replace the full page class:
+
+```python
+class CaptureProlificID(Page):
+
+    @staticmethod
+    def is_displayed(player):
+        return player.round_number == 1
+    
+    @staticmethod
+    def vars_for_template(player):
+        req = player.request.GET
+        p = player.participant
+
+        p.vars["prolific_id"] = req.get("PROLIFIC_PID")
+        p.vars["study_id"] = req.get("STUDY_ID")
+        p.vars["session_id"] = req.get("SESSION_ID")
+
+        try:
+            p.save()
+        except:
+            pass
+
+        return {}
+```
+
+with:
+
+```python
+class CaptureProlificID(Page):
+
+    @staticmethod
+    def is_displayed(player):
+        return player.round_number == 1
+
+    @staticmethod
+    def vars_for_template(player):
+        req = player.request.GET
+        p = player.participant
+
+        prolific_id = (req.get("PROLIFIC_PID") or req.get("prolific_id") or "").strip()
+        study_id = (req.get("STUDY_ID") or req.get("study_id") or "").strip()
+        session_id = (req.get("SESSION_ID") or req.get("session_id") or "").strip()
+
+        if prolific_id:
+            p.vars["prolific_id"] = prolific_id
+        if study_id:
+            p.vars["study_id"] = study_id
+        if session_id:
+            p.vars["session_id"] = session_id
+
+        try:
+            p.save()
+        except Exception:
+            pass
+
+        return {}
+```
+
+
+1D. Make schedule_exists()/ensure_schedule_built() less fragile
+
+Replace:
+
+```python
+def schedule_exists(obj, participant_code: str) -> bool:
+    return bool(get_schedule_item(obj, participant_code, 1))
+
+
+def ensure_schedule_built(player):
+    pcode = player.participant.code
+    if not pcode:
+        return
+    if schedule_exists(player, pcode):
+        return
+    build_schedule_for_participant(player)
+```
+
+with:
+
+```python
+def schedule_exists(obj, participant_code: str) -> bool:
+    root = _root_subsession(obj)
+    if not root or not participant_code:
+        return False
+    return bool(ScheduleItem.filter(subsession=root, participant_code=participant_code))
+
+
+def ensure_schedule_built(player):
+    pcode = player.participant.code
+    if not pcode:
+        return
+    if schedule_exists(player, pcode):
+        return
+    build_schedule_for_participant(player)
+```
+
+Then also add this guard near the top of build_schedule_for_participant(), right after `root = _root_subsession(player)` and the root check:
+
+```python
+    existing_items = ScheduleItem.filter(subsession=root, participant_code=pcode)
+    if existing_items:
+        logger.info(
+            "build_schedule_for_participant: schedule already exists for participant=%s; skip rebuild",
+            pcode,
+        )
+        return
+```
+
+This is not a full transactional solution, but it removes the most obvious accidental rebuild path.
+
+
+1E. Make sentence keys participant-specific
+
+Replace the existing sentence_key() function:
+
+```python
+def sentence_key(exp_num: int, producer_slot: int, interpreter_slot: int, condition: str) -> str:
+    condition = clean_str(condition)
+    return f"{int(exp_num)}|{int(producer_slot)}|{int(interpreter_slot)}|{condition}"
+```
+
+with:
+
+```python
+def sentence_key(
+    exp_num: int,
+    producer_slot: int,
+    interpreter_slot: int,
+    condition: str,
+    source_participant_code: str = "",
+) -> str:
+    condition = clean_str(condition)
+    source_participant_code = clean_str(source_participant_code)
+    return (
+        f"{int(exp_num)}|{int(producer_slot)}|{int(interpreter_slot)}|"
+        f"{condition}|{source_participant_code}"
+    )
+```
+
+Now update all call sites below.
+
+
+1F. Update Player._resolve_sentence_lookup()
+
+Replace:
+
+```python
+        key = sentence_key(src_exp, prod, interp, cond)
+```
+
+with:
+
+```python
+        source_participant_code = clean_str(lookup.get("source_participant_code"))
+        key = sentence_key(src_exp, prod, interp, cond, source_participant_code)
+```
+
+
+1G. Update required_sentence_keys_for_participant()
+
+Replace:
+
+```python
+        if src_exp >= 0 and prod and interp and cond:
+            needed.add(sentence_key(src_exp, prod, interp, cond))
+```
+
+with:
+
+```python
+        source_participant_code = clean_str(lookup.get("source_participant_code"))
+        if src_exp >= 0 and prod and interp and cond:
+            needed.add(sentence_key(src_exp, prod, interp, cond, source_participant_code))
+```
+
+
+1H. Replace sentences_for_line_from_trialrow()
+
+Replace the full function:
+
+```python
+def sentences_for_line_from_trialrow(tr: TrialRow, exp_target: int):
+    """
+    If producer_slot==0, use tr.producer_sentences.
+    Else create sentence_lookup referencing source_exp=exp_target-1.
+    """
+    producer_slot = int(tr.producer_slot)
+    interpreter_slot = int(tr.interpreter_slot)
+    cond = clean_str(tr.condition)
+
+    if producer_slot == 0:
+        s = tr.producer_sentences or "[]"
+        if isinstance(s, str) and s.strip():
+            return s, None
+        return "[]", None
+
+    return "[]", {
+        "source_exp": int(exp_target) - 1,
+        "producer_slot": int(producer_slot),
+        "interpreter_slot": int(interpreter_slot),
+        "condition": cond,
+    }
+```
+
+with:
+
+```python
+def sentences_for_line_from_trialrow(tr: TrialRow, exp_target: int, source_slot_to_code=None):
+    """
+    If producer_slot==0, use tr.producer_sentences.
+    Else create sentence_lookup referencing source_exp=exp_target-1 and,
+    when available, the source participant_code from the previous cohort.
+    """
+    producer_slot = int(tr.producer_slot)
+    interpreter_slot = int(tr.interpreter_slot)
+    cond = clean_str(tr.condition)
+
+    if producer_slot == 0:
+        s = tr.producer_sentences or "[]"
+        if isinstance(s, str) and s.strip():
+            return s, None
+        return "[]", None
+
+    source_participant_code = ""
+    if isinstance(source_slot_to_code, dict):
+        source_participant_code = clean_str(source_slot_to_code.get(int(producer_slot), ""))
+
+    return "[]", {
+        "source_exp": int(exp_target) - 1,
+        "producer_slot": int(producer_slot),
+        "interpreter_slot": int(interpreter_slot),
+        "condition": cond,
+        "source_participant_code": source_participant_code,
+    }
+```
+
+
+1I. Update build_schedule_for_participant() to snapshot previous cohort producer ownership
+
+Inside build_schedule_for_participant(), add this block after the current slot snapshot:
+
+```python
+    source_slot_to_code = {}
+    if int(exp_target) > 1:
+        prev_slots = CohortSlot.filter(subsession=root, exp_num=int(exp_target) - 1, active=True)
+        source_slot_to_code = {int(r.slot): r.participant_code for r in prev_slots}
+```
+
+Then replace both of these calls:
+
+```python
+            ps, lookup = sentences_for_line_from_trialrow(tr, int(exp_target))
+```
+
+with:
+
+```python
+            ps, lookup = sentences_for_line_from_trialrow(tr, int(exp_target), source_slot_to_code)
+```
+
+Then in the producer block dictionary, replace:
+
+```python
+                sentence_store_key=dict(
+                    exp=int(exp_target),
+                    producer_slot=producer_slot,
+                    interpreter_slot=interpreter_slot,
+                    condition=cond,
+                ),
+```
+
+with:
+
+```python
+                sentence_store_key=dict(
+                    exp=int(exp_target),
+                    producer_slot=producer_slot,
+                    interpreter_slot=interpreter_slot,
+                    condition=cond,
+                    source_participant_code=pcode,
+                ),
+```
+
+
+1J. Update Q.before_next_page() sentence storage write
+
+Replace:
+
+```python
+                if exp_num >= 1 and prod and interp and cond:
+                    k = sentence_key(exp_num, prod, interp, cond)
+                    set_sentence(player, k, player.producer_decision)
+```
+
+with:
+
+```python
+                source_participant_code = clean_str(store_key.get("source_participant_code"))
+                if exp_num >= 1 and prod and interp and cond:
+                    k = sentence_key(exp_num, prod, interp, cond, source_participant_code)
+                    set_sentence(player, k, player.producer_decision)
+```
+
+
+1K. Update custom_export() lookup resolver
+
+Replace:
+
+```python
+        k = sentence_key(src_exp, prod, interp, cond)
+```
+
+with:
+
+```python
+        source_participant_code = clean_str(lookup.get("source_participant_code"))
+        k = sentence_key(src_exp, prod, interp, cond, source_participant_code)
+```
+
+
+1L. Stop deleting schedule data in ProlificStatusGate.get()
+
+Replace:
+
+```python
+    def get(self):
+        # free cohort slot + delete schedule so replacement can take over
+        try:
+            self.player.participant.vars[BLOCK_FLAG] = True
+            free_slot_for_participant(self.player.session, self.player.participant.code)
+            delete_schedule_for_participant(self.player.session, self.player.participant.code)
+            reset_this_app_for_participant(self.player.participant)
+            self.player.participant.save()
+        except Exception:
+            pass
+        return RedirectResponse(Constants.FALLBACK_URL, status_code=302)
+```
+
+with:
+
+```python
+    def get(self):
+        # free cohort slot, but preserve collected schedule-backed data
+        try:
+            self.player.participant.vars[BLOCK_FLAG] = True
+            self.player.participant.vars["returned_from_prolific"] = True
+            free_slot_for_participant(self.player.session, self.player.participant.code)
+            reset_this_app_for_participant(self.player.participant)
+            self.player.participant.save()
+        except Exception:
+            pass
+        return RedirectResponse(Constants.FALLBACK_URL, status_code=302)
+```
+
+
+1M. Prevent zero timings when client_start_ts is missing
+
+Replace this block in Q.before_next_page():
+
+```python
+        if player.client_start_ts and player.client_start_ts > 0:
+            player.start_decision_time = float(player.client_start_ts)
+        else:
+            # fallback if hidden field is missing
+            player.start_decision_time = player.end_decision_time
+
+        player.decision_seconds = max(0, player.end_decision_time - player.start_decision_time)
+```
+
+with:
+
+```python
+        if player.client_start_ts and player.client_start_ts > 0:
+            player.start_decision_time = float(player.client_start_ts)
+            player.decision_seconds = max(0, player.end_decision_time - player.start_decision_time)
+        else:
+            # preserve a missing-client-timestamp signal instead of fabricating zero-duration timing
+            player.start_decision_time = 0
+            player.decision_seconds = None
+```
+```
+
+If `decision_seconds` must remain non-null in your schema, use this instead:
+
+```python
+        if player.client_start_ts and player.client_start_ts > 0:
+            player.start_decision_time = float(player.client_start_ts)
+            player.decision_seconds = max(0, player.end_decision_time - player.start_decision_time)
+        else:
+            player.start_decision_time = 0
+            player.decision_seconds = -1
+```
+
+and document `-1` as "client timing missing".
+
+
+======================================================================
+2. prolific_webhook.py
+======================================================================
+
+2A. Normalize status values and stop deleting schedule rows
+
+Add this helper near the top of prolific_webhook.py:
+
+```python
+def _normalize_status(raw: str) -> str:
+    return (raw or "").strip().upper().replace("_", "-")
+```
+
+Then replace:
+
+```python
+    status = (data.get("status") or data.get("submission_status") or "").strip()
+```
+
+with:
+
+```python
+    status = _normalize_status(data.get("status") or data.get("submission_status") or "")
+```
+
+Then replace the bad-status block:
+
+```python
+    # For bad statuses: free slot + delete schedule so replacement can join immediately
+    if status in Constants.BAD_PROLIFIC_STATUSES:
+        try:
+            session = participant.session
+            free_slot_for_participant(session, participant.code)
+            delete_schedule_for_participant(session, participant.code)
+            reset_this_app_for_participant(participant)
+            logger.info(
+                f"Webhook: freed slot + deleted schedule for participant={participant.code} "
+                f"status={status} prolific_pid={prolific_pid}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Webhook: failed to free slot/delete schedule participant={participant.code}: {e}",
+                exc_info=True,
+            )
+```
+
+with:
+
+```python
+    # For bad statuses: free the slot, but preserve collected schedule-backed data
+    if status in Constants.BAD_PROLIFIC_STATUSES:
+        try:
+            session = participant.session
+            participant.vars["returned_from_prolific"] = True
+            free_slot_for_participant(session, participant.code)
+            reset_this_app_for_participant(participant)
+            participant.save()
+            logger.info(
+                f"Webhook: freed slot without deleting schedule for participant={participant.code} "
+                f"status={status} prolific_pid={prolific_pid}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Webhook: failed to free slot safely for participant={participant.code}: {e}",
+                exc_info=True,
+            )
+```
+
+Optionally remove the now-unused import:
+
+```python
+delete_schedule_for_participant,
+```
+
+
+======================================================================
+3. Recommended immediate test checklist
+======================================================================
+
+After pasting the changes, test these exact scenarios:
+
+1. Normal completion
+- participant completes all 80 rounds
+- export still includes all schedule rows
+- slot remains active+completed
+
+2. Partial completion + return
+- participant completes a few producer rounds
+- webhook sets RETURNED
+- slot is freed
+- ScheduleItem rows remain in DB
+- export still shows partial data
+
+3. Replacement participant
+- replacement takes freed slot
+- replacement data does not overwrite original participant sentence data
+
+4. Missing client_start_ts
+- submit a round with client_start_ts missing
+- decision_seconds is not silently recorded as 0
+
+5. Lowercase prolific params
+- enter with lowercase query params
+- prolific_id is still preserved correctly
+
+
+======================================================================
+4. Honest limitation
+======================================================================
+
+These paste-in changes remove the most dangerous production behaviors.
+They do not fully solve cross-process race conditions in slot assignment.
+A complete solution would still need transactional allocation or stronger uniqueness guarantees around active cohort slots and participant-round schedule rows.

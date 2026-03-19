@@ -54,6 +54,12 @@ PARTICIPANT_FIELDS = [
     "study_id",
     "prolific_session_id",
     "full_study_completed",
+    "participant_status",
+    "returned_from_prolific",
+    "blocked_due_to_return",
+    "prolific_submission_id",
+    "study_id_from_webhook",
+    "img_desc_completed",
 
     # webhook will set this:
     "prolific_submission_status",

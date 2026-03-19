@@ -7,6 +7,11 @@ from reading_xls.get_data import get_data
 
 logger = logging.getLogger(__name__)
 
+PARTICIPANT_STATUS_FIELD = "participant_status"
+STATUS_ACTIVE = "active"
+STATUS_FINISHED = "finished"
+STATUS_DROP_OUT = "drop_out"
+
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
@@ -92,6 +97,10 @@ def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id
 
     if sess_id:
         p.vars["prolific_session_id"] = sess_id
+
+    current_status = clean_str(p.vars.get(PARTICIPANT_STATUS_FIELD))
+    if current_status not in {STATUS_FINISHED, STATUS_DROP_OUT}:
+        p.vars[PARTICIPANT_STATUS_FIELD] = STATUS_ACTIVE
 
     try:
         p.save()

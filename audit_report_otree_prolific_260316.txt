@@ -1,0 +1,133 @@
+**Follow-Up Report**
+
+The updated `img_desc/__init__.py` is still not safe for production. The main failure modes from the previous audit remain open, so the repository can still lose schedule-backed data, leak cohort slots, overwrite stored production, and record zero timings.
+
+The must-fix files are img_desc/__init__.py and prolific_webhook.py.
+
+**Critical findings**
+
+1. `ScheduleItem` rows are still deleted for returned/timed-out participants.
+Files:
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L280)
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L806)
+- [prolific_webhook.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\prolific_webhook.py#L117)
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L1440)
+
+Functions:
+- `delete_schedule_for_participant()`
+- `ProlificStatusGate.get()`
+- `prolific_webhook_view()`
+- `custom_export()`
+
+Failure scenario:
+- A participant completes some rounds.
+- Prolific marks them `RETURNED` or `TIMED-OUT`.
+- The app frees the slot and deletes `ScheduleItem` rows.
+- Export later loses the participant’s recorded production/interpretation data.
+
+Required fix:
+- Stop deleting `ScheduleItem` rows on bad Prolific statuses.
+- Preserve all collected rows and mark the participant with a non-destructive status flag instead.
+
+2. `CaptureProlificID` still overwrites stored Prolific IDs with possibly empty values.
+Files:
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L1400)
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L1668)
+
+Functions:
+- `CaptureProlificID.vars_for_template()`
+
+Failure scenario:
+- `start` captures `prolific_id` correctly.
+- `img_desc` later receives a request without `PROLIFIC_PID`, or with lowercase params.
+- `CaptureProlificID` writes `None`/empty into `participant.vars["prolific_id"]`.
+- The webhook later cannot find the participant and the slot is never freed.
+
+Required fix:
+- Remove `CaptureProlificID`, or only write values when the incoming parameter is non-empty.
+- Support both uppercase and lowercase parameter names if this page must remain.
+
+3. Sentence storage is still vulnerable to overwrite by replacement participants.
+Files:
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L95)
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L307)
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L668)
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L1258)
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L1474)
+
+Functions:
+- `sentence_key()`
+- `set_sentence()`
+- `_resolve_sentence_lookup()`
+- `Q.before_next_page()`
+
+Failure scenario:
+- Original participant produces a sentence and returns.
+- Replacement fills the same slot.
+- Because the key is only `exp|producer_slot|interpreter_slot|condition`, the replacement overwrites the original participant’s stored production.
+
+Required fix:
+- Key production data by a unique trial identity.
+- Include at least `participant_code` plus `round_number`, or a stable `TrialRow`/schedule row ID.
+
+4. Slot assignment and schedule construction are still race-prone.
+Files:
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L264)
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L297)
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L376)
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L956)
+
+Functions:
+- `get_schedule_item()`
+- `ensure_schedule_built()`
+- `assign_slot_if_needed()`
+- `build_schedule_for_participant()`
+
+Failure scenario:
+- Two requests arrive close together.
+- Both see no schedule for round 1.
+- Both build schedules or assign slots.
+- Later reads use `qs[0]`, so duplicates produce nondeterministic behavior.
+
+Required fix:
+- Make slot assignment atomic.
+- Add uniqueness for participant/round schedule rows.
+- Add a durable `schedule_built` marker and never rebuild after response collection begins.
+
+**Additional risks**
+
+5. Timing values can still be recorded as zero.
+Files:
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L1241)
+- [Q.html](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\templates\img_desc\Q.html#L99)
+
+Functions:
+- `Q.before_next_page()`
+
+Issue:
+- If `client_start_ts` is missing, `start_decision_time` is set equal to `end_decision_time`, which forces `decision_seconds = 0`.
+
+Suggested fix:
+- Record a server-side page-enter timestamp and use client timing only as a supplement.
+
+6. Bad-status handling is still exact-match only.
+Files:
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L29)
+- [img_desc/__init__.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\__init__.py#L812)
+- [prolific_webhook.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\prolific_webhook.py#L103)
+
+Issue:
+- Statuses are still matched exactly against `TIMED-OUT`, `RETURNED`, `REJECTED`.
+
+Suggested fix:
+- Normalize incoming status strings before comparison, for example uppercase plus `_` to `-`.
+
+**Recommended release blocker list**
+- Remove all schedule deletion on participant return/time-out.
+- Make Prolific ID capture non-destructive or remove the duplicate capture page.
+- Redesign sentence storage keys to prevent overwrite by replacements.
+- Make slot assignment and schedule creation idempotent and atomic.
+
+**Bottom line**
+
+The current update does not close the original production risks. The app should not be considered safe for a live Prolific run until the destructive schedule deletion and Prolific ID overwrite paths are removed at minimum.

@@ -27,6 +27,12 @@ class Constants(BaseConstants):
     API_ERR_URL = STUBURL + API_ERR
 
     BAD_PROLIFIC_STATUSES = {"TIMED-OUT", "RETURNED", "REJECTED"}
+    ACTIVE_PROLIFIC_STATUSES = {"ACTIVE", "AWAITING REVIEW", "PENDING", "SUBMITTED"}
+    APPROVED_PROLIFIC_STATUSES = {"APPROVED"}
+    PARTICIPANT_STATUS_FIELD = "participant_status"
+    STATUS_ACTIVE = "active"
+    STATUS_FINISHED = "finished"
+    STATUS_DROP_OUT = "drop_out"
 
 
 # ----------------------------------------------------------------------------
@@ -381,11 +387,13 @@ def assign_slot_if_needed(player):
     if not root:
         return 1, 1
 
-    # HARD BLOCK: once Prolific marks bad status, never reassign this participant
-    if p.vars.get(BLOCK_FLAG):
+    participant_status = get_participant_status(p)
+    if participant_status == Constants.STATUS_DROP_OUT or p.vars.get(BLOCK_FLAG):
         p.vars["exp_target"] = 0
         p.vars["local_slot"] = 0
         return 0, 0
+    if participant_status != Constants.STATUS_FINISHED:
+        mark_participant_active(p)
 
     # already assigned?
     existing = _participant_active_assignment(root, p.code)
@@ -459,13 +467,17 @@ def free_slot_for_participant(session, participant_code: str):
             pass
 
 
-def mark_participant_complete_in_cohort(player):
-    root = _root_subsession(player)
+def mark_participant_complete_in_cohort(player_or_session, participant_code: str = "", completed: bool = True):
+    root = _root_subsession(player_or_session)
     if not root:
         return
-    rows = CohortSlot.filter(subsession=root, participant_code=player.participant.code, active=True)
+    if hasattr(player_or_session, "participant"):
+        participant_code = player_or_session.participant.code
+    if not participant_code:
+        return
+    rows = CohortSlot.filter(subsession=root, participant_code=participant_code, active=True)
     for r in rows:
-        r.completed = True
+        r.completed = bool(completed)
         try:
             r.save()
         except Exception:
@@ -573,6 +585,23 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
         _set_expansion_state(player, exp_num, status="failed", message="exception")
 
 
+def maybe_expand_prolific_for_participant(participant) -> None:
+    """
+    Webhook-safe adapter for delayed approval events.
+    Uses any img_desc player row belonging to the participant to evaluate
+    cohort completion and expansion state.
+    """
+    try:
+        players = participant.get_players()
+    except Exception:
+        players = []
+
+    for pp in players:
+        if hasattr(pp, "completed_experiment"):
+            maybe_expand_prolific_when_cohort_complete(pp)
+            return
+
+
 # ----------------------------------------------------------------------------
 # UTIL
 # ----------------------------------------------------------------------------
@@ -598,6 +627,45 @@ def clean_str(x) -> str:
     if s.lower() == "none":
         return "None"
     return s
+
+
+def get_participant_status(participant) -> str:
+    status = clean_str(participant.vars.get(Constants.PARTICIPANT_STATUS_FIELD, "")).lower()
+    if status in {
+        Constants.STATUS_ACTIVE,
+        Constants.STATUS_FINISHED,
+        Constants.STATUS_DROP_OUT,
+    }:
+        return status
+    return ""
+
+
+def set_participant_status(participant, status: str):
+    status = clean_str(status).lower()
+    if status not in {
+        Constants.STATUS_ACTIVE,
+        Constants.STATUS_FINISHED,
+        Constants.STATUS_DROP_OUT,
+    }:
+        return
+    participant.vars[Constants.PARTICIPANT_STATUS_FIELD] = status
+
+
+def mark_participant_active(participant):
+    current = get_participant_status(participant)
+    if current not in {Constants.STATUS_FINISHED, Constants.STATUS_DROP_OUT}:
+        set_participant_status(participant, Constants.STATUS_ACTIVE)
+
+
+def mark_participant_finished(participant):
+    set_participant_status(participant, Constants.STATUS_FINISHED)
+    participant.vars.pop(BLOCK_FLAG, None)
+
+
+def mark_participant_drop_out(participant):
+    set_participant_status(participant, Constants.STATUS_DROP_OUT)
+    participant.vars[BLOCK_FLAG] = True
+    participant.vars["returned_from_prolific"] = True
 
 
 def normalize_key(key):
@@ -709,8 +777,6 @@ def reset_this_app_for_participant(participant):
         "local_slot",
     ]:
         participant.vars.pop(k, None)
-
-    participant.vars.pop(f"{Constants.name_in_url}_completed", None)
     try:
         participant._index_in_pages = 0
     except Exception:
@@ -800,16 +866,20 @@ def required_sentence_keys_for_participant(player) -> set:
 class ProlificStatusGate(Page):
     @staticmethod
     def is_displayed(player):
-        # don't retroactively gate completed participants
-        if participant_completed_app(player.participant, Constants.name_in_url):
-            return False
+        if get_participant_status(player.participant) == Constants.STATUS_DROP_OUT:
+            return True
         status = clean_str(player.participant.vars.get("prolific_submission_status", ""))
         return status in Constants.BAD_PROLIFIC_STATUSES
 
     def get(self):
         try:
-            self.player.participant.vars[BLOCK_FLAG] = True
+            mark_participant_drop_out(self.player.participant)
             free_slot_for_participant(self.player.session, self.player.participant.code)
+            mark_participant_complete_in_cohort(
+                self.player.session,
+                self.player.participant.code,
+                completed=False,
+            )
             self.player.participant.save()
         except Exception:
             pass
@@ -1337,16 +1407,16 @@ class Feedback(Page):
     @staticmethod
     def before_next_page(player, timeout_happened):
         mark_participant_completed_app(player.participant, Constants.name_in_url)
+        if not player.session.config.get("for_prolific"):
+            mark_participant_finished(player.participant)
+            mark_participant_complete_in_cohort(player, completed=True)
         try:
             player.participant.save()
         except Exception:
             pass
 
-        # mark cohort completion in DB
-        mark_participant_complete_in_cohort(player)
-
-        # if cohort now complete, expand Prolific places (once per exp_num)
-        maybe_expand_prolific_when_cohort_complete(player)
+        if not player.session.config.get("for_prolific"):
+            maybe_expand_prolific_when_cohort_complete(player)
 
 
 PROLIFIC_COMPLETE_BASE = "https://app.prolific.com/submissions/complete?cc="
@@ -1361,6 +1431,8 @@ class FinalForProlific(Page):
 
     def get(self):
         try:
+            mark_participant_completed_app(self.player.participant, Constants.name_in_url)
+            mark_participant_finished(self.player.participant)
             mark_participant_complete_in_cohort(self.player)
             maybe_expand_prolific_when_cohort_complete(self.player)
 
@@ -1399,7 +1471,7 @@ class CaptureProlificID(Page):
         return dict(
             prolific_pid=p.vars.get("prolific_id", ""),
             study_id=p.vars.get("study_id", ""),
-            session_id=p.vars.get("session_id", ""),
+            session_id=p.vars.get("prolific_session_id", ""),
         )
 
 
@@ -1412,7 +1484,9 @@ class CaptureProlificID(Page):
         if player.study_id_field:
             p.vars["study_id"] = player.study_id_field
         if player.session_id_field:
-            p.vars["session_id"] = player.session_id_field
+            p.vars["prolific_session_id"] = player.session_id_field
+
+        mark_participant_active(p)
 
         try:
             p.save()
@@ -1505,6 +1579,10 @@ def custom_export(players):
         "session",
         "participant",
         "prolific_id",
+        "participant_status",
+        "prolific_submission_status",
+        "returned_from_prolific",
+        "img_desc_completed",
         *[f"demo_{k}" for k in demo_keys],
         "exp_num",
         "round",
@@ -1564,6 +1642,10 @@ def custom_export(players):
         participant_code = getattr(participant, "code", "")
 
         prolific_id = participant.vars.get("prolific_id", "")
+        participant_status = get_participant_status(participant)
+        prolific_submission_status = participant.vars.get("prolific_submission_status", "")
+        returned_from_prolific = participant.vars.get("returned_from_prolific", False)
+        img_desc_completed = participant.vars.get(f"{Constants.name_in_url}_completed", False)
 
         demo_obj = {}
         try:
@@ -1632,6 +1714,10 @@ def custom_export(players):
                 session_code,
                 participant_code,
                 prolific_id,
+                participant_status,
+                prolific_submission_status,
+                returned_from_prolific,
+                img_desc_completed,
                 *demo_cols,
                 exp_num,
                 rnd,

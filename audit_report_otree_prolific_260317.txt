@@ -1,0 +1,38 @@
+Short Developer Report
+
+The latest update is a meaningful improvement and removes the biggest production risk from the earlier audit.
+
+What was fixed well
+
+Schedule-backed data is no longer deleted on participant return/time-out.
+The Prolific webhook now normalizes status values before matching.
+Slot freeing now happens without destructive schedule cleanup.
+CaptureProlificID is safer than before because it no longer blindly overwrites stored IDs with empty request values.
+Overall, the app now looks reasonably safer for a monitored live run than the previous version.
+Why this matters
+These changes directly reduce the chance of:
+
+losing partial experimental data after a Prolific return
+leaving cohort slots permanently blocked because of destructive cleanup
+mismatches between webhook state and stored participant progress
+Two follow-up fixes I still recommend
+
+Add participant status/completion fields to export.
+Guideline:
+In custom_export() in [img_desc/init.py](C:\Users\benz\OneDrive - Leibniz-ZAS\Projekte\AIBR_Experiments\experimentalApp_New\img_desc\_init_.py), add export columns for:
+prolific_submission_status
+returned_from_prolific
+img_desc_completed or equivalent app completion flag
+This does not change runtime behavior, but it makes analysis much safer because returned/partial participants can be filtered explicitly instead of being mixed into the main dataset.
+Make SentenceStore keys unique to the actual source participant/trial.
+Guideline:
+Update sentence_key() and the related lookup/write paths so the key includes more than exp + producer_slot + interpreter_slot + condition.
+The simplest safe improvement is to include participant_code of the producer, or a stable trial/schedule identifier.
+Then update:
+_resolve_sentence_lookup()
+required_sentence_keys_for_participant()
+Q.before_next_page()
+custom_export()._resolve_lookup()
+This will prevent replacements from overwriting earlier production data written for the same logical slot.
+Bottom line
+The current version is notably better and probably acceptable for a monitored run, but these two follow-up fixes would make the dataset much more robust and much easier to analyze correctly.

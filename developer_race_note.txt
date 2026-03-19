@@ -1,0 +1,185 @@
+﻿Optional Race-Condition Hardening Note
+Project: experimentalApp_New
+Date: 2026-03-16
+
+Purpose
+These changes are optional.
+They do not fully serialize slot allocation across processes, but they are simple and reduce accidental duplicate schedule creation and duplicate active-slot assignment.
+
+Use these only if you want a small safety improvement without a larger refactor.
+
+======================================================================
+1. img_desc/__init__.py
+======================================================================
+
+1A. Make get_schedule_item() deterministic
+
+Replace:
+
+```python
+def get_schedule_item(obj, participant_code: str, round_number: int):
+    root = _root_subsession(obj)
+    if not root or not participant_code or not round_number:
+        return None
+    qs = ScheduleItem.filter(
+        subsession=root,
+        participant_code=participant_code,
+        round_number=int(round_number),
+    )
+    return qs[0] if qs else None
+```
+
+with:
+
+```python
+def get_schedule_item(obj, participant_code: str, round_number: int):
+    root = _root_subsession(obj)
+    if not root or not participant_code or not round_number:
+        return None
+
+    # Sort so duplicate rows, if they ever exist, resolve consistently.
+    qs = ScheduleItem.filter(
+        subsession=root,
+        participant_code=participant_code,
+        round_number=int(round_number),
+    )
+    qs.sort(key=lambda it: int(getattr(it, "id", 0) or 0))
+    return qs[0] if qs else None
+```
+
+
+1B. Add a small duplicate guard before creating a schedule row
+
+In `build_schedule_for_participant()`, replace the producer-row creation block:
+
+```python
+            ScheduleItem.create(
+                subsession=root,
+                participant_code=pcode,
+                round_number=int(otree_round_counter),
+                data=json.dumps(d),
+            )
+```
+
+with:
+
+```python
+            # Skip if another request already created this participant/round row.
+            existing_row = ScheduleItem.filter(
+                subsession=root,
+                participant_code=pcode,
+                round_number=int(otree_round_counter),
+            )
+            if not existing_row:
+                ScheduleItem.create(
+                    subsession=root,
+                    participant_code=pcode,
+                    round_number=int(otree_round_counter),
+                    data=json.dumps(d),
+                )
+```
+
+Do the same for the interpreter-row creation block:
+
+```python
+            # Skip if another request already created this participant/round row.
+            existing_row = ScheduleItem.filter(
+                subsession=root,
+                participant_code=pcode,
+                round_number=int(otree_round_counter),
+            )
+            if not existing_row:
+                ScheduleItem.create(
+                    subsession=root,
+                    participant_code=pcode,
+                    round_number=int(otree_round_counter),
+                    data=json.dumps(d),
+                )
+```
+
+
+1C. Add a duplicate-active-slot guard in assign_slot_if_needed()
+
+Inside `assign_slot_if_needed()`, replace:
+
+```python
+                    CohortSlot.create(
+                        subsession=root,
+                        exp_num=int(exp_num),
+                        slot=int(s),
+                        participant_code=p.code,
+                        active=True,
+                        completed=False,
+                    )
+```
+
+with:
+
+```python
+                    # Re-check the slot immediately before create to reduce
+                    # duplicate active-slot rows under near-simultaneous requests.
+                    row_now = _active_slot_row(root, exp_num, s)
+                    if row_now:
+                        continue
+
+                    CohortSlot.create(
+                        subsession=root,
+                        exp_num=int(exp_num),
+                        slot=int(s),
+                        participant_code=p.code,
+                        active=True,
+                        completed=False,
+                    )
+```
+
+
+1D. Add lightweight duplicate logging for easier diagnosis
+
+Add this helper near the schedule utilities:
+
+```python
+def log_duplicate_schedule_rows(obj, participant_code: str):
+    root = _root_subsession(obj)
+    if not root or not participant_code:
+        return
+
+    # Count duplicates by round so logs reveal accidental double-builds.
+    counts = {}
+    rows = ScheduleItem.filter(subsession=root, participant_code=participant_code)
+    for row in rows:
+        rn = int(getattr(row, "round_number", 0) or 0)
+        counts[rn] = counts.get(rn, 0) + 1
+
+    duplicates = [rn for rn, count in counts.items() if count > 1]
+    if duplicates:
+        logger.warning(
+            "Duplicate ScheduleItem rows detected for participant=%s rounds=%s",
+            participant_code,
+            duplicates,
+        )
+```
+```
+
+Then call it once at the end of `build_schedule_for_participant()`:
+
+```python
+    # Emit a warning if concurrent requests created duplicate rows.
+    log_duplicate_schedule_rows(player, pcode)
+```
+
+
+======================================================================
+2. What this does and does not fix
+======================================================================
+
+These changes help with:
+- duplicate `ScheduleItem` rows for the same participant/round
+- duplicate active-slot rows from very close requests
+- nondeterministic reads when duplicates already exist
+
+These changes do not fully fix:
+- true cross-process race conditions on multiple web workers
+- the need for database-level uniqueness or transactional slot allocation
+
+Given your setup, this note is optional.
+If participant completions are rarely simultaneous, the earlier paste-fix file is much more important than this one.

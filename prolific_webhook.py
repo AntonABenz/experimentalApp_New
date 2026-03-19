@@ -12,13 +12,17 @@ from img_desc.utils import verify_prolific_webhook
 from img_desc import (
     reset_this_app_for_participant,
     free_slot_for_participant,
+    mark_participant_active,
+    mark_participant_complete_in_cohort,
+    mark_participant_drop_out,
+    mark_participant_finished,
+    maybe_expand_prolific_for_participant,
     Constants,
     clean_str,
+    get_participant_status,
 )
 
 logger = logging.getLogger("benzapp.prolific_webhook")
-
-BLOCK_FLAG = "blocked_due_to_return"
 
 
 def normalize_prolific_status(raw) -> str:
@@ -27,8 +31,9 @@ def normalize_prolific_status(raw) -> str:
 
 def _find_participant_by_prolific_id(prolific_pid: str):
     """
-    Best-effort lookup. Primary: vars['prolific_id'].
-    Fallback: scan recent participants if needed.
+    Best-effort lookup.
+    Primary: vars['prolific_id'].
+    Fallbacks: participant.label, then recent-participant scan.
     """
     prolific_pid = (prolific_pid or "").strip()
     if not prolific_pid:
@@ -42,8 +47,15 @@ def _find_participant_by_prolific_id(prolific_pid: str):
         pass
 
     try:
+        qs = Participant.objects.filter(label=prolific_pid)
+        if qs.exists():
+            return qs.order_by("-id").first()
+    except Exception:
+        pass
+
+    try:
         for p in Participant.objects.all().order_by("-id")[:3000]:
-            if p.vars.get("prolific_id") == prolific_pid:
+            if p.vars.get("prolific_id") == prolific_pid or getattr(p, "label", "") == prolific_pid:
                 return p
     except Exception:
         pass
@@ -106,12 +118,24 @@ async def prolific_webhook_view(request: Request):
         )
         return JSONResponse({"ok": True, "note": "participant_not_found"})
 
+    if not get_participant_status(participant):
+        mark_participant_active(participant)
+
     participant.vars["prolific_submission_status"] = status
     participant.vars["prolific_submission_id"] = submission_id
     participant.vars["study_id_from_webhook"] = study_id
 
     if status in Constants.BAD_PROLIFIC_STATUSES:
-        participant.vars[BLOCK_FLAG] = True
+        mark_participant_drop_out(participant)
+    elif status in Constants.APPROVED_PROLIFIC_STATUSES:
+        mark_participant_finished(participant)
+        mark_participant_complete_in_cohort(
+            participant.session,
+            participant.code,
+            completed=True,
+        )
+    elif status in Constants.ACTIVE_PROLIFIC_STATUSES:
+        mark_participant_active(participant)
 
     try:
         participant.save()
@@ -122,25 +146,17 @@ async def prolific_webhook_view(request: Request):
             prolific_pid,
         )
 
-    already_completed = bool(
-        participant.vars.get(f"{Constants.name_in_url}_completed", False)
-    )
-    if already_completed:
-        logger.info(
-            "Webhook: bad_status=%s but participant already completed app; skip freeing slot. participant=%s prolific_pid=%s",
-            status,
-            participant.code,
-            prolific_pid,
-        )
-        return JSONResponse({"ok": True, "note": "already_completed"})
-
     if status in Constants.BAD_PROLIFIC_STATUSES:
         try:
             session = participant.session
-            participant.vars["returned_from_prolific"] = True
 
             free_slot_for_participant(session, participant.code)
             reset_this_app_for_participant(participant)
+            mark_participant_complete_in_cohort(
+                session,
+                participant.code,
+                completed=False,
+            )
             participant.save()
 
             logger.info(
@@ -157,5 +173,14 @@ async def prolific_webhook_view(request: Request):
                 e,
                 exc_info=True,
             )
+
+    if status in Constants.APPROVED_PROLIFIC_STATUSES:
+        maybe_expand_prolific_for_participant(participant)
+        logger.info(
+            "Webhook: marked participant finished participant=%s status=%s prolific_pid=%s",
+            participant.code,
+            status,
+            prolific_pid,
+        )
 
     return JSONResponse({"ok": True})
