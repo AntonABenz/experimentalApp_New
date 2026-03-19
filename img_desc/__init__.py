@@ -254,23 +254,37 @@ def _root_subsession(obj):
       - Subsession
       - Session
     """
+    session_obj = None
+
+    try:
+        if hasattr(obj, "subsession") and getattr(getattr(obj.subsession, "_meta", None), "app_label", "") == Constants.name_in_url:
+            return obj.subsession.in_round(1)
+
+        if hasattr(obj, "in_round") and getattr(getattr(obj, "_meta", None), "app_label", "") == Constants.name_in_url:
+            return obj.in_round(1)
+
+        if hasattr(obj, "session"):
+            session_obj = obj.session
+        elif hasattr(obj, "subsession") and hasattr(obj.subsession, "session"):
+            session_obj = obj.subsession.session
+        elif hasattr(obj, "get_subsessions"):
+            session_obj = obj
+    except Exception:
+        pass
+
+    if session_obj is not None:
+        try:
+            qs = Subsession.filter(session=session_obj, round_number=1)
+            if qs:
+                return qs[0]
+        except Exception:
+            pass
+
     try:
         if hasattr(obj, "subsession"):
             return obj.subsession.in_round(1)
-
         if hasattr(obj, "in_round"):
             return obj.in_round(1)
-
-        if hasattr(obj, "get_subsessions"):
-            subs = obj.get_subsessions()
-            for ss in subs or []:
-                try:
-                    if getattr(getattr(ss, "_meta", None), "app_label", "") == Constants.name_in_url:
-                        return ss.in_round(1)
-                except Exception:
-                    pass
-            if subs:
-                return subs[0].in_round(1)
     except Exception:
         pass
 
