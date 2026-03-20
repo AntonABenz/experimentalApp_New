@@ -393,6 +393,13 @@ def _cohort_has_free_slot(session, exp_num: int) -> bool:
     return False
 
 
+def experiment_exists(session, exp_num: int) -> bool:
+    root = _root_subsession(session)
+    if not root or int(exp_num or 0) <= 0:
+        return False
+    return bool(TrialRow.filter(subsession=root, exp_num=int(exp_num)))
+
+
 def _exp_slot_summary(session, exp_num: int) -> str:
     root = _root_subsession(session)
     if not root:
@@ -681,6 +688,20 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
         return
 
     if not cohort_complete(session, exp_num):
+        return
+
+    if not experiment_exists(session, exp_num + 1):
+        logger.info(
+            "Prolific expansion skipped: no later experiment exists after exp_num=%s",
+            exp_num,
+        )
+        _set_expansion_state(
+            player,
+            exp_num,
+            status="success",
+            message="no_next_experiment",
+            bump_attempt=False,
+        )
         return
 
     if _expansion_succeeded(player, exp_num):

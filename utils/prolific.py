@@ -20,6 +20,22 @@ def _get_env(name: str) -> str:
     return v
 
 
+def _get_prolific_token() -> str:
+    """
+    Backward-compatible token lookup.
+    New helper accepts either:
+      - PROLIFIC_API_TOKEN
+      - PROLIFIC_API_KEY
+    because older parts of the app and existing Heroku config may still use
+    PROLIFIC_API_KEY.
+    """
+    for name in ("PROLIFIC_API_TOKEN", "PROLIFIC_API_KEY"):
+        v = (os.environ.get(name) or "").strip()
+        if v:
+            return v
+    raise RuntimeError("Missing required env var: PROLIFIC_API_TOKEN or PROLIFIC_API_KEY")
+
+
 def _auth_headers(token: str) -> dict:
     return {"Authorization": f"Token {token}"}
 
@@ -55,7 +71,7 @@ def maybe_expand_slots(enabled: bool, batch_done: bool) -> Tuple[bool, str]:
     Increase Prolific study places when a batch is done.
 
     Required env vars:
-      - PROLIFIC_API_TOKEN
+      - PROLIFIC_API_TOKEN or PROLIFIC_API_KEY
       - PROLIFIC_STUDY_ID
 
     Optional env vars:
@@ -75,7 +91,7 @@ def maybe_expand_slots(enabled: bool, batch_done: bool) -> Tuple[bool, str]:
         return False, "lock_busy"
 
     try:
-        token = _get_env("PROLIFIC_API_TOKEN")
+        token = _get_prolific_token()
         study_id = _get_env("PROLIFIC_STUDY_ID")
 
         expand_by_raw = (os.environ.get("PROLIFIC_EXPAND_BY") or "4").strip()
