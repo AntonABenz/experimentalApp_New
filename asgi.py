@@ -152,15 +152,20 @@ class ProlificCaptureCookieMiddleware(BaseHTTPMiddleware):
         should_clear_cookie = False
         payload = _load_signed_cookie(request.cookies.get(PROLIFIC_CAPTURE_COOKIE, ""))
         request_payload = _extract_prolific_cookie_payload(request)
+        participant_code = _participant_code_from_path(request.url.path)
 
         if payload:
-            participant_code = _participant_code_from_path(request.url.path)
             if participant_code:
                 participant = Participant.objects.filter(code=participant_code).order_by("-id").first()
                 if participant and _apply_prolific_cookie_to_participant(participant, payload):
                     should_clear_cookie = True
 
         response = await call_next(request)
+
+        if payload and not should_clear_cookie and participant_code:
+            participant = Participant.objects.filter(code=participant_code).order_by("-id").first()
+            if participant and _apply_prolific_cookie_to_participant(participant, payload):
+                should_clear_cookie = True
 
         if request_payload.get("prolific_id") and not payload:
             response.set_cookie(
