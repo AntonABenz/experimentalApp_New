@@ -118,6 +118,9 @@ def _apply_prolific_cookie_to_participant(participant, payload: dict) -> bool:
         participant.vars["prolific_id"] = prolific_id
         changed = True
 
+    # Stable identifier semantics, do not repurpose:
+    # participant.label is reserved here as a fallback copy of the Prolific PID.
+    # It must not be reused for spreadsheet participant ids or status labels.
     if getattr(participant, "label", "") != prolific_id:
         participant.label = prolific_id
         changed = True

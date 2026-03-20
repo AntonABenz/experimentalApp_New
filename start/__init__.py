@@ -462,6 +462,9 @@ page_sequence = [
 
 
 def custom_export(players):
+    # Stable export API, do not repurpose:
+    # - "participant_code" is the opaque oTree participant code
+    # - "prolific_id" is the Prolific PID, with participant.label only as fallback
     yield [
         "session_code",
         "participant_code",

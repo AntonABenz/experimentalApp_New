@@ -1735,6 +1735,11 @@ def custom_export(players):
       - Group by participant
       - Read schedule from ScheduleItem table
       - Use Player rows only for timing + feedback
+
+    Stable export API, do not repurpose:
+      - "participant" must remain the spreadsheet participant slot id (1..N),
+        never the opaque oTree participant code.
+      - "participant_code" is the separate field for the opaque oTree code.
     """
 
     def _get_choices(session_vars):
@@ -1792,7 +1797,10 @@ def custom_export(players):
         except Exception:
             pass
 
-    # header
+    # Stable export API, do not repurpose existing field meanings here.
+    # In particular:
+    # - "participant" means spreadsheet participant slot id (1..N)
+    # - "participant_code" means opaque oTree participant code
     yield [
         "session",
         "participant",
@@ -1860,6 +1868,10 @@ def custom_export(players):
         session_code = getattr(session_obj, "code", "")
         participant_code = getattr(participant, "code", "")
 
+        # Stable identifier semantics:
+        # - prolific_id is the Prolific PID
+        # - participant.label is intentionally used only as a fallback store
+        #   for the Prolific PID, not for spreadsheet participant ids
         prolific_id = participant.vars.get("prolific_id", "") or getattr(participant, "label", "")
         participant_status = get_participant_status(participant)
         prolific_submission_status = participant.vars.get("prolific_submission_status", "")
@@ -1915,6 +1927,9 @@ def custom_export(players):
             prod_id = safe_int(item.get("producer_slot"), 0)
             interp_id = safe_int(item.get("interpreter_slot"), 0)
             exp_num = item.get("exp", "")
+            # Stable export API, do not repurpose:
+            # "participant" below must identify the spreadsheet participant slot
+            # for this row's role, because downstream analysis scripts rely on it.
             participant_slot = ""
             if my_role == PRODUCER:
                 participant_slot = prod_id
