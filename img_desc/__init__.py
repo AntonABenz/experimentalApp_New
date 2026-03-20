@@ -1796,6 +1796,7 @@ def custom_export(players):
     yield [
         "session",
         "participant",
+        "participant_code",
         "prolific_id",
         "participant_status",
         "prolific_submission_status",
@@ -1914,6 +1915,11 @@ def custom_export(players):
             prod_id = safe_int(item.get("producer_slot"), 0)
             interp_id = safe_int(item.get("interpreter_slot"), 0)
             exp_num = item.get("exp", "")
+            participant_slot = ""
+            if my_role == PRODUCER:
+                participant_slot = prod_id
+            elif my_role == INTERPRETER:
+                participant_slot = interp_id
 
             raw_sentences = item.get("producer_sentences") or ""
             if not raw_sentences or (isinstance(raw_sentences, str) and raw_sentences.strip() in {"", "[]"}):
@@ -1930,6 +1936,7 @@ def custom_export(players):
 
             yield [
                 session_code,
+                participant_slot,
                 participant_code,
                 prolific_id,
                 participant_status,
