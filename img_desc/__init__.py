@@ -4,12 +4,14 @@ import json
 import logging
 import time
 import re
+import threading
 from starlette.responses import RedirectResponse
 
 from .utils import STUBURL
 from utils.prolific import maybe_expand_slots  # repo-root utils/
 
 logger = logging.getLogger("benzapp.img_desc")
+_cohort_assignment_lock = threading.Lock()
 
 PRODUCER = "P"
 INTERPRETER = "I"
@@ -532,84 +534,85 @@ def assign_slot_for_participant(session, participant):
     if not root:
         return 1, 1
 
-    participant_status = get_participant_status(p)
-    if participant_status == Constants.STATUS_DROP_OUT or p.vars.get(BLOCK_FLAG):
-        p.vars["exp_target"] = 0
-        p.vars["local_slot"] = 0
-        _log_cohort_event_for_participant(
-            session,
-            p,
-            "blocked_before_assignment",
-            exp_target=0,
-            local_slot=0,
-            reason="participant_status_drop_out_or_block_flag",
-        )
-        return 0, 0
-    if participant_status != Constants.STATUS_FINISHED:
-        mark_participant_active(p)
-
-    existing = _participant_active_assignment(root, p.code)
-    if existing:
-        p.vars["exp_target"] = int(existing.exp_num)
-        p.vars["local_slot"] = int(existing.slot)
-        return int(existing.exp_num), int(existing.slot)
-
-    exp_num = 1
-    while True:
-        if exp_num > 1 and not cohort_complete(session, exp_num - 1):
-            p.vars["exp_target"] = int(exp_num)
+    with _cohort_assignment_lock:
+        participant_status = get_participant_status(p)
+        if participant_status == Constants.STATUS_DROP_OUT or p.vars.get(BLOCK_FLAG):
+            p.vars["exp_target"] = 0
             p.vars["local_slot"] = 0
             _log_cohort_event_for_participant(
                 session,
                 p,
-                "waiting_previous_cohort_incomplete",
-                exp_target=exp_num,
+                "blocked_before_assignment",
+                exp_target=0,
                 local_slot=0,
-                reason=f"previous_exp_{int(exp_num) - 1}_incomplete",
+                reason="participant_status_drop_out_or_block_flag",
             )
-            return int(exp_num), 0
+            return 0, 0
+        if participant_status != Constants.STATUS_FINISHED:
+            mark_participant_active(p)
 
-        if _cohort_has_free_slot(session, exp_num):
-            csize = cohort_size(session)
-            for s in range(1, csize + 1):
-                if not _active_slot_row(root, exp_num, s):
-                    row_now = _active_slot_row(root, exp_num, s)
-                    if row_now:
-                        continue
-                    CohortSlot.create(
-                        subsession=root,
-                        exp_num=int(exp_num),
-                        slot=int(s),
-                        participant_code=p.code,
-                        active=True,
-                        completed=False,
-                    )
-                    p.vars["exp_target"] = int(exp_num)
-                    p.vars["local_slot"] = int(s)
-                    _log_cohort_event_for_participant(
-                        session,
-                        p,
-                        "slot_assigned",
-                        exp_target=exp_num,
-                        local_slot=s,
-                        reason="allocated_lowest_free_slot",
-                    )
-                    return int(exp_num), int(s)
+        existing = _participant_active_assignment(root, p.code)
+        if existing:
+            p.vars["exp_target"] = int(existing.exp_num)
+            p.vars["local_slot"] = int(existing.slot)
+            return int(existing.exp_num), int(existing.slot)
 
-        if not cohort_complete(session, exp_num):
-            p.vars["exp_target"] = int(exp_num)
-            p.vars["local_slot"] = 0
-            _log_cohort_event_for_participant(
-                session,
-                p,
-                "waiting_current_cohort_full",
-                exp_target=exp_num,
-                local_slot=0,
-                reason="current_cohort_full_not_complete",
-            )
-            return int(exp_num), 0
+        exp_num = 1
+        while True:
+            if exp_num > 1 and not cohort_complete(session, exp_num - 1):
+                p.vars["exp_target"] = int(exp_num)
+                p.vars["local_slot"] = 0
+                _log_cohort_event_for_participant(
+                    session,
+                    p,
+                    "waiting_previous_cohort_incomplete",
+                    exp_target=exp_num,
+                    local_slot=0,
+                    reason=f"previous_exp_{int(exp_num) - 1}_incomplete",
+                )
+                return int(exp_num), 0
 
-        exp_num += 1
+            if _cohort_has_free_slot(session, exp_num):
+                csize = cohort_size(session)
+                for s in range(1, csize + 1):
+                    if not _active_slot_row(root, exp_num, s):
+                        row_now = _active_slot_row(root, exp_num, s)
+                        if row_now:
+                            continue
+                        CohortSlot.create(
+                            subsession=root,
+                            exp_num=int(exp_num),
+                            slot=int(s),
+                            participant_code=p.code,
+                            active=True,
+                            completed=False,
+                        )
+                        p.vars["exp_target"] = int(exp_num)
+                        p.vars["local_slot"] = int(s)
+                        _log_cohort_event_for_participant(
+                            session,
+                            p,
+                            "slot_assigned",
+                            exp_target=exp_num,
+                            local_slot=s,
+                            reason="allocated_lowest_free_slot",
+                        )
+                        return int(exp_num), int(s)
+
+            if not cohort_complete(session, exp_num):
+                p.vars["exp_target"] = int(exp_num)
+                p.vars["local_slot"] = 0
+                _log_cohort_event_for_participant(
+                    session,
+                    p,
+                    "waiting_current_cohort_full",
+                    exp_target=exp_num,
+                    local_slot=0,
+                    reason="current_cohort_full_not_complete",
+                )
+                return int(exp_num), 0
+
+            exp_num += 1
 
 
 def assign_slot_if_needed(player):
