@@ -16,7 +16,11 @@ document.addEventListener('DOMContentLoaded', function () {
     const params = new URLSearchParams(window.location.search);
 
     document.getElementById('prolific_id_field').value =
-        params.get('PROLIFIC_PID') || params.get('prolific_id') || '';
+        params.get('PROLIFIC_PID') ||
+        params.get('prolific_pid') ||
+        params.get('prolific_id') ||
+        params.get('participant_label') ||
+        '';
 
     document.getElementById('study_id_field').value =
         params.get('STUDY_ID') || params.get('study_id') || '';

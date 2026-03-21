@@ -84,6 +84,7 @@ def _extract_prolific_cookie_payload(request: Request) -> dict:
             request.query_params.get("PROLIFIC_PID")
             or request.query_params.get("prolific_pid")
             or request.query_params.get("participant_id")
+            or request.query_params.get("participant_label")
         ),
         "study_id": _clean_cookie_value(
             request.query_params.get("STUDY_ID")

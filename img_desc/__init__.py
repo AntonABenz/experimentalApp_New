@@ -1779,6 +1779,28 @@ def custom_export(players):
         k = sentence_key(src_exp, prod, interp, cond)
         return get_sentence(obj_for_db, k) or ""
 
+    def _prolific_id_for_export(participant, bucket_players):
+        pid = participant.vars.get("prolific_id", "") or getattr(participant, "label", "")
+        if pid:
+            return pid
+        for pp in bucket_players:
+            pid = clean_str(getattr(pp, "prolific_id_field", ""))
+            if pid:
+                return pid
+        return ""
+
+    def _trial_row_for_export(root, item):
+        exp_num = safe_int(item.get("exp"), 0)
+        row_idx0 = safe_int(item.get("excel_row_index0"), -1)
+        if exp_num <= 0 or row_idx0 < 0:
+            return None
+        rows = TrialRow.filter(
+            subsession=root,
+            exp_num=int(exp_num),
+            excel_row_index0=int(row_idx0),
+        )
+        return rows[0] if rows else None
+
     demo_keys = [
         "gender",
         "age",
@@ -1872,7 +1894,7 @@ def custom_export(players):
         # - prolific_id is the Prolific PID
         # - participant.label is intentionally used only as a fallback store
         #   for the Prolific PID, not for spreadsheet participant ids
-        prolific_id = participant.vars.get("prolific_id", "") or getattr(participant, "label", "")
+        prolific_id = _prolific_id_for_export(participant, bucket_players)
         participant_status = get_participant_status(participant)
         prolific_submission_status = participant.vars.get("prolific_submission_status", "")
         returned_from_prolific = participant.vars.get("returned_from_prolific", False)
@@ -1924,8 +1946,15 @@ def custom_export(players):
                 continue
 
             my_role = item.get("role", "")
-            prod_id = safe_int(item.get("producer_slot"), 0)
-            interp_id = safe_int(item.get("interpreter_slot"), 0)
+            tr_export = _trial_row_for_export(root, item)
+            prod_id = safe_int(
+                getattr(tr_export, "producer_slot", item.get("producer_slot", 0)),
+                0,
+            )
+            interp_id = safe_int(
+                getattr(tr_export, "interpreter_slot", item.get("interpreter_slot", 0)),
+                0,
+            )
             exp_num = item.get("exp", "")
             # Stable export API, do not repurpose:
             # "participant" below must identify the spreadsheet participant slot

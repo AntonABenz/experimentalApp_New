@@ -62,11 +62,21 @@ def _extract_prolific_params(player) -> tuple[str, str, str]:
         url = player.participant._url_i_should_be_on()
         if "?" in url:
             params = _parse_querystring(url.split("?", 1)[1])
-            pid = (params.get("PROLIFIC_PID") or params.get("prolific_pid") or "").strip()
+            pid = (
+                params.get("PROLIFIC_PID")
+                or params.get("prolific_pid")
+                or params.get("participant_label")
+                or ""
+            ).strip()
             study_id = (params.get("STUDY_ID") or params.get("study_id") or "").strip()
             sess_id = (params.get("SESSION_ID") or params.get("session_id") or "").strip()
     except Exception:
         pass
+    if not pid:
+        try:
+            pid = clean_str(getattr(player.participant, "label", ""))
+        except Exception:
+            pid = ""
     return pid, study_id, sess_id
 
 
@@ -465,6 +475,19 @@ def custom_export(players):
     # Stable export API, do not repurpose:
     # - "participant_code" is the opaque oTree participant code
     # - "prolific_id" is the Prolific PID, with participant.label only as fallback
+    def _prolific_id_for_export(participant):
+        pid = participant.vars.get("prolific_id", "") or getattr(participant, "label", "")
+        if pid:
+            return pid
+        try:
+            for pp in participant.get_players():
+                pid = clean_str(getattr(pp, "prolific_id_field", ""))
+                if pid:
+                    return pid
+        except Exception:
+            pass
+        return ""
+
     yield [
         "session_code",
         "participant_code",
@@ -482,7 +505,7 @@ def custom_export(players):
         yield [
             getattr(session_obj, "code", ""),
             getattr(participant, "code", ""),
-            participant.vars.get("prolific_id", "") or getattr(participant, "label", ""),
+            _prolific_id_for_export(participant),
             participant.vars.get("study_id", ""),
             participant.vars.get("prolific_session_id", ""),
             participant.vars.get(PARTICIPANT_STATUS_FIELD, ""),
