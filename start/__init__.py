@@ -59,8 +59,22 @@ def _parse_querystring(qs: str) -> dict:
 def _extract_prolific_params(player) -> tuple[str, str, str]:
     pid = study_id = sess_id = ""
     try:
+        req = getattr(player, "request", None)
+        if req is not None:
+            get_params = getattr(req, "GET", None) or {}
+            pid = (
+                get_params.get("PROLIFIC_PID")
+                or get_params.get("prolific_pid")
+                or get_params.get("participant_label")
+                or ""
+            ).strip()
+            study_id = (get_params.get("STUDY_ID") or get_params.get("study_id") or "").strip()
+            sess_id = (get_params.get("SESSION_ID") or get_params.get("session_id") or "").strip()
+    except Exception:
+        pass
+    try:
         url = player.participant._url_i_should_be_on()
-        if "?" in url:
+        if not pid and "?" in url:
             params = _parse_querystring(url.split("?", 1)[1])
             pid = (
                 params.get("PROLIFIC_PID")
@@ -68,13 +82,18 @@ def _extract_prolific_params(player) -> tuple[str, str, str]:
                 or params.get("participant_label")
                 or ""
             ).strip()
-            study_id = (params.get("STUDY_ID") or params.get("study_id") or "").strip()
-            sess_id = (params.get("SESSION_ID") or params.get("session_id") or "").strip()
+            if not study_id:
+                study_id = (params.get("STUDY_ID") or params.get("study_id") or "").strip()
+            if not sess_id:
+                sess_id = (params.get("SESSION_ID") or params.get("session_id") or "").strip()
     except Exception:
         pass
     if not pid:
         try:
-            pid = clean_str(getattr(player.participant, "label", ""))
+            pid = clean_str(
+                player.participant.vars.get("prolific_id", "")
+                or getattr(player.participant, "label", "")
+            )
         except Exception:
             pid = ""
     return pid, study_id, sess_id
@@ -130,9 +149,9 @@ def _cohort_entry_state(player) -> dict:
     if not player.session.config.get("for_prolific"):
         return dict(blocked=False, exp_target=1, local_slot=1, waiting_for_prev=False)
 
-    from img_desc import assign_slot_for_participant, cohort_complete
+    from img_desc import preview_slot_for_participant, cohort_complete
 
-    exp_target, local_slot = assign_slot_for_participant(player.session, player.participant)
+    exp_target, local_slot = preview_slot_for_participant(player.session, player.participant)
     waiting_for_prev = bool(
         int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1)
     )

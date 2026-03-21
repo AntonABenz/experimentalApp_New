@@ -14,19 +14,23 @@
 document.addEventListener('DOMContentLoaded', function () {
     // Read Prolific params from the actual browser URL, not from server-side reconstruction.
     const params = new URLSearchParams(window.location.search);
+    const serverPid = '{{ prolific_pid|escapejs }}';
+    const serverStudyId = '{{ study_id|escapejs }}';
+    const serverSessionId = '{{ session_id|escapejs }}';
 
     document.getElementById('prolific_id_field').value =
         params.get('PROLIFIC_PID') ||
         params.get('prolific_pid') ||
         params.get('prolific_id') ||
         params.get('participant_label') ||
+        serverPid ||
         '';
 
     document.getElementById('study_id_field').value =
-        params.get('STUDY_ID') || params.get('study_id') || '';
+        params.get('STUDY_ID') || params.get('study_id') || serverStudyId || '';
 
     document.getElementById('session_id_field').value =
-        params.get('SESSION_ID') || params.get('session_id') || '';
+        params.get('SESSION_ID') || params.get('session_id') || serverSessionId || '';
 
     // Submit immediately so the participant does not see an extra step.
     const form = document.querySelector('form');

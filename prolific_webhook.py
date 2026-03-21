@@ -10,6 +10,7 @@ from otree.models import Participant
 
 from img_desc.utils import verify_prolific_webhook
 from img_desc import (
+    Player as ImgDescPlayer,
     reset_this_app_for_participant,
     free_slot_for_participant,
     mark_participant_active,
@@ -57,6 +58,15 @@ def _find_participant_by_prolific_id(prolific_pid: str):
         for p in Participant.objects.all().order_by("-id")[:3000]:
             if p.vars.get("prolific_id") == prolific_pid or getattr(p, "label", "") == prolific_pid:
                 return p
+    except Exception:
+        pass
+
+    try:
+        qs = ImgDescPlayer.objects.filter(prolific_id_field=prolific_pid).order_by("-id")
+        for player in qs[:50]:
+            participant = getattr(player, "participant", None)
+            if participant:
+                return participant
     except Exception:
         pass
 
