@@ -403,6 +403,51 @@ def _participant_active_assignment(root, participant_code: str):
     return qs[0] if qs else None
 
 
+def _active_rows_for_slot(root, exp_num: int, slot: int):
+    qs = CohortSlot.filter(subsession=root, exp_num=int(exp_num), slot=int(slot), active=True)
+    qs.sort(key=lambda r: int(getattr(r, "id", 0) or 0))
+    return qs
+
+
+def _repair_duplicate_assignment_for_participant(root, participant_code: str):
+    rows = CohortSlot.filter(subsession=root, participant_code=participant_code, active=True)
+    rows.sort(key=lambda r: (int(getattr(r, "exp_num", 0) or 0), int(getattr(r, "slot", 0) or 0), int(getattr(r, "id", 0) or 0)))
+
+    repaired = False
+    for row in rows:
+        exp_num = int(getattr(row, "exp_num", 0) or 0)
+        slot = int(getattr(row, "slot", 0) or 0)
+        same_slot_rows = _active_rows_for_slot(root, exp_num, slot)
+        if len(same_slot_rows) <= 1:
+            continue
+
+        keeper = same_slot_rows[0]
+        if clean_str(getattr(keeper, "participant_code", "")) == clean_str(participant_code):
+            continue
+
+        row.active = False
+        row.completed = False
+        try:
+            row.save()
+            repaired = True
+            logger.warning(
+                "CohortFlow: repaired duplicate slot assignment participant=%s exp=%s slot=%s keeper=%s",
+                participant_code,
+                exp_num,
+                slot,
+                clean_str(getattr(keeper, "participant_code", "")),
+            )
+        except Exception:
+            logger.exception(
+                "CohortFlow: failed repairing duplicate slot assignment participant=%s exp=%s slot=%s",
+                participant_code,
+                exp_num,
+                slot,
+            )
+
+    return repaired
+
+
 def cohort_complete(session, exp_num: int) -> bool:
     # complete when all slots 1..csize exist as active AND completed
     root = _root_subsession(session)
@@ -591,9 +636,15 @@ def assign_slot_for_participant(session, participant):
         # already assigned?
         existing = _participant_active_assignment(root, p.code)
         if existing:
-            p.vars["exp_target"] = int(existing.exp_num)
-            p.vars["local_slot"] = int(existing.slot)
-            return int(existing.exp_num), int(existing.slot)
+            if _repair_duplicate_assignment_for_participant(root, p.code):
+                existing = _participant_active_assignment(root, p.code)
+            if not existing:
+                p.vars.pop("exp_target", None)
+                p.vars.pop("local_slot", None)
+            else:
+                p.vars["exp_target"] = int(existing.exp_num)
+                p.vars["local_slot"] = int(existing.slot)
+                return int(existing.exp_num), int(existing.slot)
 
         exp_num = 1
         while True:
@@ -1846,7 +1897,6 @@ def custom_export(players):
     Stable export API, do not repurpose:
       - "participant" must remain the opaque oTree participant code used in prior exports.
       - "producer_id" / "interpreter_id" carry the spreadsheet participant numbers.
-      - "participant_code" is the separate explicit code column.
     """
 
     def _get_choices(session_vars):
@@ -1930,11 +1980,9 @@ def custom_export(players):
     # In particular:
     # - "participant" means the opaque oTree participant code used in prior exports
     # - "producer_id" / "interpreter_id" mean spreadsheet participant numbers
-    # - "participant_code" remains a duplicate explicit code column for compatibility
     yield [
         "session",
         "participant",
-        "participant_code",
         "prolific_id",
         "participant_status",
         "prolific_submission_status",
@@ -2079,7 +2127,6 @@ def custom_export(players):
 
             yield [
                 session_code,
-                participant_code,
                 participant_code,
                 prolific_id,
                 participant_status,
