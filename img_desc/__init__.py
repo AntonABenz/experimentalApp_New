@@ -302,6 +302,8 @@ def get_schedule_item(obj, participant_code: str, round_number: int):
         participant_code=participant_code,
         round_number=int(round_number),
     )
+    # Resolve consistently if a duplicate row was ever created by overlapping requests.
+    qs.sort(key=lambda it: int(getattr(it, "id", 0) or 0))
     return qs[0] if qs else None
 
 
@@ -314,6 +316,26 @@ def delete_schedule_for_participant(obj, participant_code: str):
         "delete_schedule_for_participant called for participant=%s, but schedule deletion is disabled",
         participant_code,
     )
+
+
+def log_duplicate_schedule_rows(obj, participant_code: str):
+    root = _root_subsession(obj)
+    if not root or not participant_code:
+        return
+
+    counts = {}
+    rows = ScheduleItem.filter(subsession=root, participant_code=participant_code)
+    for row in rows:
+        rn = int(getattr(row, "round_number", 0) or 0)
+        counts[rn] = counts.get(rn, 0) + 1
+
+    duplicates = [rn for rn, count in counts.items() if count > 1]
+    if duplicates:
+        logger.warning(
+            "Duplicate ScheduleItem rows detected for participant=%s rounds=%s",
+            participant_code,
+            duplicates,
+        )
 
 
 def ensure_schedule_built(player):
@@ -526,6 +548,9 @@ def assign_slot_for_participant(session, participant):
                 csize = cohort_size(session)
                 for s in range(1, csize + 1):
                     if not _active_slot_row(root, exp_num, s):
+                        row_now = _active_slot_row(root, exp_num, s)
+                        if row_now:
+                            continue
                         CohortSlot.create(
                             subsession=root,
                             exp_num=int(exp_num),
@@ -1310,12 +1335,18 @@ def build_schedule_for_participant(player):
                 excel_row_index0=int(tr.excel_row_index0 or 0),
             )
 
-            ScheduleItem.create(
+            existing_row = ScheduleItem.filter(
                 subsession=root,
                 participant_code=pcode,
                 round_number=int(otree_round_counter),
-                data=json.dumps(d),
             )
+            if not existing_row:
+                ScheduleItem.create(
+                    subsession=root,
+                    participant_code=pcode,
+                    round_number=int(otree_round_counter),
+                    data=json.dumps(d),
+                )
             otree_round_counter += 1
 
         # INTERPRETER
@@ -1355,12 +1386,18 @@ def build_schedule_for_participant(player):
                 excel_row_index0=int(tr.excel_row_index0 or 0),
             )
 
-            ScheduleItem.create(
+            existing_row = ScheduleItem.filter(
                 subsession=root,
                 participant_code=pcode,
                 round_number=int(otree_round_counter),
-                data=json.dumps(d),
             )
+            if not existing_row:
+                ScheduleItem.create(
+                    subsession=root,
+                    participant_code=pcode,
+                    round_number=int(otree_round_counter),
+                    data=json.dumps(d),
+                )
             otree_round_counter += 1
 
         if otree_round_counter > Constants.num_rounds:
@@ -1371,6 +1408,8 @@ def build_schedule_for_participant(player):
             f"Schedule len mismatch for participant={pcode} exp={exp_target}: "
             f"got={otree_round_counter-1} expected={Constants.num_rounds}"
         )
+
+    log_duplicate_schedule_rows(player, pcode)
 
 
 # ----------------------------------------------------------------------------
