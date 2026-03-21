@@ -62,6 +62,8 @@ class Player(BasePlayer):
     decision_seconds = models.FloatField(initial=0)
     client_start_ts = models.FloatField(initial=0)
 
+    # Temporary per-page mirror of the Prolific PID.
+    # Do not repurpose for spreadsheet participant ids, role labels, or status flags.
     prolific_id_field = models.StringField(blank=True)
     study_id_field = models.StringField(blank=True)
     session_id_field = models.StringField(blank=True)
@@ -201,6 +203,9 @@ class TrialRow(ExtraModel):
     exp_num = models.IntegerField()
     round_in_excel = models.IntegerField()
     trial = models.IntegerField()
+    # Stable experimental identifiers from the Google sheet.
+    # Do not repurpose: these are the spreadsheet participant numbers used for
+    # schedule selection, sentence lookup, and export (producer_id/interpreter_id).
     producer_slot = models.IntegerField()
     interpreter_slot = models.IntegerField()
     condition = models.StringField(blank=True)
@@ -557,6 +562,9 @@ def _log_cohort_event_for_participant(session, participant, event: str, exp_targ
         exp_target if exp_target is not None else participant.vars.get("exp_target"),
         0,
     )
+    # Stable semantics, do not repurpose:
+    # local_slot is the participant's assigned spreadsheet participant number
+    # within the current experiment cohort.
     local_slot = safe_int(
         local_slot if local_slot is not None else participant.vars.get("local_slot"),
         0,
@@ -593,6 +601,10 @@ def assign_slot_for_participant(player_or_session, participant=None):
       - Exp N only starts AFTER Exp N-1 is COMPLETE.
       - If a cohort is FULL but NOT complete, new participants WAIT (slot=0).
       - Replacement participants can re-fill freed slots in earlier cohorts.
+
+    Stable semantics, do not repurpose:
+      - participant.vars["local_slot"] is the spreadsheet participant number.
+      - participant.vars["exp_target"] is the spreadsheet experiment number.
     """
     session = player_or_session.session if hasattr(player_or_session, "session") else player_or_session
     p = participant or getattr(player_or_session, "participant", None)
@@ -1075,6 +1087,8 @@ def fix_s3_url(raw_s3: str) -> str:
 
 
 def sentence_key(exp_num: int, producer_slot: int, interpreter_slot: int, condition: str) -> str:
+    # Stable lookup API, do not repurpose:
+    # producer_slot and interpreter_slot are spreadsheet participant numbers.
     condition = clean_str(condition)
     return f"{int(exp_num)}|{int(producer_slot)}|{int(interpreter_slot)}|{condition}"
 
@@ -1365,6 +1379,11 @@ def build_schedule_for_participant(player):
     Create 80 ScheduleItem rows (DB) for this participant.
     Guaranteed Exp ordering via assign_slot_if_needed().
     If no slot is available (slot==0), do nothing; they will wait.
+
+    Stable semantics, do not repurpose:
+    local_slot is the participant's spreadsheet number, and all producer_slot /
+    interpreter_slot values copied into ScheduleItem rows must remain the
+    spreadsheet numbers from TrialRow.
     """
     session = player.session
     p = player.participant

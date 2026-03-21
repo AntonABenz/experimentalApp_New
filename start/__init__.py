@@ -107,6 +107,11 @@ def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id
       - participant.label  (handy for admin lookup & exports)
       - participant.vars["study_id"]
       - participant.vars["prolific_session_id"]
+
+    Stable semantics, do not repurpose:
+      - participant.vars["prolific_id"] is the Prolific PID
+      - participant.label is reserved as a fallback copy of that Prolific PID
+      - neither may be reused for spreadsheet participant numbers
     """
     p = player.participant
 
@@ -156,6 +161,8 @@ def _cohort_entry_state(player) -> dict:
         int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1)
     )
 
+    # Stable semantics, do not repurpose:
+    # local_slot is only a preview of the spreadsheet participant number here.
     return dict(
         blocked=bool(int(local_slot or 0) == 0 or waiting_for_prev),
         exp_target=int(exp_target or 0),
