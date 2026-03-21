@@ -462,7 +462,12 @@ def preview_slot_for_participant(session, participant):
     """
     root = _root_subsession(session)
     if not root:
-        return 1, 1
+        logger.error(
+            "preview_slot_for_participant: could not resolve img_desc root for participant=%s session=%s",
+            clean_str(getattr(participant, "code", "")),
+            clean_str(getattr(session, "code", "")),
+        )
+        return 0, 0
 
     participant_status = get_participant_status(participant)
     if participant_status == Constants.STATUS_DROP_OUT or participant.vars.get(BLOCK_FLAG):
@@ -564,7 +569,7 @@ def _log_cohort_event(player, event: str, exp_target=None, local_slot=None, reas
     )
 
 
-def assign_slot_for_participant(session, participant):
+def assign_slot_for_participant(player_or_session, participant=None):
     """
     Guarantees:
       - Fill Exp 1 slots first.
@@ -572,10 +577,28 @@ def assign_slot_for_participant(session, participant):
       - If a cohort is FULL but NOT complete, new participants WAIT (slot=0).
       - Replacement participants can re-fill freed slots in earlier cohorts.
     """
-    p = participant
-    root = _root_subsession(session)
+    session = player_or_session.session if hasattr(player_or_session, "session") else player_or_session
+    p = participant or getattr(player_or_session, "participant", None)
+    if p is None:
+        logger.error("assign_slot_for_participant: missing participant object")
+        return 0, 0
+
+    # IMPORTANT:
+    # Use the current img_desc player/subsession when available.
+    # The older working code resolved the root from the player context, and
+    # using only the session here can silently collapse into the fallback path.
+    root = _root_subsession(player_or_session)
+    if not root and participant is not None:
+        root = _root_subsession(session)
     if not root:
-        return 1, 1
+        p.vars["exp_target"] = 0
+        p.vars["local_slot"] = 0
+        logger.error(
+            "assign_slot_for_participant: could not resolve img_desc root for participant=%s session=%s",
+            clean_str(getattr(p, "code", "")),
+            clean_str(getattr(session, "code", "")),
+        )
+        return 0, 0
 
     with _cohort_assignment_lock:
         participant_status = get_participant_status(p)
@@ -668,7 +691,7 @@ def assign_slot_for_participant(session, participant):
 
 
 def assign_slot_if_needed(player):
-    return assign_slot_for_participant(player.session, player.participant)
+    return assign_slot_for_participant(player)
 
 
 def free_slot_for_participant(session, participant_code: str):
@@ -1332,6 +1355,11 @@ def build_schedule_for_participant(player):
 
     exp_target, local_slot = assign_slot_if_needed(player)
     if int(local_slot or 0) == 0:
+        logger.warning(
+            "build_schedule_for_participant: no slot assigned participant=%s exp_target=%s",
+            clean_str(pcode),
+            int(exp_target or 0),
+        )
         return
     if int(exp_target or 1) > 1 and not cohort_complete(session, int(exp_target) - 1):
         return
@@ -1361,6 +1389,17 @@ def build_schedule_for_participant(player):
     # snapshot cohort slot mapping exp_target -> participant_code
     slots = CohortSlot.filter(subsession=root, exp_num=int(exp_target), active=True)
     slot_to_code = {int(r.slot): r.participant_code for r in slots}
+
+    logger.info(
+        "build_schedule_for_participant: participant=%s exp_target=%s local_slot=%s active_slots=%s",
+        clean_str(pcode),
+        int(exp_target),
+        int(local_slot),
+        ",".join(
+            f"{int(r.slot)}:{clean_str(r.participant_code)}"
+            for r in sorted(slots, key=lambda row: int(row.slot or 0))
+        ) or "-",
+    )
 
     otree_round_counter = 1
 
