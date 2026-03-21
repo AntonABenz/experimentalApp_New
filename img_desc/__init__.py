@@ -1844,9 +1844,9 @@ def custom_export(players):
       - Use Player rows only for timing + feedback
 
     Stable export API, do not repurpose:
-      - "participant" must remain the spreadsheet participant slot id (1..N),
-        never the opaque oTree participant code.
-      - "participant_code" is the separate field for the opaque oTree code.
+      - "participant" must remain the opaque oTree participant code used in prior exports.
+      - "producer_id" / "interpreter_id" carry the spreadsheet participant numbers.
+      - "participant_code" is the separate explicit code column.
     """
 
     def _get_choices(session_vars):
@@ -1928,8 +1928,9 @@ def custom_export(players):
 
     # Stable export API, do not repurpose existing field meanings here.
     # In particular:
-    # - "participant" means spreadsheet participant slot id (1..N)
-    # - "participant_code" means opaque oTree participant code
+    # - "participant" means the opaque oTree participant code used in prior exports
+    # - "producer_id" / "interpreter_id" mean spreadsheet participant numbers
+    # - "participant_code" remains a duplicate explicit code column for compatibility
     yield [
         "session",
         "participant",
@@ -2063,15 +2064,6 @@ def custom_export(players):
                 0,
             )
             exp_num = item.get("exp", "")
-            # Stable export API, do not repurpose:
-            # "participant" below must identify the spreadsheet participant slot
-            # for this row's role, because downstream analysis scripts rely on it.
-            participant_slot = ""
-            if my_role == PRODUCER:
-                participant_slot = prod_id
-            elif my_role == INTERPRETER:
-                participant_slot = interp_id
-
             raw_sentences = item.get("producer_sentences") or ""
             if not raw_sentences or (isinstance(raw_sentences, str) and raw_sentences.strip() in {"", "[]"}):
                 resolved = _resolve_lookup(item, obj_for_db)
@@ -2087,7 +2079,7 @@ def custom_export(players):
 
             yield [
                 session_code,
-                participant_slot,
+                participant_code,
                 participant_code,
                 prolific_id,
                 participant_status,
