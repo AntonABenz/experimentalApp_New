@@ -12,6 +12,7 @@ from utils.prolific import maybe_expand_slots  # repo-root utils/
 
 logger = logging.getLogger("benzapp.img_desc")
 _cohort_assignment_lock = threading.Lock()
+_pending_slot_reservations = {}
 
 PRODUCER = "P"
 INTERPRETER = "I"
@@ -389,6 +390,43 @@ def _participant_active_assignment(root, participant_code: str):
     qs = CohortSlot.filter(subsession=root, participant_code=participant_code, active=True)
     return qs[0] if qs else None
 
+
+def _reservation_session_key(session) -> str:
+    code = getattr(session, "code", "") or getattr(session, "id", "")
+    return str(code)
+
+
+def _pending_slot_for_participant(session, participant_code: str):
+    by_participant = _pending_slot_reservations.get(_reservation_session_key(session), {})
+    data = by_participant.get(participant_code)
+    if not data:
+        return None
+    return int(data[0]), int(data[1])
+
+
+def _pending_slot_taken(session, exp_num: int, slot: int, exclude_participant_code: str = "") -> bool:
+    by_participant = _pending_slot_reservations.get(_reservation_session_key(session), {})
+    for pcode, data in by_participant.items():
+        if exclude_participant_code and str(pcode) == str(exclude_participant_code):
+            continue
+        if int(data[0]) == int(exp_num) and int(data[1]) == int(slot):
+            return True
+    return False
+
+
+def _set_pending_slot(session, participant_code: str, exp_num: int, slot: int):
+    skey = _reservation_session_key(session)
+    by_participant = _pending_slot_reservations.setdefault(skey, {})
+    by_participant[str(participant_code)] = (int(exp_num), int(slot))
+
+
+def _clear_pending_slot(session, participant_code: str):
+    skey = _reservation_session_key(session)
+    by_participant = _pending_slot_reservations.get(skey, {})
+    by_participant.pop(str(participant_code), None)
+    if not by_participant and skey in _pending_slot_reservations:
+        _pending_slot_reservations.pop(skey, None)
+
 def cohort_complete(session, exp_num: int) -> bool:
     # complete when all slots 1..csize exist as active AND completed
     root = _root_subsession(session)
@@ -411,7 +449,7 @@ def _cohort_has_free_slot(session, exp_num: int) -> bool:
         return True
     csize = cohort_size(session)
     for s in range(1, csize + 1):
-        if not _active_slot_row(root, exp_num, s):
+        if not _active_slot_row(root, exp_num, s) and not _pending_slot_taken(session, exp_num, s):
             return True
     return False
 
@@ -432,7 +470,12 @@ def preview_slot_for_participant(session, participant):
 
     existing = _participant_active_assignment(root, participant.code)
     if existing:
+        _clear_pending_slot(session, participant.code)
         return int(existing.exp_num), int(existing.slot)
+
+    pending = _pending_slot_for_participant(session, participant.code)
+    if pending:
+        return int(pending[0]), int(pending[1])
 
     exp_num = 1
     while True:
@@ -442,7 +485,7 @@ def preview_slot_for_participant(session, participant):
         if _cohort_has_free_slot(session, exp_num):
             csize = cohort_size(session)
             for s in range(1, csize + 1):
-                if not _active_slot_row(root, exp_num, s):
+                if not _active_slot_row(root, exp_num, s) and not _pending_slot_taken(session, exp_num, s):
                     return int(exp_num), int(s)
 
         if not cohort_complete(session, exp_num):
@@ -537,6 +580,7 @@ def assign_slot_for_participant(session, participant):
     with _cohort_assignment_lock:
         participant_status = get_participant_status(p)
         if participant_status == Constants.STATUS_DROP_OUT or p.vars.get(BLOCK_FLAG):
+            _clear_pending_slot(session, p.code)
             p.vars["exp_target"] = 0
             p.vars["local_slot"] = 0
             _log_cohort_event_for_participant(
@@ -553,9 +597,16 @@ def assign_slot_for_participant(session, participant):
 
         existing = _participant_active_assignment(root, p.code)
         if existing:
+            _clear_pending_slot(session, p.code)
             p.vars["exp_target"] = int(existing.exp_num)
             p.vars["local_slot"] = int(existing.slot)
             return int(existing.exp_num), int(existing.slot)
+
+        pending = _pending_slot_for_participant(session, p.code)
+        if pending:
+            p.vars["exp_target"] = int(pending[0])
+            p.vars["local_slot"] = int(pending[1])
+            return int(pending[0]), int(pending[1])
 
         exp_num = 1
         while True:
@@ -575,10 +626,11 @@ def assign_slot_for_participant(session, participant):
             if _cohort_has_free_slot(session, exp_num):
                 csize = cohort_size(session)
                 for s in range(1, csize + 1):
-                    if not _active_slot_row(root, exp_num, s):
+                    if not _active_slot_row(root, exp_num, s) and not _pending_slot_taken(session, exp_num, s):
                         row_now = _active_slot_row(root, exp_num, s)
                         if row_now:
                             continue
+                        _set_pending_slot(session, p.code, exp_num, s)
                         CohortSlot.create(
                             subsession=root,
                             exp_num=int(exp_num),
@@ -628,6 +680,8 @@ def free_slot_for_participant(session, participant_code: str):
     if not root:
         logger.warning(f"free_slot_for_participant: no root subsession (participant={participant_code})")
         return
+
+    _clear_pending_slot(session, participant_code)
 
     rows = CohortSlot.filter(subsession=root, participant_code=participant_code, active=True)
     if not rows:
