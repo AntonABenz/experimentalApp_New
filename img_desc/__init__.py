@@ -5,7 +5,9 @@ import logging
 import time
 import re
 import threading
+from contextlib import contextmanager
 from starlette.responses import RedirectResponse
+from django.db import connection, transaction
 
 from .utils import STUBURL
 from utils.prolific import maybe_expand_slots  # repo-root utils/
@@ -487,6 +489,34 @@ def _log_cohort_event(player, event: str, exp_target=None, local_slot=None, reas
     )
 
 
+@contextmanager
+def _cohort_assignment_guard(session):
+    """
+    Serialize slot assignment at the database level when Postgres is available.
+    A plain threading lock is not enough if another request cannot see the first
+    request's reservation until that transaction commits.
+    """
+    session_id = safe_int(getattr(session, "id", 0), 0)
+
+    try:
+        if connection.vendor == "postgresql" and session_id > 0:
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(%s, %s)",
+                        [220321, session_id],
+                    )
+                yield
+            return
+    except Exception:
+        logger.exception(
+            "CohortFlow: failed to acquire postgres advisory lock; falling back to process lock"
+        )
+
+    with _cohort_assignment_lock:
+        yield
+
+
 def assign_slot_for_participant(session, participant):
     """
     Guarantees:
@@ -500,9 +530,10 @@ def assign_slot_for_participant(session, participant):
     if not root:
         return 1, 1
 
-    # Process-wide lock prevents duplicate slot reservation when multiple
-    # participants hit the early cohort gate at nearly the same time.
-    with _cohort_assignment_lock:
+    # Serialize assignment against the database, not only inside one Python
+    # process. This keeps slot reservations visible and unique across nearly
+    # simultaneous browser requests.
+    with _cohort_assignment_guard(session):
         participant_status = get_participant_status(p)
         if participant_status == Constants.STATUS_DROP_OUT or p.vars.get(BLOCK_FLAG):
             p.vars["exp_target"] = 0
@@ -1108,7 +1139,6 @@ class ProlificStatusGate(Page):
                 self.player.participant.code,
                 completed=False,
             )
-            self.player.participant.save()
         except Exception:
             pass
         return RedirectResponse(Constants.FALLBACK_URL, status_code=302)
@@ -1669,10 +1699,6 @@ class Feedback(Page):
         if not player.session.config.get("for_prolific"):
             mark_participant_finished(player.participant)
             mark_participant_complete_in_cohort(player, completed=True)
-        try:
-            player.participant.save()
-        except Exception:
-            pass
 
         if not player.session.config.get("for_prolific"):
             maybe_expand_prolific_when_cohort_complete(player)
@@ -1699,7 +1725,6 @@ class FinalForProlific(Page):
             p1.completed_experiment = True
 
             self.player.participant.vars[f"{Constants.name_in_url}_completed"] = True
-            self.player.participant.save()
         except Exception:
             logger.exception("FinalForProlific failed before redirect")
 
