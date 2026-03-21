@@ -277,6 +277,21 @@ def _root_subsession(obj):
 
     if session_obj is not None:
         try:
+            if hasattr(session_obj, "get_subsessions"):
+                all_subsessions = session_obj.get_subsessions()
+                for sub in all_subsessions or []:
+                    try:
+                        if (
+                            getattr(getattr(sub, "_meta", None), "app_label", "") == Constants.name_in_url
+                            and int(getattr(sub, "round_number", 0) or 0) == 1
+                        ):
+                            return sub
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        try:
             qs = Subsession.filter(session=session_obj, round_number=1)
             if qs:
                 return qs[0]
@@ -454,31 +469,33 @@ def _cohort_has_free_slot(session, exp_num: int) -> bool:
     return False
 
 
-def preview_slot_for_participant(session, participant):
+def preview_slot_for_participant(player_or_session, participant=None):
     """
     Read-only cohort check for the early gate in start.
     It must not reserve a real slot. The old working behavior assigned the
     spreadsheet slot only when entering img_desc, and we preserve that here.
     """
-    root = _root_subsession(session)
+    session = player_or_session.session if hasattr(player_or_session, "session") else player_or_session
+    p = participant or getattr(player_or_session, "participant", None)
+    root = _root_subsession(player_or_session)
     if not root:
         logger.error(
             "preview_slot_for_participant: could not resolve img_desc root for participant=%s session=%s",
-            clean_str(getattr(participant, "code", "")),
+            clean_str(getattr(p, "code", "")),
             clean_str(getattr(session, "code", "")),
         )
         return 0, 0
 
-    participant_status = get_participant_status(participant)
-    if participant_status == Constants.STATUS_DROP_OUT or participant.vars.get(BLOCK_FLAG):
+    participant_status = get_participant_status(p)
+    if participant_status == Constants.STATUS_DROP_OUT or p.vars.get(BLOCK_FLAG):
         return 0, 0
 
-    existing = _participant_active_assignment(root, participant.code)
+    existing = _participant_active_assignment(root, p.code)
     if existing:
-        _clear_pending_slot(session, participant.code)
+        _clear_pending_slot(session, p.code)
         return int(existing.exp_num), int(existing.slot)
 
-    pending = _pending_slot_for_participant(session, participant.code)
+    pending = _pending_slot_for_participant(session, p.code)
     if pending:
         return int(pending[0]), int(pending[1])
 
