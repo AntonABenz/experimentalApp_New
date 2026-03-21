@@ -1742,22 +1742,29 @@ class CaptureProlificID(Page):
     @staticmethod
     def vars_for_template(player):
         p = player.participant
+        prolific_id_field = clean_str(player.field_maybe_none("prolific_id_field"))
+        study_id_field = clean_str(player.field_maybe_none("study_id_field"))
+        session_id_field = clean_str(player.field_maybe_none("session_id_field"))
+
         # Keep the player-level fields in sync with the already-captured
         # participant values so the auto-submitted hidden form does not blank
         # them out if the current page URL no longer contains the query params.
-        if not player.prolific_id_field:
-            player.prolific_id_field = clean_str(
+        if not prolific_id_field:
+            prolific_id_field = clean_str(
                 p.vars.get("prolific_id", "") or getattr(p, "label", "")
             )
-        if not player.study_id_field:
-            player.study_id_field = clean_str(p.vars.get("study_id", ""))
-        if not player.session_id_field:
-            player.session_id_field = clean_str(p.vars.get("prolific_session_id", ""))
+            player.prolific_id_field = prolific_id_field
+        if not study_id_field:
+            study_id_field = clean_str(p.vars.get("study_id", ""))
+            player.study_id_field = study_id_field
+        if not session_id_field:
+            session_id_field = clean_str(p.vars.get("prolific_session_id", ""))
+            player.session_id_field = session_id_field
 
         return dict(
-            prolific_pid=player.prolific_id_field,
-            study_id=player.study_id_field,
-            session_id=player.session_id_field,
+            prolific_pid=prolific_id_field,
+            study_id=study_id_field,
+            session_id=session_id_field,
         )
 
 
@@ -1765,16 +1772,16 @@ class CaptureProlificID(Page):
     def before_next_page(player, timeout_happened):
         p = player.participant
         prolific_id = clean_str(
-            player.prolific_id_field
+            player.field_maybe_none("prolific_id_field")
             or p.vars.get("prolific_id", "")
             or getattr(p, "label", "")
         )
         study_id = clean_str(
-            player.study_id_field
+            player.field_maybe_none("study_id_field")
             or p.vars.get("study_id", "")
         )
         session_id = clean_str(
-            player.session_id_field
+            player.field_maybe_none("session_id_field")
             or p.vars.get("prolific_session_id", "")
         )
 
