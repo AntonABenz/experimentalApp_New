@@ -1742,27 +1742,55 @@ class CaptureProlificID(Page):
     @staticmethod
     def vars_for_template(player):
         p = player.participant
+        # Keep the player-level fields in sync with the already-captured
+        # participant values so the auto-submitted hidden form does not blank
+        # them out if the current page URL no longer contains the query params.
+        if not player.prolific_id_field:
+            player.prolific_id_field = clean_str(
+                p.vars.get("prolific_id", "") or getattr(p, "label", "")
+            )
+        if not player.study_id_field:
+            player.study_id_field = clean_str(p.vars.get("study_id", ""))
+        if not player.session_id_field:
+            player.session_id_field = clean_str(p.vars.get("prolific_session_id", ""))
+
         return dict(
-            prolific_pid=p.vars.get("prolific_id", ""),
-            study_id=p.vars.get("study_id", ""),
-            session_id=p.vars.get("prolific_session_id", ""),
+            prolific_pid=player.prolific_id_field,
+            study_id=player.study_id_field,
+            session_id=player.session_id_field,
         )
 
 
     @staticmethod
     def before_next_page(player, timeout_happened):
         p = player.participant
+        prolific_id = clean_str(
+            player.prolific_id_field
+            or p.vars.get("prolific_id", "")
+            or getattr(p, "label", "")
+        )
+        study_id = clean_str(
+            player.study_id_field
+            or p.vars.get("study_id", "")
+        )
+        session_id = clean_str(
+            player.session_id_field
+            or p.vars.get("prolific_session_id", "")
+        )
 
-        if player.prolific_id_field:
-            p.vars["prolific_id"] = player.prolific_id_field
+        if prolific_id:
+            player.prolific_id_field = prolific_id
+            p.vars["prolific_id"] = prolific_id
             try:
-                p.label = player.prolific_id_field
+                p.label = prolific_id
             except Exception:
                 pass
-        if player.study_id_field:
-            p.vars["study_id"] = player.study_id_field
-        if player.session_id_field:
-            p.vars["prolific_session_id"] = player.session_id_field
+        if study_id:
+            player.study_id_field = study_id
+            p.vars["study_id"] = study_id
+        if session_id:
+            player.session_id_field = session_id
+            p.vars["prolific_session_id"] = session_id
 
         mark_participant_active(p)
 

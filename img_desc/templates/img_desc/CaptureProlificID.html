@@ -7,6 +7,9 @@
 <input type="hidden" name="prolific_id_field" id="prolific_id_field" value="">
 <input type="hidden" name="study_id_field" id="study_id_field" value="">
 <input type="hidden" name="session_id_field" id="session_id_field" value="">
+<input type="hidden" id="server_prolific_pid" value="{{ prolific_pid }}">
+<input type="hidden" id="server_study_id" value="{{ study_id }}">
+<input type="hidden" id="server_session_id" value="{{ session_id }}">
 
 <p style="display:none;">Starting experiment...</p>
 
@@ -14,9 +17,9 @@
 document.addEventListener('DOMContentLoaded', function () {
     // Read Prolific params from the actual browser URL, not from server-side reconstruction.
     const params = new URLSearchParams(window.location.search);
-    const serverPid = '{{ prolific_pid|escapejs }}';
-    const serverStudyId = '{{ study_id|escapejs }}';
-    const serverSessionId = '{{ session_id|escapejs }}';
+    const serverPid = document.getElementById('server_prolific_pid').value || '';
+    const serverStudyId = document.getElementById('server_study_id').value || '';
+    const serverSessionId = document.getElementById('server_session_id').value || '';
 
     document.getElementById('prolific_id_field').value =
         params.get('PROLIFIC_PID') ||
