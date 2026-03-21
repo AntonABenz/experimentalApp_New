@@ -2,12 +2,23 @@
 from otree.api import *
 import json
 import logging
+import os
 import time
 import re
 import threading
 from contextlib import contextmanager
 from starlette.responses import RedirectResponse
-from django.db import connection, transaction
+
+try:
+    from django.db import connection, transaction
+except Exception:
+    connection = None
+    transaction = None
+
+try:
+    import psycopg2
+except Exception:
+    psycopg2 = None
 
 from .utils import STUBURL
 from utils.prolific import maybe_expand_slots  # repo-root utils/
@@ -499,7 +510,7 @@ def _cohort_assignment_guard(session):
     session_id = safe_int(getattr(session, "id", 0), 0)
 
     try:
-        if connection.vendor == "postgresql" and session_id > 0:
+        if connection is not None and transaction is not None and connection.vendor == "postgresql" and session_id > 0:
             with transaction.atomic():
                 with connection.cursor() as cursor:
                     cursor.execute(
@@ -512,6 +523,33 @@ def _cohort_assignment_guard(session):
         logger.exception(
             "CohortFlow: failed to acquire postgres advisory lock; falling back to process lock"
         )
+
+    db_url = (os.environ.get("DATABASE_URL") or "").strip()
+    if psycopg2 is not None and db_url and session_id > 0:
+        conn = None
+        try:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", [220321, session_id])
+            try:
+                yield
+            finally:
+                try:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT pg_advisory_unlock(%s, %s)", [220321, session_id])
+                finally:
+                    conn.close()
+            return
+        except Exception:
+            logger.exception(
+                "CohortFlow: failed to acquire psycopg2 advisory lock; falling back to process lock"
+            )
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
 
     with _cohort_assignment_lock:
         yield
