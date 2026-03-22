@@ -65,6 +65,8 @@ def _extract_prolific_params(player) -> tuple[str, str, str]:
             pid = (
                 get_params.get("PROLIFIC_PID")
                 or get_params.get("prolific_pid")
+                or get_params.get("prolific_id")
+                or get_params.get("participant_id")
                 or get_params.get("participant_label")
                 or ""
             ).strip()
@@ -79,6 +81,8 @@ def _extract_prolific_params(player) -> tuple[str, str, str]:
             pid = (
                 params.get("PROLIFIC_PID")
                 or params.get("prolific_pid")
+                or params.get("prolific_id")
+                or params.get("participant_id")
                 or params.get("participant_label")
                 or ""
             ).strip()
