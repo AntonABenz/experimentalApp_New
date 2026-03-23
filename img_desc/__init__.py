@@ -1022,10 +1022,21 @@ def get_participant_prolific_id(participant) -> str:
 
 
 def _recent_root_subsessions(limit: int = 120):
+    roots = []
     try:
-        return list(Subsession.objects.filter(round_number=1).order_by("-id")[: int(limit or 120)])
+        sessions = Session.objects.filter(is_demo=False).order_by("-id")[: int(limit or 120)]
     except Exception:
-        return []
+        sessions = []
+
+    for session in sessions:
+        try:
+            root = _root_subsession(session)
+            if root:
+                roots.append(root)
+        except Exception:
+            continue
+
+    return roots
 
 
 def _best_prolific_slot_map(rows, prefer_active: bool = True):

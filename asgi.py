@@ -115,6 +115,19 @@ def _find_participant_by_code(participant_code: str):
     if not participant_code:
         return None
 
+    try:
+        sessions = Session.objects.filter(is_demo=False).order_by("-id")[:200]
+    except Exception:
+        sessions = []
+
+    for session in sessions:
+        try:
+            for participant in session.get_participants():
+                if _clean_cookie_value(getattr(participant, "code", "")) == participant_code:
+                    return participant
+        except Exception:
+            continue
+
     # Do not use Participant.objects here. In this deployed oTree runtime that API
     # is not available and caused 500s on /InitializeParticipant for Prolific users.
     # Find the participant through concrete app Player models instead.
