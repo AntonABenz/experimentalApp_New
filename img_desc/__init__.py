@@ -674,6 +674,7 @@ def assign_slot_for_participant(player_or_session, participant=None):
             p.vars["local_slot"] = int(existing.slot)
             sync_prolific_slot_map(
                 p,
+                root_subsession=root,
                 exp_num=int(existing.exp_num),
                 slot=int(existing.slot),
                 active=True,
@@ -729,6 +730,7 @@ def assign_slot_for_participant(player_or_session, participant=None):
                         )
                         sync_prolific_slot_map(
                             p,
+                            root_subsession=root,
                             exp_num=int(exp_num),
                             slot=int(s),
                             active=True,
@@ -1096,6 +1098,7 @@ def find_prolific_slot_map(
 def sync_prolific_slot_map(
     participant,
     *,
+    root_subsession=None,
     exp_num=None,
     slot=None,
     active=None,
@@ -1104,7 +1107,10 @@ def sync_prolific_slot_map(
     if participant is None:
         return None
 
-    root = _root_subsession(getattr(participant, "session", None))
+    # Use an explicitly provided img_desc round-1 root when available.
+    # This avoids writing the mapping under an ambiguous round-1 subsession
+    # if we only have a Session object.
+    root = root_subsession or _root_subsession(getattr(participant, "session", None))
     if not root:
         return None
 
@@ -1138,6 +1144,16 @@ def sync_prolific_slot_map(
             last_status=status,
             last_seen_ts=time.time(),
         )
+        logger.info(
+            "sync_prolific_slot_map: created participant=%s prolific_id=%s session=%s exp=%s slot=%s active=%s status=%s",
+            participant_code,
+            prolific_pid,
+            session_code,
+            exp_num,
+            slot,
+            bool(active) if active is not None else True,
+            status,
+        )
         return row
 
     row.session_code = session_code
@@ -1154,6 +1170,16 @@ def sync_prolific_slot_map(
         row.save()
     except Exception:
         pass
+    logger.info(
+        "sync_prolific_slot_map: updated participant=%s prolific_id=%s session=%s exp=%s slot=%s active=%s status=%s",
+        participant_code,
+        clean_str(getattr(row, "prolific_pid", "")),
+        session_code,
+        exp_num,
+        slot,
+        bool(getattr(row, "active", False)),
+        clean_str(getattr(row, "last_status", "")),
+    )
     return row
 
 
@@ -2199,7 +2225,7 @@ class CaptureProlificID(Page):
             p.vars["prolific_session_id"] = session_id
 
         mark_participant_active(p)
-        sync_prolific_slot_map(p, active=True)
+        sync_prolific_slot_map(p, root_subsession=_root_subsession(player), active=True)
 
         try:
             p.save()
