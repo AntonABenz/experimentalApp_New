@@ -9,6 +9,7 @@ import os
 import time
 import re
 import threading
+import psycopg2
 from starlette.responses import RedirectResponse
 
 from .utils import STUBURL
@@ -17,6 +18,7 @@ from utils.prolific import maybe_expand_slots  # repo-root utils/
 logger = logging.getLogger("benzapp.img_desc")
 _cohort_assignment_lock = threading.Lock()
 _pending_slot_reservations = {}
+_prolific_slot_map_table_available_cache = None
 PROLIFIC_CAPTURE_COOKIE = "prolific_capture"
 
 PRODUCER = "P"
@@ -1023,6 +1025,33 @@ def get_participant_prolific_id(participant) -> str:
     return clean_str(getattr(participant, "label", "") or participant.vars.get("prolific_id", ""))
 
 
+def _prolific_slot_map_table_available() -> bool:
+    global _prolific_slot_map_table_available_cache
+    if _prolific_slot_map_table_available_cache is not None:
+        return _prolific_slot_map_table_available_cache
+
+    database_url = clean_str(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        _prolific_slot_map_table_available_cache = False
+        return False
+
+    try:
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.img_desc_prolificslotmap')")
+                row = cur.fetchone()
+                _prolific_slot_map_table_available_cache = bool(row and row[0])
+        finally:
+            conn.close()
+    except Exception:
+        _prolific_slot_map_table_available_cache = False
+
+    if not _prolific_slot_map_table_available_cache:
+        logger.warning("ProlificSlotMap disabled: table img_desc_prolificslotmap not available")
+    return _prolific_slot_map_table_available_cache
+
+
 def _recent_root_subsessions(limit: int = 120):
     roots = []
     try:
@@ -1070,6 +1099,8 @@ def find_prolific_slot_map(
 
     if not prolific_pid and not participant_code:
         return None
+    if not _prolific_slot_map_table_available():
+        return None
 
     candidates = []
     for root in _recent_root_subsessions():
@@ -1106,6 +1137,8 @@ def sync_prolific_slot_map(
     status: str = "",
 ):
     if participant is None:
+        return None
+    if not _prolific_slot_map_table_available():
         return None
 
     # Use an explicitly provided img_desc round-1 root when available.
@@ -1195,6 +1228,8 @@ def sync_prolific_slot_map(
 
 
 def deactivate_prolific_slot_map(session, participant_code: str, status: str = ""):
+    if not _prolific_slot_map_table_available():
+        return
     root = _root_subsession(session)
     if not root:
         return
