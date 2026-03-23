@@ -9,9 +9,11 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from otree.models import Participant, Session
 
 from img_desc.utils import verify_prolific_webhook
+from start import Player as StartPlayer
 from img_desc import (
     Player as ImgDescPlayer,
     reset_this_app_for_participant,
+    find_prolific_slot_map,
     free_slot_for_participant,
     mark_participant_active,
     mark_participant_complete_in_cohort,
@@ -30,15 +32,55 @@ def normalize_prolific_status(raw) -> str:
     return clean_str(raw).upper().replace("_", "-")
 
 
+def _find_participant_in_session(session_code: str, participant_code: str = "", prolific_pid: str = ""):
+    session_code = clean_str(session_code)
+    participant_code = clean_str(participant_code)
+    prolific_pid = clean_str(prolific_pid)
+    if not session_code:
+        return None
+
+    try:
+        session = Session.objects.filter(code=session_code).first()
+    except Exception:
+        session = None
+    if not session:
+        return None
+
+    try:
+        for participant in session.get_participants():
+            if participant_code and clean_str(getattr(participant, "code", "")) == participant_code:
+                return participant
+            if prolific_pid and (
+                clean_str(getattr(participant, "label", "")) == prolific_pid
+                or clean_str(participant.vars.get("prolific_id", "")) == prolific_pid
+            ):
+                return participant
+    except Exception:
+        return None
+
+    return None
+
+
 def _find_participant_by_prolific_id(prolific_pid: str):
     """
     Best-effort lookup.
     Primary: participant.label (canonical Prolific identifier).
-    Fallbacks: vars['prolific_id'], then recent-session scan.
+    Fallbacks: vars['prolific_id'], recent Player-row scans, then
+    player.prolific_id_field in img_desc.
     """
     prolific_pid = (prolific_pid or "").strip()
     if not prolific_pid:
         return None
+
+    mapping = find_prolific_slot_map(prolific_pid=prolific_pid, prefer_active=False)
+    if mapping:
+        participant = _find_participant_in_session(
+            clean_str(getattr(mapping, "session_code", "")),
+            participant_code=clean_str(getattr(mapping, "participant_code", "")),
+            prolific_pid=prolific_pid,
+        )
+        if participant:
+            return participant
 
     try:
         qs = Participant.objects.filter(label=prolific_pid)
@@ -55,15 +97,6 @@ def _find_participant_by_prolific_id(prolific_pid: str):
         pass
 
     try:
-        sessions = Session.objects.filter(is_demo=False).order_by("-id")[:200]
-        for session in sessions:
-            for p in session.get_participants():
-                if getattr(p, "label", "") == prolific_pid or p.vars.get("prolific_id") == prolific_pid:
-                    return p
-    except Exception:
-        pass
-
-    try:
         qs = ImgDescPlayer.objects.filter(prolific_id_field=prolific_pid).order_by("-id")
         for player in qs[:50]:
             participant = getattr(player, "participant", None)
@@ -71,6 +104,26 @@ def _find_participant_by_prolific_id(prolific_pid: str):
                 return participant
     except Exception:
         pass
+
+    for model in (ImgDescPlayer, StartPlayer):
+        try:
+            recent_players = model.objects.order_by("-id")[:4000]
+        except Exception:
+            recent_players = []
+
+        for player in recent_players:
+            try:
+                participant = getattr(player, "participant", None)
+                if not participant:
+                    continue
+                if (
+                    getattr(participant, "label", "") == prolific_pid
+                    or participant.vars.get("prolific_id") == prolific_pid
+                    or clean_str(getattr(player, "prolific_id_field", "")) == prolific_pid
+                ):
+                    return participant
+            except Exception:
+                continue
 
     return None
 

@@ -23,6 +23,7 @@ Thumbs.db
 
 # Logs
 *.log
+newest_logs.txt
 
 # oTree specific
 _static_root/

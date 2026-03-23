@@ -252,6 +252,21 @@ class CohortSlot(ExtraModel):
     active = models.BooleanField(initial=True)
     completed = models.BooleanField(initial=False)
 
+class ProlificSlotMap(ExtraModel):
+    """
+    Operational PID -> participant/session/slot index.
+    Written only once a real img_desc cohort slot exists.
+    """
+    subsession = models.Link(Subsession)  # anchor to round-1 subsession
+    participant_code = models.StringField()
+    session_code = models.StringField()
+    prolific_pid = models.StringField(blank=True)
+    exp_num = models.IntegerField()
+    slot = models.IntegerField()
+    active = models.BooleanField(initial=True)
+    last_status = models.StringField(blank=True)
+    last_seen_ts = models.FloatField(initial=0)
+
 class ProlificExpansionState(ExtraModel):
     subsession = models.Link(Subsession)
     exp_num = models.IntegerField()
@@ -657,6 +672,12 @@ def assign_slot_for_participant(player_or_session, participant=None):
             _clear_pending_slot(session, p.code)
             p.vars["exp_target"] = int(existing.exp_num)
             p.vars["local_slot"] = int(existing.slot)
+            sync_prolific_slot_map(
+                p,
+                exp_num=int(existing.exp_num),
+                slot=int(existing.slot),
+                active=True,
+            )
             return int(existing.exp_num), int(existing.slot)
 
         pending = _pending_slot_for_participant(session, p.code)
@@ -706,6 +727,12 @@ def assign_slot_for_participant(player_or_session, participant=None):
                             local_slot=s,
                             reason="allocated_lowest_free_slot",
                         )
+                        sync_prolific_slot_map(
+                            p,
+                            exp_num=int(exp_num),
+                            slot=int(s),
+                            active=True,
+                        )
                         return int(exp_num), int(s)
 
             if not cohort_complete(session, exp_num):
@@ -739,9 +766,18 @@ def free_slot_for_participant(session, participant_code: str):
         return
 
     _clear_pending_slot(session, participant_code)
+    current_status = ""
+    try:
+        for participant in session.get_participants():
+            if clean_str(getattr(participant, "code", "")) == clean_str(participant_code):
+                current_status = get_participant_status(participant)
+                break
+    except Exception:
+        current_status = ""
 
     rows = CohortSlot.filter(subsession=root, participant_code=participant_code, active=True)
     if not rows:
+        deactivate_prolific_slot_map(session, participant_code, status=current_status or "slot_free_attempt_no_row")
         logger.info(f"free_slot_for_participant: no active slot found (participant={participant_code})")
         return
 
@@ -760,6 +796,7 @@ def free_slot_for_participant(session, participant_code: str):
             f"free_slot_for_participant: freed exp={int(r.exp_num)} slot={int(r.slot)} "
             f"participant={participant_code} snapshot_after={cohort_debug_snapshot(session, int(r.exp_num))}"
         )
+    deactivate_prolific_slot_map(session, participant_code, status=current_status or "slot_freed")
 
 
 def mark_participant_complete_in_cohort(player_or_session, participant_code: str = "", completed: bool = True):
@@ -964,21 +1001,171 @@ def mark_participant_active(participant):
     current = get_participant_status(participant)
     if current not in {Constants.STATUS_FINISHED, Constants.STATUS_DROP_OUT}:
         set_participant_status(participant, Constants.STATUS_ACTIVE)
+        sync_prolific_slot_map(participant, status=Constants.STATUS_ACTIVE)
 
 
 def mark_participant_finished(participant):
     set_participant_status(participant, Constants.STATUS_FINISHED)
     participant.vars.pop(BLOCK_FLAG, None)
+    sync_prolific_slot_map(participant, status=Constants.STATUS_FINISHED)
 
 
 def mark_participant_drop_out(participant):
     set_participant_status(participant, Constants.STATUS_DROP_OUT)
     participant.vars[BLOCK_FLAG] = True
     participant.vars["returned_from_prolific"] = True
+    sync_prolific_slot_map(participant, status=Constants.STATUS_DROP_OUT)
 
 
 def get_participant_prolific_id(participant) -> str:
     return clean_str(getattr(participant, "label", "") or participant.vars.get("prolific_id", ""))
+
+
+def _recent_root_subsessions(limit: int = 120):
+    try:
+        return list(Subsession.objects.filter(round_number=1).order_by("-id")[: int(limit or 120)])
+    except Exception:
+        return []
+
+
+def _best_prolific_slot_map(rows, prefer_active: bool = True):
+    rows = list(rows or [])
+    if not rows:
+        return None
+
+    def _sort_key(row):
+        return (
+            1 if (prefer_active and bool(getattr(row, "active", False))) else 0,
+            float(getattr(row, "last_seen_ts", 0) or 0),
+            int(getattr(row, "exp_num", 0) or 0),
+            int(getattr(row, "slot", 0) or 0),
+        )
+
+    rows.sort(key=_sort_key, reverse=True)
+    return rows[0]
+
+
+def find_prolific_slot_map(
+    prolific_pid: str = "",
+    participant_code: str = "",
+    session_code: str = "",
+    prefer_active: bool = True,
+):
+    prolific_pid = clean_str(prolific_pid)
+    participant_code = clean_str(participant_code)
+    session_code = clean_str(session_code)
+
+    if not prolific_pid and not participant_code:
+        return None
+
+    candidates = []
+    for root in _recent_root_subsessions():
+        try:
+            root_session_code = clean_str(getattr(root.session, "code", ""))
+            if session_code and root_session_code != session_code:
+                continue
+
+            if participant_code:
+                rows = ProlificSlotMap.filter(subsession=root, participant_code=participant_code)
+            else:
+                rows = ProlificSlotMap.filter(subsession=root, prolific_pid=prolific_pid)
+
+            for row in rows:
+                if participant_code and clean_str(getattr(row, "participant_code", "")) != participant_code:
+                    continue
+                if prolific_pid and clean_str(getattr(row, "prolific_pid", "")) != prolific_pid:
+                    continue
+                candidates.append(row)
+        except Exception:
+            continue
+
+    return _best_prolific_slot_map(candidates, prefer_active=prefer_active)
+
+
+def sync_prolific_slot_map(
+    participant,
+    *,
+    exp_num=None,
+    slot=None,
+    active=None,
+    status: str = "",
+):
+    if participant is None:
+        return None
+
+    root = _root_subsession(getattr(participant, "session", None))
+    if not root:
+        return None
+
+    participant_code = clean_str(getattr(participant, "code", ""))
+    session_code = clean_str(getattr(getattr(participant, "session", None), "code", ""))
+    exp_num = safe_int(exp_num if exp_num is not None else participant.vars.get("exp_target"), 0)
+    slot = safe_int(slot if slot is not None else participant.vars.get("local_slot"), 0)
+    prolific_pid = get_participant_prolific_id(participant)
+    status = clean_str(status or get_participant_status(participant))
+
+    if not participant_code or exp_num <= 0 or slot <= 0:
+        return None
+
+    rows = ProlificSlotMap.filter(subsession=root, participant_code=participant_code)
+    exact = [
+        row
+        for row in rows
+        if safe_int(getattr(row, "exp_num", 0), 0) == exp_num and safe_int(getattr(row, "slot", 0), 0) == slot
+    ]
+    row = _best_prolific_slot_map(exact, prefer_active=False) or _best_prolific_slot_map(rows, prefer_active=False)
+
+    if row is None:
+        row = ProlificSlotMap.create(
+            subsession=root,
+            participant_code=participant_code,
+            session_code=session_code,
+            prolific_pid=prolific_pid,
+            exp_num=exp_num,
+            slot=slot,
+            active=bool(active) if active is not None else True,
+            last_status=status,
+            last_seen_ts=time.time(),
+        )
+        return row
+
+    row.session_code = session_code
+    row.exp_num = exp_num
+    row.slot = slot
+    if prolific_pid:
+        row.prolific_pid = prolific_pid
+    if active is not None:
+        row.active = bool(active)
+    if status:
+        row.last_status = status
+    row.last_seen_ts = time.time()
+    try:
+        row.save()
+    except Exception:
+        pass
+    return row
+
+
+def deactivate_prolific_slot_map(session, participant_code: str, status: str = ""):
+    root = _root_subsession(session)
+    if not root:
+        return
+
+    participant_code = clean_str(participant_code)
+    if not participant_code:
+        return
+
+    rows = ProlificSlotMap.filter(subsession=root, participant_code=participant_code, active=True)
+    now_ts = time.time()
+    for row in rows:
+        row.active = False
+        if status:
+            row.last_status = clean_str(status)
+        row.last_seen_ts = now_ts
+        try:
+            row.save()
+        except Exception:
+            pass
 
 
 def _capture_cookie_secret() -> bytes:
@@ -2001,6 +2188,7 @@ class CaptureProlificID(Page):
             p.vars["prolific_session_id"] = session_id
 
         mark_participant_active(p)
+        sync_prolific_slot_map(p, active=True)
 
         try:
             p.save()

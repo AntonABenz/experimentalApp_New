@@ -23,6 +23,7 @@ from otree.models import Session  # Django ORM
 from img_desc import (
     Player as ImgDescPlayer,
     clean_str,
+    find_prolific_slot_map,
     free_slot_for_participant,
     get_cohort_snapshot_data,
     get_participant_prolific_id,
@@ -130,21 +131,57 @@ def _find_participant_by_code(participant_code: str):
         except Exception:
             continue
 
-    # Compatibility fallback for deployed runtimes where the app-Player ORM
-    # lookup above can miss an existing participant. Search recent sessions
-    # directly and match the canonical participant code.
-    try:
-        sessions = Session.objects.filter(is_demo=False).order_by("-id")[:200]
-    except Exception:
-        sessions = []
+    mapping = find_prolific_slot_map(participant_code=participant_code, prefer_active=False)
+    if mapping:
+        participant = _find_participant_in_session(
+            clean_str(getattr(mapping, "session_code", "")),
+            participant_code=participant_code,
+        )
+        if participant:
+            return participant
 
-    for session in sessions:
+    # Compatibility fallback for deployed runtimes where relation filters can
+    # miss existing participants. Scan recent concrete Player rows and compare
+    # the resolved participant object directly.
+    for model in (ImgDescPlayer, StartPlayer):
         try:
-            for participant in session.get_participants():
-                if _clean_cookie_value(getattr(participant, "code", "")) == participant_code:
-                    return participant
+            recent_players = model.objects.order_by("-id")[:4000]
         except Exception:
-            continue
+            recent_players = []
+
+        for player in recent_players:
+            try:
+                participant = getattr(player, "participant", None)
+                if participant and _clean_cookie_value(getattr(participant, "code", "")) == participant_code:
+                    return participant
+            except Exception:
+                continue
+
+    return None
+
+
+def _find_participant_in_session(session_code: str, participant_code: str = "", prolific_id: str = ""):
+    session_code = _clean_cookie_value(session_code)
+    participant_code = _clean_cookie_value(participant_code)
+    prolific_id = _clean_cookie_value(prolific_id)
+    if not session_code:
+        return None
+
+    try:
+        session = Session.objects.filter(code=session_code).first()
+    except Exception:
+        session = None
+    if not session:
+        return None
+
+    try:
+        for participant in session.get_participants():
+            if participant_code and _clean_cookie_value(getattr(participant, "code", "")) == participant_code:
+                return participant
+            if prolific_id and _clean_cookie_value(get_participant_prolific_id(participant)) == prolific_id:
+                return participant
+    except Exception:
+        return None
 
     return None
 
@@ -276,6 +313,11 @@ def _repair_token_from_request(request: Request) -> str:
 def _serialize_participant_state(participant):
     slot_rows = get_participant_slot_rows(participant.session, participant.code)
     exp_nums = sorted({int(row["exp_num"]) for row in slot_rows if int(row["exp_num"]) > 0})
+    mapping = find_prolific_slot_map(
+        participant_code=clean_str(getattr(participant, "code", "")),
+        session_code=clean_str(getattr(participant.session, "code", "")),
+        prefer_active=False,
+    )
 
     exp_from_vars = safe_int(participant.vars.get("exp_target"), 0)
     if exp_from_vars > 0 and exp_from_vars not in exp_nums:
@@ -293,6 +335,19 @@ def _serialize_participant_state(participant):
         returned_from_prolific=bool(participant.vars.get("returned_from_prolific")),
         exp_target=safe_int(participant.vars.get("exp_target"), 0),
         local_slot=safe_int(participant.vars.get("local_slot"), 0),
+        prolific_slot_map=(
+            dict(
+                session_code=clean_str(getattr(mapping, "session_code", "")),
+                participant_code=clean_str(getattr(mapping, "participant_code", "")),
+                prolific_pid=clean_str(getattr(mapping, "prolific_pid", "")),
+                exp_num=safe_int(getattr(mapping, "exp_num", 0), 0),
+                slot=safe_int(getattr(mapping, "slot", 0), 0),
+                active=bool(getattr(mapping, "active", False)),
+                last_status=clean_str(getattr(mapping, "last_status", "")),
+            )
+            if mapping
+            else {}
+        ),
         slot_rows=slot_rows,
         cohort_snapshots=[get_cohort_snapshot_data(participant.session, exp_num) for exp_num in exp_nums],
     )
@@ -308,6 +363,15 @@ def _find_participant_for_repair(participant_code: str, prolific_id: str):
             return participant
 
     if prolific_id:
+        mapping = find_prolific_slot_map(prolific_pid=prolific_id, prefer_active=False)
+        if mapping:
+            participant = _find_participant_in_session(
+                clean_str(getattr(mapping, "session_code", "")),
+                participant_code=clean_str(getattr(mapping, "participant_code", "")),
+                prolific_id=prolific_id,
+            )
+            if participant:
+                return participant
         return _find_participant_by_prolific_id(prolific_id)
 
     return None
