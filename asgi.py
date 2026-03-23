@@ -42,6 +42,7 @@ from img_desc import (
 
 logger = logging.getLogger("benzapp.admin")
 PROLIFIC_CAPTURE_COOKIE = "prolific_capture"
+PROLIFIC_CAPTURE_CLIENT_COOKIE = "prolific_capture_client"
 PROLIFIC_CAPTURE_MAX_AGE = 6 * 60 * 60
 
 async def ping(request):
@@ -246,17 +247,27 @@ class ProlificCaptureCookieMiddleware(BaseHTTPMiddleware):
                 should_clear_cookie = True
 
         if request_payload.get("prolific_id") and not payload:
+            signed_payload = _sign_cookie_payload(request_payload)
             response.set_cookie(
                 PROLIFIC_CAPTURE_COOKIE,
-                _sign_cookie_payload(request_payload),
+                signed_payload,
                 max_age=PROLIFIC_CAPTURE_MAX_AGE,
                 httponly=True,
+                samesite="lax",
+                path="/",
+            )
+            response.set_cookie(
+                PROLIFIC_CAPTURE_CLIENT_COOKIE,
+                signed_payload,
+                max_age=PROLIFIC_CAPTURE_MAX_AGE,
+                httponly=False,
                 samesite="lax",
                 path="/",
             )
 
         if should_clear_cookie:
             response.delete_cookie(PROLIFIC_CAPTURE_COOKIE, path="/")
+            response.delete_cookie(PROLIFIC_CAPTURE_CLIENT_COOKIE, path="/")
 
         return response
 
@@ -284,11 +295,20 @@ async def entry(request):
 
     payload = _extract_prolific_cookie_payload(request)
     if payload.get("prolific_id"):
+        signed_payload = _sign_cookie_payload(payload)
         response.set_cookie(
             PROLIFIC_CAPTURE_COOKIE,
-            _sign_cookie_payload(payload),
+            signed_payload,
             max_age=PROLIFIC_CAPTURE_MAX_AGE,
             httponly=True,
+            samesite="lax",
+            path="/",
+        )
+        response.set_cookie(
+            PROLIFIC_CAPTURE_CLIENT_COOKIE,
+            signed_payload,
+            max_age=PROLIFIC_CAPTURE_MAX_AGE,
+            httponly=False,
             samesite="lax",
             path="/",
         )

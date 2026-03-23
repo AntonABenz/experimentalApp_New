@@ -15,8 +15,35 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+    function getCookie(name) {
+        const prefix = name + '=';
+        const parts = document.cookie ? document.cookie.split(';') : [];
+        for (const rawPart of parts) {
+            const part = rawPart.trim();
+            if (part.startsWith(prefix)) {
+                return part.slice(prefix.length);
+            }
+        }
+        return '';
+    }
+
+    function decodeSignedPayload(value) {
+        if (!value || value.indexOf('.') === -1) return {};
+        const encoded = value.split('.').slice(0, -1).join('.');
+        try {
+            const padded = encoded + '='.repeat((4 - (encoded.length % 4)) % 4);
+            const b64 = padded.replace(/-/g, '+').replace(/_/g, '/');
+            const jsonText = atob(b64);
+            const payload = JSON.parse(jsonText || '{}');
+            return payload && typeof payload === 'object' ? payload : {};
+        } catch (e) {
+            return {};
+        }
+    }
+
     // Read Prolific params from the actual browser URL, not from server-side reconstruction.
     const params = new URLSearchParams(window.location.search);
+    const cookiePayload = decodeSignedPayload(getCookie('prolific_capture_client'));
     const serverPid = document.getElementById('server_prolific_pid').value || '';
     const serverStudyId = document.getElementById('server_study_id').value || '';
     const serverSessionId = document.getElementById('server_session_id').value || '';
@@ -26,14 +53,15 @@ document.addEventListener('DOMContentLoaded', function () {
         params.get('prolific_pid') ||
         params.get('prolific_id') ||
         params.get('participant_label') ||
+        cookiePayload.prolific_id ||
         serverPid ||
         '';
 
     document.getElementById('study_id_field').value =
-        params.get('STUDY_ID') || params.get('study_id') || serverStudyId || '';
+        params.get('STUDY_ID') || params.get('study_id') || cookiePayload.study_id || serverStudyId || '';
 
     document.getElementById('session_id_field').value =
-        params.get('SESSION_ID') || params.get('session_id') || serverSessionId || '';
+        params.get('SESSION_ID') || params.get('session_id') || cookiePayload.session_id || serverSessionId || '';
 
     // Submit immediately so the participant does not see an extra step.
     const form = document.querySelector('form');
