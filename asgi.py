@@ -16,10 +16,12 @@ from starlette.requests import Request
 
 from otree.asgi import app as otree_app
 from prolific_webhook import prolific_webhook_view, _find_participant_by_prolific_id
+from start import Player as StartPlayer
 
 # NEW
-from otree.models import Participant, Session  # Django ORM
+from otree.models import Session  # Django ORM
 from img_desc import (
+    Player as ImgDescPlayer,
     clean_str,
     free_slot_for_participant,
     get_cohort_snapshot_data,
@@ -107,6 +109,30 @@ def _participant_code_from_path(path: str) -> str:
     return ""
 
 
+def _find_participant_by_code(participant_code: str):
+    participant_code = _clean_cookie_value(participant_code)
+    if not participant_code:
+        return None
+
+    # Do not use Participant.objects here. In this deployed oTree runtime that API
+    # is not available and caused 500s on /InitializeParticipant for Prolific users.
+    # Find the participant through concrete app Player models instead.
+    for model in (StartPlayer, ImgDescPlayer):
+        try:
+            player = (
+                model.objects
+                .filter(participant__code=participant_code)
+                .order_by("-id")
+                .first()
+            )
+            if player and getattr(player, "participant", None):
+                return player.participant
+        except Exception:
+            continue
+
+    return None
+
+
 def _apply_prolific_cookie_to_participant(participant, payload: dict) -> bool:
     prolific_id = _clean_cookie_value(payload.get("prolific_id"))
     study_id = _clean_cookie_value(payload.get("study_id"))
@@ -161,14 +187,14 @@ class ProlificCaptureCookieMiddleware(BaseHTTPMiddleware):
 
         if payload:
             if participant_code:
-                participant = Participant.objects.filter(code=participant_code).order_by("-id").first()
+                participant = _find_participant_by_code(participant_code)
                 if participant and _apply_prolific_cookie_to_participant(participant, payload):
                     should_clear_cookie = True
 
         response = await call_next(request)
 
         if payload and not should_clear_cookie and participant_code:
-            participant = Participant.objects.filter(code=participant_code).order_by("-id").first()
+            participant = _find_participant_by_code(participant_code)
             if participant and _apply_prolific_cookie_to_participant(participant, payload):
                 should_clear_cookie = True
 
@@ -261,7 +287,7 @@ def _find_participant_for_repair(participant_code: str, prolific_id: str):
     prolific_id = clean_str(prolific_id)
 
     if participant_code:
-        participant = Participant.objects.filter(code=participant_code).order_by("-id").first()
+        participant = _find_participant_by_code(participant_code)
         if participant:
             return participant
 
