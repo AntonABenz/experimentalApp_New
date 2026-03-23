@@ -4,9 +4,9 @@
 {% block title %}{% endblock %}
 
 {% block content %}
-<input type="hidden" name="prolific_id_field" id="prolific_id_field" value="">
-<input type="hidden" name="study_id_field" id="study_id_field" value="">
-<input type="hidden" name="session_id_field" id="session_id_field" value="">
+<input type="hidden" name="prolific_id_field" id="prolific_id_field" value="{{ prolific_pid }}">
+<input type="hidden" name="study_id_field" id="study_id_field" value="{{ study_id }}">
+<input type="hidden" name="session_id_field" id="session_id_field" value="{{ session_id }}">
 <input type="hidden" id="server_prolific_pid" value="{{ prolific_pid }}">
 <input type="hidden" id="server_study_id" value="{{ study_id }}">
 <input type="hidden" id="server_session_id" value="{{ session_id }}">

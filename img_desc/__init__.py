@@ -1,7 +1,11 @@
 # img_desc/__init__.py
 from otree.api import *
+import base64
+import hashlib
+import hmac
 import json
 import logging
+import os
 import time
 import re
 import threading
@@ -13,6 +17,7 @@ from utils.prolific import maybe_expand_slots  # repo-root utils/
 logger = logging.getLogger("benzapp.img_desc")
 _cohort_assignment_lock = threading.Lock()
 _pending_slot_reservations = {}
+PROLIFIC_CAPTURE_COOKIE = "prolific_capture"
 
 PRODUCER = "P"
 INTERPRETER = "I"
@@ -976,6 +981,47 @@ def get_participant_prolific_id(participant) -> str:
     return clean_str(participant.vars.get("prolific_id", "") or getattr(participant, "label", ""))
 
 
+def _capture_cookie_secret() -> bytes:
+    secret = (
+        os.environ.get("OTREE_SECRET_KEY")
+        or os.environ.get("SECRET_KEY")
+        or os.environ.get("ADMIN_PASSWORD")
+        or "otree-secret"
+    )
+    return str(secret).encode("utf-8")
+
+
+def _load_prolific_capture_cookie_from_player(player) -> dict:
+    req = getattr(player, "request", None)
+    if req is None:
+        return {}
+
+    cookies = getattr(req, "COOKIES", None) or getattr(req, "cookies", None) or {}
+    raw = clean_str(cookies.get(PROLIFIC_CAPTURE_COOKIE, ""))
+    if "." not in raw:
+        return {}
+
+    encoded, signature = raw.rsplit(".", 1)
+    expected = hmac.new(_capture_cookie_secret(), encoded.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return {}
+
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    return {
+        "prolific_id": clean_str(payload.get("prolific_id", "")),
+        "study_id": clean_str(payload.get("study_id", "")),
+        "session_id": clean_str(payload.get("session_id", "")),
+    }
+
+
 def get_participant_slot_rows(player_or_session, participant_code: str):
     root = _root_subsession(player_or_session)
     if not root or not participant_code:
@@ -1877,6 +1923,7 @@ class CaptureProlificID(Page):
         prolific_id_field = clean_str(player.field_maybe_none("prolific_id_field"))
         study_id_field = clean_str(player.field_maybe_none("study_id_field"))
         session_id_field = clean_str(player.field_maybe_none("session_id_field"))
+        cookie_payload = _load_prolific_capture_cookie_from_player(player)
 
         # Keep the player-level fields in sync with the already-captured
         # participant values so the auto-submitted hidden form does not blank
@@ -1885,13 +1932,31 @@ class CaptureProlificID(Page):
             prolific_id_field = clean_str(
                 p.vars.get("prolific_id", "") or getattr(p, "label", "")
             )
+        if not prolific_id_field:
+            prolific_id_field = clean_str(cookie_payload.get("prolific_id", ""))
+        if prolific_id_field:
             player.prolific_id_field = prolific_id_field
         if not study_id_field:
             study_id_field = clean_str(p.vars.get("study_id", ""))
+        if not study_id_field:
+            study_id_field = clean_str(cookie_payload.get("study_id", ""))
+        if study_id_field:
             player.study_id_field = study_id_field
         if not session_id_field:
             session_id_field = clean_str(p.vars.get("prolific_session_id", ""))
+        if not session_id_field:
+            session_id_field = clean_str(cookie_payload.get("session_id", ""))
+        if session_id_field:
             player.session_id_field = session_id_field
+
+        logger.info(
+            "CaptureProlificID vars: participant=%s prolific_id=%s study_id=%s session_id=%s source_cookie=%s",
+            clean_str(p.code),
+            prolific_id_field,
+            study_id_field,
+            session_id_field,
+            bool(cookie_payload.get("prolific_id")),
+        )
 
         return dict(
             prolific_pid=prolific_id_field,
@@ -1903,17 +1968,21 @@ class CaptureProlificID(Page):
     @staticmethod
     def before_next_page(player, timeout_happened):
         p = player.participant
+        cookie_payload = _load_prolific_capture_cookie_from_player(player)
         prolific_id = clean_str(
             player.field_maybe_none("prolific_id_field")
+            or cookie_payload.get("prolific_id", "")
             or p.vars.get("prolific_id", "")
             or getattr(p, "label", "")
         )
         study_id = clean_str(
             player.field_maybe_none("study_id_field")
+            or cookie_payload.get("study_id", "")
             or p.vars.get("study_id", "")
         )
         session_id = clean_str(
             player.field_maybe_none("session_id_field")
+            or cookie_payload.get("session_id", "")
             or p.vars.get("prolific_session_id", "")
         )
 
@@ -1937,6 +2006,15 @@ class CaptureProlificID(Page):
             p.save()
         except Exception:
             pass
+
+        logger.info(
+            "CaptureProlificID saved: participant=%s prolific_id=%s study_id=%s session_id=%s source_cookie=%s",
+            clean_str(p.code),
+            prolific_id,
+            study_id,
+            session_id,
+            bool(cookie_payload.get("prolific_id")),
+        )
 
 # ----------------------------------------------------------------------------
 # EXPORT (reads ScheduleItem, not batch_history)
