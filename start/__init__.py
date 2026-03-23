@@ -1,10 +1,6 @@
 from otree.api import *
-import base64
-import hashlib
-import hmac
 import logging
 import json
-import os
 import re
 
 from reading_xls.get_data import get_data
@@ -15,7 +11,6 @@ PARTICIPANT_STATUS_FIELD = "participant_status"
 STATUS_ACTIVE = "active"
 STATUS_FINISHED = "finished"
 STATUS_DROP_OUT = "drop_out"
-PROLIFIC_CAPTURE_COOKIE = "prolific_capture"
 
 # -------------------------------------------------------------------
 # Helpers
@@ -28,42 +23,6 @@ def clean_str(x):
     if s.lower() in {"nan", "none"}:
         return ""
     return s
-
-
-def _capture_cookie_secret() -> bytes:
-    return (os.environ.get("OTREE_SECRET_KEY") or "dev-secret").encode("utf-8")
-
-
-def _load_signed_capture_cookie(raw_value: str) -> dict:
-    raw_value = clean_str(raw_value)
-    if "." not in raw_value:
-        return {}
-    encoded, signature = raw_value.rsplit(".", 1)
-    expected = hmac.new(_capture_cookie_secret(), encoded.encode("utf-8"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        return {}
-    try:
-        padded = encoded + ("=" * (-len(encoded) % 4))
-        raw = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
-        payload = json.loads(raw or "{}")
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _extract_capture_cookie_payload(player) -> dict:
-    req = getattr(player, "request", None)
-    if req is None:
-        return {}
-    raw_cookie = ""
-    try:
-        raw_cookie = (
-            getattr(req, "COOKIES", {}).get(PROLIFIC_CAPTURE_COOKIE, "")
-            or getattr(req, "cookies", {}).get(PROLIFIC_CAPTURE_COOKIE, "")
-        )
-    except Exception:
-        raw_cookie = ""
-    return _load_signed_capture_cookie(raw_cookie)
 
 
 def _maybe_cast(v):
@@ -133,12 +92,6 @@ def _extract_prolific_params(player) -> tuple[str, str, str]:
                 sess_id = (params.get("SESSION_ID") or params.get("session_id") or "").strip()
     except Exception:
         pass
-    if not pid or not study_id or not sess_id:
-        payload = _extract_capture_cookie_payload(player)
-        if payload:
-            pid = pid or clean_str(payload.get("prolific_id", ""))
-            study_id = study_id or clean_str(payload.get("study_id", ""))
-            sess_id = sess_id or clean_str(payload.get("session_id", ""))
     if not pid:
         try:
             pid = clean_str(

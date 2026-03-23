@@ -130,19 +130,6 @@ def _find_participant_by_code(participant_code: str):
         except Exception:
             continue
 
-    # Minimal fallback for admin repair/testing and for runtimes where the ORM
-    # relation lookup above silently misses. Keep this as a fallback only so we
-    # do not change the normal entry behavior more than necessary.
-    for model in (StartPlayer, ImgDescPlayer):
-        try:
-            rows = list(model.filter())
-        except Exception:
-            continue
-        for player in reversed(rows[-5000:]):
-            participant = getattr(player, "participant", None)
-            if participant and _clean_cookie_value(getattr(participant, "code", "")) == participant_code:
-                return participant
-
     return None
 
 
