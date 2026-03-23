@@ -366,6 +366,46 @@ def _serialize_participant_state(participant):
     )
 
 
+def _serialize_mapping_state(mapping):
+    if not mapping:
+        return {}
+
+    session_code = clean_str(getattr(mapping, "session_code", ""))
+    exp_num = safe_int(getattr(mapping, "exp_num", 0), 0)
+    snapshots = []
+    try:
+        session = Session.objects.filter(code=session_code).first() if session_code else None
+    except Exception:
+        session = None
+    if session and exp_num > 0:
+        try:
+            snapshots = [get_cohort_snapshot_data(session, exp_num)]
+        except Exception:
+            snapshots = []
+
+    return dict(
+        participant_code=clean_str(getattr(mapping, "participant_code", "")),
+        prolific_id=clean_str(getattr(mapping, "prolific_pid", "")),
+        participant_label=clean_str(getattr(mapping, "prolific_pid", "")),
+        participant_status="",
+        prolific_submission_status="",
+        returned_from_prolific=False,
+        exp_target=exp_num,
+        local_slot=safe_int(getattr(mapping, "slot", 0), 0),
+        prolific_slot_map=dict(
+            session_code=session_code,
+            participant_code=clean_str(getattr(mapping, "participant_code", "")),
+            prolific_pid=clean_str(getattr(mapping, "prolific_pid", "")),
+            exp_num=exp_num,
+            slot=safe_int(getattr(mapping, "slot", 0), 0),
+            active=bool(getattr(mapping, "active", False)),
+            last_status=clean_str(getattr(mapping, "last_status", "")),
+        ),
+        slot_rows=[],
+        cohort_snapshots=snapshots,
+    )
+
+
 def _find_participant_for_repair(participant_code: str, prolific_id: str):
     participant_code = clean_str(participant_code)
     prolific_id = clean_str(prolific_id)
@@ -387,6 +427,18 @@ def _find_participant_for_repair(participant_code: str, prolific_id: str):
                 return participant
         return _find_participant_by_prolific_id(prolific_id)
 
+    return None
+
+
+def _find_mapping_for_repair(participant_code: str, prolific_id: str):
+    participant_code = clean_str(participant_code)
+    prolific_id = clean_str(prolific_id)
+    if participant_code:
+        mapping = find_prolific_slot_map(participant_code=participant_code, prefer_active=False)
+        if mapping:
+            return mapping
+    if prolific_id:
+        return find_prolific_slot_map(prolific_pid=prolific_id, prefer_active=False)
     return None
 
 
@@ -420,47 +472,82 @@ async def cohort_repair(request: Request):
         )
 
     participant = _find_participant_for_repair(participant_code, prolific_id)
-    if not participant:
+    mapping = None if participant else _find_mapping_for_repair(participant_code, prolific_id)
+    if not participant and not mapping:
         return JSONResponse(
             {"ok": False, "error": "participant not found", "participant_code": participant_code, "prolific_id": prolific_id},
             status_code=404,
         )
 
-    before = _serialize_participant_state(participant)
+    before = _serialize_participant_state(participant) if participant else _serialize_mapping_state(mapping)
     note = "status only"
 
-    if action == "drop_out":
+    if participant and action == "drop_out":
         mark_participant_drop_out(participant)
         free_slot_for_participant(participant.session, participant.code)
         reset_this_app_for_participant(participant)
         mark_participant_complete_in_cohort(participant.session, participant.code, completed=False)
         participant.save()
         note = "participant marked drop_out, slot freed, app state reset"
-    elif action == "finished":
+    elif participant and action == "finished":
         mark_participant_finished(participant)
         mark_participant_complete_in_cohort(participant.session, participant.code, completed=True)
         participant.save()
         maybe_expand_prolific_for_participant(participant)
         note = "participant marked finished and cohort completion updated"
-    elif action == "free_slot":
+    elif participant and action == "free_slot":
         free_slot_for_participant(participant.session, participant.code)
         reset_this_app_for_participant(participant)
         mark_participant_complete_in_cohort(participant.session, participant.code, completed=False)
         participant.save()
         note = "slot freed and app state reset; participant status unchanged"
-    elif action == "active":
+    elif participant and action == "active":
         mark_participant_active(participant)
         participant.save()
         note = "participant marked active"
+    elif mapping and action in {"status", "drop_out", "free_slot"}:
+        session_code = clean_str(getattr(mapping, "session_code", ""))
+        mapped_code = clean_str(getattr(mapping, "participant_code", ""))
+        try:
+            session = Session.objects.filter(code=session_code).first() if session_code else None
+        except Exception:
+            session = None
 
-    after = _serialize_participant_state(participant)
+        if action in {"drop_out", "free_slot"}:
+            if not session or not mapped_code:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "mapping found but session/participant code unavailable",
+                        "participant_code": participant_code,
+                        "prolific_id": prolific_id,
+                    },
+                    status_code=409,
+                )
+            free_slot_for_participant(session, mapped_code)
+            mark_participant_complete_in_cohort(session, mapped_code, completed=False)
+            note = "mapping-only slot free completed; participant object unresolved"
+        else:
+            note = "mapping-only status; participant object unresolved"
+    elif mapping:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "participant object unresolved for requested action",
+                "participant_code": participant_code,
+                "prolific_id": prolific_id,
+            },
+            status_code=409,
+        )
+
+    after = _serialize_participant_state(participant) if participant else _serialize_mapping_state(mapping)
     logger.info(
         "CohortRepair: action=%s participant=%s prolific_id=%s status_before=%s status_after=%s",
         action,
-        participant.code,
-        get_participant_prolific_id(participant),
-        before.get("participant_status", ""),
-        after.get("participant_status", ""),
+        clean_str(getattr(participant, "code", "")) or clean_str(getattr(mapping, "participant_code", "")),
+        get_participant_prolific_id(participant) if participant else clean_str(getattr(mapping, "prolific_pid", "")),
+        before.get("participant_status", "") or clean_str(getattr(mapping, "last_status", "")),
+        after.get("participant_status", "") or clean_str(getattr(mapping, "last_status", "")),
     )
 
     return JSONResponse(

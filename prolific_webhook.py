@@ -174,6 +174,27 @@ async def prolific_webhook_view(request: Request):
     participant = _find_participant_by_prolific_id(prolific_pid)
 
     if participant is None:
+        mapping = find_prolific_slot_map(prolific_pid=prolific_pid, prefer_active=False)
+        if mapping and status in Constants.BAD_PROLIFIC_STATUSES:
+            session_code = clean_str(getattr(mapping, "session_code", ""))
+            mapped_code = clean_str(getattr(mapping, "participant_code", ""))
+            try:
+                session = Session.objects.filter(code=session_code).first() if session_code else None
+            except Exception:
+                session = None
+
+            if session and mapped_code:
+                free_slot_for_participant(session, mapped_code)
+                mark_participant_complete_in_cohort(session, mapped_code, completed=False)
+                logger.info(
+                    "Webhook: freed slot from mapping prolific_pid=%s participant=%s status=%s study_id=%s submission_id=%s",
+                    prolific_pid,
+                    mapped_code,
+                    status,
+                    study_id,
+                    submission_id,
+                )
+                return JSONResponse({"ok": True, "note": "mapping_slot_freed"})
         logger.warning(
             "Webhook: participant_not_found prolific_pid=%s status=%s study_id=%s submission_id=%s",
             prolific_pid,
