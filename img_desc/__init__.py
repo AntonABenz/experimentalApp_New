@@ -338,11 +338,34 @@ def _get_prolific_map_row(obj_or_session, participant_code: str):
     return rows[0] if rows else None
 
 
+def _iter_all_prolific_map_rows():
+    """
+    ExtraModel.filter() must be anchored to a model instance such as subsession=...
+    Scan round-1 img_desc subsessions across sessions and yield all mapping rows.
+    """
+    try:
+        from otree.models import Session
+        sessions = Session.objects.all().order_by("-id")[:500]
+    except Exception:
+        sessions = []
+
+    for session_obj in sessions:
+        root = _root_subsession(session_obj)
+        if not root:
+            continue
+        try:
+            rows = ProlificParticipantMap.filter(subsession=root)
+        except Exception:
+            rows = []
+        for row in rows or []:
+            yield row
+
+
 def get_prolific_mapping_by_participant_code(participant_code: str):
     participant_code = clean_str(participant_code)
     if not participant_code:
         return None
-    rows = ProlificParticipantMap.filter(participant_code=participant_code)
+    rows = [row for row in _iter_all_prolific_map_rows() if clean_str(getattr(row, "participant_code", "")) == participant_code]
     if not rows:
         return None
     rows = sorted(rows, key=lambda r: float(getattr(r, "updated_ts", 0) or 0), reverse=True)
@@ -353,7 +376,7 @@ def get_prolific_mapping_by_pid(prolific_id: str):
     prolific_id = clean_str(prolific_id)
     if not prolific_id:
         return None
-    rows = ProlificParticipantMap.filter(prolific_id=prolific_id)
+    rows = [row for row in _iter_all_prolific_map_rows() if clean_str(getattr(row, "prolific_id", "")) == prolific_id]
     if not rows:
         return None
     rows = sorted(rows, key=lambda r: float(getattr(r, "updated_ts", 0) or 0), reverse=True)
