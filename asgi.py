@@ -21,6 +21,8 @@ from start import Player as StartPlayer
 # NEW
 from otree.models import Session  # Django ORM
 from img_desc import (
+    CohortSlot,
+    Constants as ImgDescConstants,
     Player as ImgDescPlayer,
     clean_str,
     find_prolific_slot_map,
@@ -413,22 +415,57 @@ def _recent_sessions(limit: int = 200):
         return []
 
 
+def _recent_img_desc_roots(limit: int = 200):
+    roots = []
+    for session in _recent_sessions(limit):
+        try:
+            for sub in session.get_subsessions():
+                if (
+                    getattr(getattr(sub, "_meta", None), "app_label", "") == ImgDescConstants.name_in_url
+                    and int(getattr(sub, "round_number", 0) or 0) == 1
+                ):
+                    roots.append(sub)
+                    break
+        except Exception:
+            continue
+    return roots
+
+
+def _slot_rows_from_root(root, participant_code: str):
+    participant_code = clean_str(participant_code)
+    if not root or not participant_code:
+        return []
+    try:
+        rows = CohortSlot.filter(subsession=root, participant_code=participant_code)
+    except Exception:
+        return []
+
+    result = []
+    for row in sorted(rows, key=lambda r: (int(getattr(r, "exp_num", 0) or 0), int(getattr(r, "slot", 0) or 0), not bool(getattr(r, "active", False)))):
+        result.append(
+            dict(
+                exp_num=int(getattr(row, "exp_num", 0) or 0),
+                slot=int(getattr(row, "slot", 0) or 0),
+                active=bool(getattr(row, "active", False)),
+                completed=bool(getattr(row, "completed", False)),
+            )
+        )
+    return result
+
+
 def _find_repair_fallback_by_participant_code(participant_code: str):
     participant_code = clean_str(participant_code)
     if not participant_code:
         return None
 
-    for session in _recent_sessions():
-        try:
-            slot_rows = get_participant_slot_rows(session, participant_code)
-        except Exception:
-            slot_rows = []
+    for root in _recent_img_desc_roots():
+        slot_rows = _slot_rows_from_root(root, participant_code)
         if slot_rows:
             return dict(
                 participant_code=participant_code,
                 prolific_id="",
-                session=session,
-                session_code=clean_str(getattr(session, "code", "")),
+                session=getattr(root, "session", None),
+                session_code=clean_str(getattr(getattr(root, "session", None), "code", "")),
                 slot_rows=slot_rows,
             )
     return None
