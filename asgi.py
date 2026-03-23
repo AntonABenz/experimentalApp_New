@@ -406,6 +406,119 @@ def _serialize_mapping_state(mapping):
     )
 
 
+def _recent_sessions(limit: int = 200):
+    try:
+        return list(Session.objects.order_by("-id")[: int(limit or 200)])
+    except Exception:
+        return []
+
+
+def _find_repair_fallback_by_participant_code(participant_code: str):
+    participant_code = clean_str(participant_code)
+    if not participant_code:
+        return None
+
+    for session in _recent_sessions():
+        try:
+            slot_rows = get_participant_slot_rows(session, participant_code)
+        except Exception:
+            slot_rows = []
+        if slot_rows:
+            return dict(
+                participant_code=participant_code,
+                prolific_id="",
+                session=session,
+                session_code=clean_str(getattr(session, "code", "")),
+                slot_rows=slot_rows,
+            )
+    return None
+
+
+def _find_repair_fallback_by_prolific_id(prolific_id: str):
+    prolific_id = clean_str(prolific_id)
+    if not prolific_id:
+        return None
+
+    try:
+        players = list(ImgDescPlayer.objects.filter(prolific_id_field=prolific_id).order_by("-id")[:200])
+    except Exception:
+        players = []
+
+    if not players:
+        try:
+            players = list(ImgDescPlayer.objects.order_by("-id")[:4000])
+        except Exception:
+            players = []
+        players = [p for p in players if clean_str(getattr(p, "prolific_id_field", "")) == prolific_id]
+
+    for player in players:
+        try:
+            participant = getattr(player, "participant", None)
+            participant_code = clean_str(getattr(participant, "code", ""))
+            session = getattr(participant, "session", None)
+            if participant_code and session is not None:
+                slot_rows = get_participant_slot_rows(session, participant_code)
+                return dict(
+                    participant_code=participant_code,
+                    prolific_id=prolific_id,
+                    session=session,
+                    session_code=clean_str(getattr(session, "code", "")),
+                    slot_rows=slot_rows,
+                )
+        except Exception:
+            continue
+    return None
+
+
+def _find_repair_fallback(participant_code: str, prolific_id: str):
+    fallback = _find_repair_fallback_by_participant_code(participant_code)
+    if fallback:
+        if not fallback.get("prolific_id") and prolific_id:
+            fallback["prolific_id"] = clean_str(prolific_id)
+        return fallback
+    return _find_repair_fallback_by_prolific_id(prolific_id)
+
+
+def _serialize_repair_fallback(fallback):
+    if not fallback:
+        return {}
+
+    session = fallback.get("session")
+    slot_rows = list(fallback.get("slot_rows") or [])
+    exp_nums = sorted({int(row.get("exp_num", 0) or 0) for row in slot_rows if int(row.get("exp_num", 0) or 0) > 0})
+    if not exp_nums:
+        exp_nums = [1]
+
+    snapshots = []
+    for exp_num in exp_nums:
+        try:
+            snapshots.append(get_cohort_snapshot_data(session, exp_num))
+        except Exception:
+            continue
+
+    local_slot = 0
+    for row in slot_rows:
+        if bool(row.get("active")):
+            local_slot = safe_int(row.get("slot", 0), 0)
+            break
+    if not local_slot and slot_rows:
+        local_slot = safe_int(slot_rows[-1].get("slot", 0), 0)
+
+    return dict(
+        participant_code=clean_str(fallback.get("participant_code", "")),
+        prolific_id=clean_str(fallback.get("prolific_id", "")),
+        participant_label=clean_str(fallback.get("prolific_id", "")),
+        participant_status="",
+        prolific_submission_status="",
+        returned_from_prolific=False,
+        exp_target=safe_int(exp_nums[0] if exp_nums else 0, 0),
+        local_slot=local_slot,
+        prolific_slot_map={},
+        slot_rows=slot_rows,
+        cohort_snapshots=snapshots,
+    )
+
+
 def _find_participant_for_repair(participant_code: str, prolific_id: str):
     participant_code = clean_str(participant_code)
     prolific_id = clean_str(prolific_id)
@@ -473,13 +586,18 @@ async def cohort_repair(request: Request):
 
     participant = _find_participant_for_repair(participant_code, prolific_id)
     mapping = None if participant else _find_mapping_for_repair(participant_code, prolific_id)
-    if not participant and not mapping:
+    fallback = None if (participant or mapping) else _find_repair_fallback(participant_code, prolific_id)
+    if not participant and not mapping and not fallback:
         return JSONResponse(
             {"ok": False, "error": "participant not found", "participant_code": participant_code, "prolific_id": prolific_id},
             status_code=404,
         )
 
-    before = _serialize_participant_state(participant) if participant else _serialize_mapping_state(mapping)
+    before = (
+        _serialize_participant_state(participant)
+        if participant
+        else (_serialize_mapping_state(mapping) if mapping else _serialize_repair_fallback(fallback))
+    )
     note = "status only"
 
     if participant and action == "drop_out":
@@ -529,6 +647,25 @@ async def cohort_repair(request: Request):
             note = "mapping-only slot free completed; participant object unresolved"
         else:
             note = "mapping-only status; participant object unresolved"
+    elif fallback and action in {"status", "drop_out", "free_slot"}:
+        session = fallback.get("session")
+        fallback_code = clean_str(fallback.get("participant_code", ""))
+        if action in {"drop_out", "free_slot"}:
+            if session is None or not fallback_code:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "repair fallback found but session/participant code unavailable",
+                        "participant_code": participant_code,
+                        "prolific_id": prolific_id,
+                    },
+                    status_code=409,
+                )
+            free_slot_for_participant(session, fallback_code)
+            mark_participant_complete_in_cohort(session, fallback_code, completed=False)
+            note = "repair-only slot free completed from slot/player fallback"
+        else:
+            note = "repair-only status from slot/player fallback"
     elif mapping:
         return JSONResponse(
             {
@@ -539,13 +676,34 @@ async def cohort_repair(request: Request):
             },
             status_code=409,
         )
+    elif fallback:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "repair fallback unresolved for requested action",
+                "participant_code": participant_code,
+                "prolific_id": prolific_id,
+            },
+            status_code=409,
+        )
 
-    after = _serialize_participant_state(participant) if participant else _serialize_mapping_state(mapping)
+    after = (
+        _serialize_participant_state(participant)
+        if participant
+        else (_serialize_mapping_state(mapping) if mapping else _serialize_repair_fallback(fallback))
+    )
     logger.info(
         "CohortRepair: action=%s participant=%s prolific_id=%s status_before=%s status_after=%s",
         action,
-        clean_str(getattr(participant, "code", "")) or clean_str(getattr(mapping, "participant_code", "")),
-        get_participant_prolific_id(participant) if participant else clean_str(getattr(mapping, "prolific_pid", "")),
+        clean_str(getattr(participant, "code", ""))
+        or clean_str(getattr(mapping, "participant_code", ""))
+        or clean_str((fallback or {}).get("participant_code", "")),
+        get_participant_prolific_id(participant)
+        if participant
+        else (
+            clean_str(getattr(mapping, "prolific_pid", ""))
+            or clean_str((fallback or {}).get("prolific_id", ""))
+        ),
         before.get("participant_status", "") or clean_str(getattr(mapping, "last_status", "")),
         after.get("participant_status", "") or clean_str(getattr(mapping, "last_status", "")),
     )
