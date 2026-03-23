@@ -16,10 +16,12 @@ from starlette.requests import Request
 
 from otree.asgi import app as otree_app
 from prolific_webhook import prolific_webhook_view, _find_participant_by_prolific_id
+from start import Player as StartPlayer
 
 # NEW
 from otree.models import Session  # Django ORM
 from img_desc import (
+    Player as ImgDescPlayer,
     clean_str,
     free_slot_for_participant,
     get_cohort_snapshot_data,
@@ -107,33 +109,26 @@ def _participant_code_from_path(path: str) -> str:
     return ""
 
 
-def _iter_recent_participants(limit_sessions: int = 50):
-    try:
-        sessions = Session.objects.filter(is_demo=False).order_by("-id")[:limit_sessions]
-    except Exception:
-        sessions = []
-
-    for session in sessions:
-        try:
-            participants = session.get_participants()
-        except Exception:
-            continue
-        for participant in participants:
-            yield participant
-
-
 def _find_participant_by_code(participant_code: str):
     participant_code = _clean_cookie_value(participant_code)
     if not participant_code:
         return None
 
-    # Do not rely on Participant.objects or Player.objects here.
-    # In this deployed oTree runtime those manager APIs have been unstable across
-    # code paths. A direct scan across recent sessions is slower but robust and
-    # only used on the entry/PID path.
-    for participant in _iter_recent_participants():
-        if _clean_cookie_value(getattr(participant, "code", "")) == participant_code:
-            return participant
+    # Do not use Participant.objects here. In this deployed oTree runtime that API
+    # is not available and caused 500s on /InitializeParticipant for Prolific users.
+    # Find the participant through concrete app Player models instead.
+    for model in (StartPlayer, ImgDescPlayer):
+        try:
+            player = (
+                model.objects
+                .filter(participant__code=participant_code)
+                .order_by("-id")
+                .first()
+            )
+            if player and getattr(player, "participant", None):
+                return player.participant
+        except Exception:
+            continue
 
     return None
 
@@ -202,14 +197,6 @@ class ProlificCaptureCookieMiddleware(BaseHTTPMiddleware):
             participant = _find_participant_by_code(participant_code)
             if participant and _apply_prolific_cookie_to_participant(participant, payload):
                 should_clear_cookie = True
-
-        if payload and not should_clear_cookie and participant_code and request.url.path.startswith("/p/"):
-            logger.warning(
-                "Prolific cookie pending: participant=%s path=%s prolific_id=%s",
-                participant_code,
-                request.url.path,
-                _clean_cookie_value(payload.get("prolific_id")),
-            )
 
         if request_payload.get("prolific_id") and not payload:
             response.set_cookie(

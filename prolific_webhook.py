@@ -6,7 +6,7 @@ import logging
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
-from otree.models import Session
+from otree.models import Participant
 
 from img_desc.utils import verify_prolific_webhook
 from img_desc import (
@@ -26,21 +26,6 @@ from img_desc import (
 logger = logging.getLogger("benzapp.prolific_webhook")
 
 
-def _iter_recent_participants(limit_sessions: int = 50):
-    try:
-        sessions = Session.objects.filter(is_demo=False).order_by("-id")[:limit_sessions]
-    except Exception:
-        sessions = []
-
-    for session in sessions:
-        try:
-            participants = session.get_participants()
-        except Exception:
-            continue
-        for participant in participants:
-            yield participant
-
-
 def normalize_prolific_status(raw) -> str:
     return clean_str(raw).upper().replace("_", "-")
 
@@ -55,15 +40,30 @@ def _find_participant_by_prolific_id(prolific_pid: str):
     if not prolific_pid:
         return None
 
-    for participant in _iter_recent_participants():
-        try:
-            if participant.vars.get("prolific_id") == prolific_pid or getattr(participant, "label", "") == prolific_pid:
-                return participant
-        except Exception:
-            continue
+    try:
+        qs = Participant.objects.filter(vars__contains={"prolific_id": prolific_pid})
+        if qs.exists():
+            return qs.order_by("-id").first()
+    except Exception:
+        pass
 
     try:
-        for player in reversed(ImgDescPlayer.filter(prolific_id_field=prolific_pid)):
+        qs = Participant.objects.filter(label=prolific_pid)
+        if qs.exists():
+            return qs.order_by("-id").first()
+    except Exception:
+        pass
+
+    try:
+        for p in Participant.objects.all().order_by("-id")[:3000]:
+            if p.vars.get("prolific_id") == prolific_pid or getattr(p, "label", "") == prolific_pid:
+                return p
+    except Exception:
+        pass
+
+    try:
+        qs = ImgDescPlayer.objects.filter(prolific_id_field=prolific_pid).order_by("-id")
+        for player in qs[:50]:
             participant = getattr(player, "participant", None)
             if participant:
                 return participant
