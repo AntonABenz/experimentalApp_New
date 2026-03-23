@@ -6,7 +6,7 @@ import logging
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
-from otree.models import Participant
+from otree.models import Participant, Session
 
 from img_desc.utils import verify_prolific_webhook
 from img_desc import (
@@ -33,19 +33,12 @@ def normalize_prolific_status(raw) -> str:
 def _find_participant_by_prolific_id(prolific_pid: str):
     """
     Best-effort lookup.
-    Primary: vars['prolific_id'].
-    Fallbacks: participant.label, then recent-participant scan.
+    Primary: participant.label (canonical Prolific identifier).
+    Fallbacks: vars['prolific_id'], then recent-session scan.
     """
     prolific_pid = (prolific_pid or "").strip()
     if not prolific_pid:
         return None
-
-    try:
-        qs = Participant.objects.filter(vars__contains={"prolific_id": prolific_pid})
-        if qs.exists():
-            return qs.order_by("-id").first()
-    except Exception:
-        pass
 
     try:
         qs = Participant.objects.filter(label=prolific_pid)
@@ -55,9 +48,18 @@ def _find_participant_by_prolific_id(prolific_pid: str):
         pass
 
     try:
-        for p in Participant.objects.all().order_by("-id")[:3000]:
-            if p.vars.get("prolific_id") == prolific_pid or getattr(p, "label", "") == prolific_pid:
-                return p
+        qs = Participant.objects.filter(vars__contains={"prolific_id": prolific_pid})
+        if qs.exists():
+            return qs.order_by("-id").first()
+    except Exception:
+        pass
+
+    try:
+        sessions = Session.objects.filter(is_demo=False).order_by("-id")[:200]
+        for session in sessions:
+            for p in session.get_participants():
+                if getattr(p, "label", "") == prolific_pid or p.vars.get("prolific_id") == prolific_pid:
+                    return p
     except Exception:
         pass
 

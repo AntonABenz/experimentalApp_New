@@ -130,6 +130,22 @@ def _find_participant_by_code(participant_code: str):
         except Exception:
             continue
 
+    # Compatibility fallback for deployed runtimes where the app-Player ORM
+    # lookup above can miss an existing participant. Search recent sessions
+    # directly and match the canonical participant code.
+    try:
+        sessions = Session.objects.filter(is_demo=False).order_by("-id")[:200]
+    except Exception:
+        sessions = []
+
+    for session in sessions:
+        try:
+            for participant in session.get_participants():
+                if _clean_cookie_value(getattr(participant, "code", "")) == participant_code:
+                    return participant
+        except Exception:
+            continue
+
     return None
 
 

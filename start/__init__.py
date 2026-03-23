@@ -113,8 +113,8 @@ def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id
       - participant.vars["prolific_session_id"]
 
     Stable semantics, do not repurpose:
-      - participant.vars["prolific_id"] is the Prolific PID
-      - participant.label is reserved as a fallback copy of that Prolific PID
+      - participant.label is the canonical Prolific PID once available
+      - participant.vars["prolific_id"] mirrors that PID for backward compatibility
       - neither may be reused for spreadsheet participant numbers
     """
     p = player.participant

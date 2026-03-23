@@ -978,7 +978,7 @@ def mark_participant_drop_out(participant):
 
 
 def get_participant_prolific_id(participant) -> str:
-    return clean_str(participant.vars.get("prolific_id", "") or getattr(participant, "label", ""))
+    return clean_str(getattr(participant, "label", "") or participant.vars.get("prolific_id", ""))
 
 
 def _capture_cookie_secret() -> bytes:
