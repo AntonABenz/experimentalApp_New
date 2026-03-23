@@ -1090,6 +1090,7 @@ def find_prolific_slot_map(
                     continue
                 candidates.append(row)
         except Exception:
+            logger.warning("find_prolific_slot_map: mapping lookup unavailable")
             continue
 
     return _best_prolific_slot_map(candidates, prefer_active=prefer_active)
@@ -1124,7 +1125,17 @@ def sync_prolific_slot_map(
     if not participant_code or exp_num <= 0 or slot <= 0:
         return None
 
-    rows = ProlificSlotMap.filter(subsession=root, participant_code=participant_code)
+    try:
+        rows = ProlificSlotMap.filter(subsession=root, participant_code=participant_code)
+    except Exception:
+        logger.warning(
+            "sync_prolific_slot_map: mapping table unavailable participant=%s session=%s exp=%s slot=%s",
+            participant_code,
+            session_code,
+            exp_num,
+            slot,
+        )
+        return None
     exact = [
         row
         for row in rows
@@ -1192,7 +1203,14 @@ def deactivate_prolific_slot_map(session, participant_code: str, status: str = "
     if not participant_code:
         return
 
-    rows = ProlificSlotMap.filter(subsession=root, participant_code=participant_code, active=True)
+    try:
+        rows = ProlificSlotMap.filter(subsession=root, participant_code=participant_code, active=True)
+    except Exception:
+        logger.warning(
+            "deactivate_prolific_slot_map: mapping table unavailable participant=%s",
+            participant_code,
+        )
+        return
     now_ts = time.time()
     for row in rows:
         row.active = False
