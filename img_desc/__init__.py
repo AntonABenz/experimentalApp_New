@@ -1024,7 +1024,7 @@ def get_participant_prolific_id(participant) -> str:
 def _recent_root_subsessions(limit: int = 120):
     roots = []
     try:
-        sessions = Session.objects.filter(is_demo=False).order_by("-id")[: int(limit or 120)]
+        sessions = Session.objects.order_by("-id")[: int(limit or 120)]
     except Exception:
         sessions = []
 

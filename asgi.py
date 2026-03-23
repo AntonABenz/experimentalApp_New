@@ -116,7 +116,7 @@ def _find_participant_by_code(participant_code: str):
         return None
 
     try:
-        sessions = Session.objects.filter(is_demo=False).order_by("-id")[:200]
+        sessions = Session.objects.order_by("-id")[:200]
     except Exception:
         sessions = []
 
