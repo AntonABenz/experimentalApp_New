@@ -119,7 +119,7 @@ def _find_participant_by_code(participant_code: str):
 
     # Do not use Participant.objects here. In this deployed oTree runtime that API
     # is not available and caused 500s on /InitializeParticipant for Prolific users.
-    # Find the participant through concrete app Player models instead.
+    # First try concrete app Player models, then fall back to a recent-session scan.
     for model in (StartPlayer, ImgDescPlayer):
         try:
             player = (
@@ -130,6 +130,19 @@ def _find_participant_by_code(participant_code: str):
             )
             if player and getattr(player, "participant", None):
                 return player.participant
+        except Exception:
+            continue
+
+    try:
+        sessions = Session.objects.all().order_by("-id")[:200]
+    except Exception:
+        sessions = []
+
+    for session in sessions:
+        try:
+            for participant in session.get_participants():
+                if _clean_cookie_value(getattr(participant, "code", "")) == participant_code:
+                    return participant
         except Exception:
             continue
 
