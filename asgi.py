@@ -803,6 +803,12 @@ async def cohort_repair(request: Request):
         )
         if not participant:
             fallback = _repair_fallback_from_session_index(session_index)
+    else:
+        logger.warning(
+            "CohortRepair session index miss: participant=%s prolific_id=%s",
+            participant_code,
+            prolific_id,
+        )
 
     if not participant:
         participant = _find_participant_for_repair(participant_code, prolific_id)

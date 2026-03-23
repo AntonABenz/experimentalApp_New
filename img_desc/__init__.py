@@ -1107,7 +1107,17 @@ def sync_session_repair_index(
     if entry["prolific_id"]:
         by_prolific[entry["prolific_id"]] = dict(entry)
 
-    logger.info(
+    try:
+        session.save()
+    except Exception:
+        logger.warning(
+            "SessionRepairIndex save failed: session=%s participant=%s prolific_id=%s",
+            session_code,
+            participant_code,
+            entry["prolific_id"],
+        )
+
+    logger.warning(
         "SessionRepairIndex sync: session=%s participant=%s prolific_id=%s exp_num=%s local_slot=%s",
         session_code,
         participant_code,
@@ -1161,6 +1171,14 @@ def find_session_repair_index(participant_code: str = "", prolific_id: str = "",
         entry["exp_num"] = safe_int(entry.get("exp_num"), 0)
         entry["local_slot"] = safe_int(entry.get("local_slot"), 0)
         entry["session"] = session
+        logger.warning(
+            "SessionRepairIndex lookup hit: session=%s participant=%s prolific_id=%s exp_num=%s local_slot=%s",
+            entry["session_code"],
+            entry["participant_code"],
+            entry["prolific_id"],
+            entry["exp_num"],
+            entry["local_slot"],
+        )
         return entry
 
     return None
