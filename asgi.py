@@ -25,6 +25,8 @@ from img_desc import (
     clean_str,
     free_slot_for_participant,
     get_cohort_snapshot_data,
+    get_prolific_mapping_by_participant_code,
+    get_prolific_mapping_by_pid,
     get_participant_prolific_id,
     get_participant_slot_rows,
     get_participant_status,
@@ -35,6 +37,7 @@ from img_desc import (
     maybe_expand_prolific_for_participant,
     reset_this_app_for_participant,
     safe_int,
+    store_prolific_mapping,
 )
 
 logger = logging.getLogger("benzapp.admin")
@@ -133,6 +136,29 @@ def _find_participant_by_code(participant_code: str):
     return None
 
 
+def _participant_from_mapping_row(row):
+    if not row:
+        return None
+    session_code = clean_str(getattr(row, "session_code", ""))
+    participant_code = clean_str(getattr(row, "participant_code", ""))
+    if not session_code or not participant_code:
+        return None
+    try:
+        qs = Session.objects.filter(code=session_code)
+        session = qs.order_by("-id").first() if hasattr(qs, "order_by") else None
+    except Exception:
+        session = None
+    if not session:
+        return None
+    try:
+        for participant in session.get_participants():
+            if clean_str(getattr(participant, "code", "")) == participant_code:
+                return participant
+    except Exception:
+        pass
+    return None
+
+
 def _apply_prolific_cookie_to_participant(participant, payload: dict) -> bool:
     prolific_id = _clean_cookie_value(payload.get("prolific_id"))
     study_id = _clean_cookie_value(payload.get("study_id"))
@@ -167,6 +193,14 @@ def _apply_prolific_cookie_to_participant(participant, payload: dict) -> bool:
         changed = True
 
     if changed:
+        store_prolific_mapping(
+            participant.session,
+            participant.code,
+            prolific_id=prolific_id,
+            study_id=study_id,
+            prolific_session_id=session_id,
+            participant_status=_clean_cookie_value(participant.vars.get("participant_status")).lower(),
+        )
         participant.save()
         logger.info(
             "Prolific cookie captured: participant=%s prolific_id=%s study_id=%s session_id=%s",
@@ -290,9 +324,15 @@ def _find_participant_for_repair(participant_code: str, prolific_id: str):
         participant = _find_participant_by_code(participant_code)
         if participant:
             return participant
+        participant = _participant_from_mapping_row(get_prolific_mapping_by_participant_code(participant_code))
+        if participant:
+            return participant
 
     if prolific_id:
-        return _find_participant_by_prolific_id(prolific_id)
+        participant = _find_participant_by_prolific_id(prolific_id)
+        if participant:
+            return participant
+        return _participant_from_mapping_row(get_prolific_mapping_by_pid(prolific_id))
 
     return None
 

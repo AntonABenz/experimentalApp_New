@@ -145,6 +145,19 @@ def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id
     except Exception:
         pass
 
+    try:
+        from img_desc import store_prolific_mapping
+        store_prolific_mapping(
+            player.session,
+            p.code,
+            prolific_id=pid,
+            study_id=study_id,
+            prolific_session_id=sess_id,
+            participant_status=clean_str(p.vars.get(PARTICIPANT_STATUS_FIELD, "")),
+        )
+    except Exception:
+        pass
+
     logger.info(
         "Captured Prolific params: pid=%s study_id=%s session_id=%s participant_code=%s",
         pid or "",
@@ -509,6 +522,14 @@ def custom_export(players):
         pid = participant.vars.get("prolific_id", "") or getattr(participant, "label", "")
         if pid:
             return pid
+        try:
+            from img_desc import get_prolific_mapping_by_participant_code
+            row = get_prolific_mapping_by_participant_code(getattr(participant, "code", ""))
+            pid = clean_str(getattr(row, "prolific_id", "")) if row else ""
+            if pid:
+                return pid
+        except Exception:
+            pass
         try:
             for pp in participant.get_players():
                 pid = clean_str(getattr(pp, "prolific_id_field", ""))
