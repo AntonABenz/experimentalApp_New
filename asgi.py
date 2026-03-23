@@ -24,6 +24,7 @@ from img_desc import (
     CohortSlot,
     Constants as ImgDescConstants,
     Player as ImgDescPlayer,
+    ScheduleItem,
     clean_str,
     find_prolific_slot_map,
     free_slot_for_participant,
@@ -453,12 +454,83 @@ def _slot_rows_from_root(root, participant_code: str):
     return result
 
 
+def _recent_img_desc_players(limit: int = 4000):
+    try:
+        return list(ImgDescPlayer.objects.order_by("-id")[: int(limit or 4000)])
+    except Exception:
+        return []
+
+
+def _find_recent_img_desc_player(participant_code: str = "", prolific_id: str = ""):
+    participant_code = clean_str(participant_code)
+    prolific_id = clean_str(prolific_id)
+    if not participant_code and not prolific_id:
+        return None
+
+    for player in _recent_img_desc_players():
+        try:
+            participant = getattr(player, "participant", None)
+            player_code = clean_str(getattr(participant, "code", ""))
+            player_pid = clean_str(getattr(player, "prolific_id_field", ""))
+            if participant_code and player_code == participant_code:
+                return player
+            if prolific_id and player_pid == prolific_id:
+                return player
+        except Exception:
+            continue
+    return None
+
+
+def _has_schedule_rows(root, participant_code: str) -> bool:
+    participant_code = clean_str(participant_code)
+    if not root or not participant_code:
+        return False
+    try:
+        rows = ScheduleItem.filter(subsession=root, participant_code=participant_code)
+    except Exception:
+        return False
+    return bool(rows)
+
+
 def _find_repair_fallback_by_participant_code(participant_code: str):
     participant_code = clean_str(participant_code)
     if not participant_code:
         return None
 
+    player = _find_recent_img_desc_player(participant_code=participant_code)
+    if player:
+        participant = getattr(player, "participant", None)
+        session = getattr(participant, "session", None) or getattr(getattr(player, "subsession", None), "session", None)
+        try:
+            root = player.subsession.in_round(1)
+        except Exception:
+            root = None
+        slot_rows = _slot_rows_from_root(root, participant_code)
+        logger.info(
+            "CohortRepair lookup: img_desc player match participant=%s root=%s slot_rows=%s",
+            participant_code,
+            bool(root),
+            len(slot_rows),
+        )
+        return dict(
+            participant_code=participant_code,
+            prolific_id=clean_str(getattr(player, "prolific_id_field", "")),
+            session=session,
+            session_code=clean_str(getattr(session, "code", "")),
+            slot_rows=slot_rows,
+        )
+
     for root in _recent_img_desc_roots():
+        if _has_schedule_rows(root, participant_code):
+            session = getattr(root, "session", None)
+            slot_rows = _slot_rows_from_root(root, participant_code)
+            return dict(
+                participant_code=participant_code,
+                prolific_id="",
+                session=session,
+                session_code=clean_str(getattr(session, "code", "")),
+                slot_rows=slot_rows,
+            )
         slot_rows = _slot_rows_from_root(root, participant_code)
         if slot_rows:
             return dict(
@@ -475,6 +547,34 @@ def _find_repair_fallback_by_prolific_id(prolific_id: str):
     prolific_id = clean_str(prolific_id)
     if not prolific_id:
         return None
+
+    player = _find_recent_img_desc_player(prolific_id=prolific_id)
+    if player:
+        try:
+            participant = getattr(player, "participant", None)
+            participant_code = clean_str(getattr(participant, "code", ""))
+            session = getattr(participant, "session", None) or getattr(getattr(player, "subsession", None), "session", None)
+            try:
+                root = player.subsession.in_round(1)
+            except Exception:
+                root = None
+            slot_rows = _slot_rows_from_root(root, participant_code)
+            logger.info(
+                "CohortRepair lookup: img_desc player PID match prolific_id=%s participant=%s root=%s slot_rows=%s",
+                prolific_id,
+                participant_code,
+                bool(root),
+                len(slot_rows),
+            )
+            return dict(
+                participant_code=participant_code,
+                prolific_id=prolific_id,
+                session=session,
+                session_code=clean_str(getattr(session, "code", "")),
+                slot_rows=slot_rows,
+            )
+        except Exception:
+            pass
 
     try:
         players = list(ImgDescPlayer.objects.filter(prolific_id_field=prolific_id).order_by("-id")[:200])
@@ -625,6 +725,11 @@ async def cohort_repair(request: Request):
     mapping = None if participant else _find_mapping_for_repair(participant_code, prolific_id)
     fallback = None if (participant or mapping) else _find_repair_fallback(participant_code, prolific_id)
     if not participant and not mapping and not fallback:
+        logger.warning(
+            "CohortRepair lookup miss: participant_code=%s prolific_id=%s",
+            participant_code,
+            prolific_id,
+        )
         return JSONResponse(
             {"ok": False, "error": "participant not found", "participant_code": participant_code, "prolific_id": prolific_id},
             status_code=404,
