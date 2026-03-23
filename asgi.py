@@ -31,12 +31,14 @@ from img_desc import (
     get_cohort_snapshot_data,
     get_participant_prolific_id,
     get_participant_slot_rows,
+    get_schedule_item,
     get_participant_status,
     mark_participant_active,
     mark_participant_complete_in_cohort,
     mark_participant_drop_out,
     mark_participant_finished,
     maybe_expand_prolific_for_participant,
+    _recent_root_subsessions,
     reset_this_app_for_participant,
     safe_int,
 )
@@ -417,18 +419,10 @@ def _recent_sessions(limit: int = 200):
 
 
 def _recent_img_desc_roots(limit: int = 200):
-    roots = []
-    for session in _recent_sessions(limit):
-        try:
-            for sub in session.get_subsessions():
-                if (
-                    getattr(getattr(sub, "_meta", None), "app_label", "") == ImgDescConstants.name_in_url
-                    and int(getattr(sub, "round_number", 0) or 0) == 1
-                ):
-                    roots.append(sub)
-                    break
-        except Exception:
-            continue
+    try:
+        roots = list(_recent_root_subsessions(limit=int(limit or 200)))
+    except Exception:
+        roots = []
     return roots
 
 
@@ -486,10 +480,10 @@ def _has_schedule_rows(root, participant_code: str) -> bool:
     if not root or not participant_code:
         return False
     try:
-        rows = ScheduleItem.filter(subsession=root, participant_code=participant_code)
+        row = get_schedule_item(root, participant_code, 1)
     except Exception:
         return False
-    return bool(rows)
+    return bool(row)
 
 
 def _find_repair_fallback_by_participant_code(participant_code: str):
