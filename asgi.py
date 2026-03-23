@@ -129,7 +129,7 @@ def _find_participant_by_code(participant_code: str):
         try:
             for participant in session.get_participants():
                 if _clean_cookie_value(getattr(participant, "code", "")) == participant_code:
-                    logger.info("CohortRepair code lookup: matched via session.get_participants participant=%s", participant_code)
+                    logger.warning("CohortRepair code lookup: matched via session.get_participants participant=%s", participant_code)
                     return participant
         except Exception:
             continue
@@ -146,7 +146,7 @@ def _find_participant_by_code(participant_code: str):
                 .first()
             )
             if player and getattr(player, "participant", None):
-                logger.info(
+                logger.warning(
                     "CohortRepair code lookup: matched via %s relation filter participant=%s",
                     getattr(model, "__name__", str(model)),
                     participant_code,
@@ -162,7 +162,7 @@ def _find_participant_by_code(participant_code: str):
             participant_code=participant_code,
         )
         if participant:
-            logger.info("CohortRepair code lookup: matched via slot-map session fallback participant=%s", participant_code)
+            logger.warning("CohortRepair code lookup: matched via slot-map session fallback participant=%s", participant_code)
             return participant
 
     # Compatibility fallback for deployed runtimes where relation filters can
@@ -178,7 +178,7 @@ def _find_participant_by_code(participant_code: str):
             try:
                 participant = getattr(player, "participant", None)
                 if participant and _clean_cookie_value(getattr(participant, "code", "")) == participant_code:
-                    logger.info(
+                    logger.warning(
                         "CohortRepair code lookup: matched via %s recent player scan participant=%s",
                         getattr(model, "__name__", str(model)),
                         participant_code,
@@ -187,7 +187,7 @@ def _find_participant_by_code(participant_code: str):
             except Exception:
                 continue
 
-    logger.info("CohortRepair code lookup: no participant object match participant=%s", participant_code)
+    logger.warning("CohortRepair code lookup: no participant object match participant=%s", participant_code)
     return None
 
 
@@ -513,7 +513,7 @@ def _find_repair_fallback_by_participant_code(participant_code: str):
         except Exception:
             root = None
         slot_rows = _slot_rows_from_root(root, participant_code)
-        logger.info(
+        logger.warning(
             "CohortRepair lookup: img_desc player match participant=%s root=%s slot_rows=%s",
             participant_code,
             bool(root),
@@ -527,12 +527,12 @@ def _find_repair_fallback_by_participant_code(participant_code: str):
             slot_rows=slot_rows,
         )
 
-    logger.info("CohortRepair fallback: no recent img_desc player match participant=%s", participant_code)
+    logger.warning("CohortRepair fallback: no recent img_desc player match participant=%s", participant_code)
     for root in _recent_img_desc_roots():
         if _has_schedule_rows(root, participant_code):
             session = getattr(root, "session", None)
             slot_rows = _slot_rows_from_root(root, participant_code)
-            logger.info(
+            logger.warning(
                 "CohortRepair fallback: schedule-item root match participant=%s session=%s slot_rows=%s",
                 participant_code,
                 clean_str(getattr(session, "code", "")),
@@ -547,7 +547,7 @@ def _find_repair_fallback_by_participant_code(participant_code: str):
             )
         slot_rows = _slot_rows_from_root(root, participant_code)
         if slot_rows:
-            logger.info(
+            logger.warning(
                 "CohortRepair fallback: cohort-slot root match participant=%s session=%s slot_rows=%s",
                 participant_code,
                 clean_str(getattr(getattr(root, "session", None), "code", "")),
@@ -560,7 +560,7 @@ def _find_repair_fallback_by_participant_code(participant_code: str):
                 session_code=clean_str(getattr(getattr(root, "session", None), "code", "")),
                 slot_rows=slot_rows,
             )
-    logger.info("CohortRepair fallback: no schedule/cohort root match participant=%s", participant_code)
+    logger.warning("CohortRepair fallback: no schedule/cohort root match participant=%s", participant_code)
     return None
 
 
@@ -580,7 +580,7 @@ def _find_repair_fallback_by_prolific_id(prolific_id: str):
             except Exception:
                 root = None
             slot_rows = _slot_rows_from_root(root, participant_code)
-            logger.info(
+            logger.warning(
                 "CohortRepair lookup: img_desc player PID match prolific_id=%s participant=%s root=%s slot_rows=%s",
                 prolific_id,
                 participant_code,
@@ -596,7 +596,7 @@ def _find_repair_fallback_by_prolific_id(prolific_id: str):
             )
         except Exception:
             pass
-    logger.info("CohortRepair fallback: no recent img_desc player PID match prolific_id=%s", prolific_id)
+    logger.warning("CohortRepair fallback: no recent img_desc player PID match prolific_id=%s", prolific_id)
 
     try:
         players = list(ImgDescPlayer.objects.filter(prolific_id_field=prolific_id).order_by("-id")[:200])
@@ -626,7 +626,7 @@ def _find_repair_fallback_by_prolific_id(prolific_id: str):
                 )
         except Exception:
             continue
-    logger.info("CohortRepair fallback: no player-based PID match prolific_id=%s", prolific_id)
+    logger.warning("CohortRepair fallback: no player-based PID match prolific_id=%s", prolific_id)
     return None
 
 
