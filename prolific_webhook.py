@@ -13,7 +13,6 @@ from img_desc import (
     Player as ImgDescPlayer,
     reset_this_app_for_participant,
     free_slot_for_participant,
-    get_prolific_mapping_by_pid,
     mark_participant_active,
     mark_participant_complete_in_cohort,
     mark_participant_drop_out,
@@ -25,30 +24,6 @@ from img_desc import (
 )
 
 logger = logging.getLogger("benzapp.prolific_webhook")
-
-
-def _participant_from_mapping_row(row):
-    if not row:
-        return None
-    session_code = clean_str(getattr(row, "session_code", ""))
-    participant_code = clean_str(getattr(row, "participant_code", ""))
-    if not session_code or not participant_code:
-        return None
-    try:
-        from otree.models import Session
-        qs = Session.objects.filter(code=session_code)
-        session = qs.order_by("-id").first() if hasattr(qs, "order_by") else None
-    except Exception:
-        session = None
-    if not session:
-        return None
-    try:
-        for participant in session.get_participants():
-            if clean_str(getattr(participant, "code", "")) == participant_code:
-                return participant
-    except Exception:
-        pass
-    return None
 
 
 def normalize_prolific_status(raw) -> str:
@@ -64,10 +39,6 @@ def _find_participant_by_prolific_id(prolific_pid: str):
     prolific_pid = (prolific_pid or "").strip()
     if not prolific_pid:
         return None
-
-    participant = _participant_from_mapping_row(get_prolific_mapping_by_pid(prolific_pid))
-    if participant:
-        return participant
 
     try:
         qs = Participant.objects.filter(vars__contains={"prolific_id": prolific_pid})

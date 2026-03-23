@@ -2,16 +2,10 @@ from otree.api import *
 import logging
 import json
 import re
-import base64
-import hashlib
-import hmac
-import os
-import secrets
 
 from reading_xls.get_data import get_data
 
 logger = logging.getLogger(__name__)
-PROLIFIC_CAPTURE_COOKIE = "prolific_capture"
 
 PARTICIPANT_STATUS_FIELD = "participant_status"
 STATUS_ACTIVE = "active"
@@ -62,30 +56,8 @@ def _parse_querystring(qs: str) -> dict:
     return out
 
 
-def _cookie_secret() -> bytes:
-    return (os.environ.get("OTREE_SECRET_KEY") or "dev-secret").encode("utf-8")
-
-
-def _load_signed_cookie(value: str) -> dict:
-    value = clean_str(value)
-    if "." not in value:
-        return {}
-    encoded, signature = value.rsplit(".", 1)
-    expected = hmac.new(_cookie_secret(), encoded.encode("utf-8"), hashlib.sha256).hexdigest()
-    if not secrets.compare_digest(signature, expected):
-        return {}
-    try:
-        padded = encoded + ("=" * (-len(encoded) % 4))
-        raw = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
-        payload = json.loads(raw or "{}")
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def _extract_prolific_params(player) -> tuple[str, str, str]:
     pid = study_id = sess_id = ""
-    req = None
     try:
         req = getattr(player, "request", None)
         if req is not None:
@@ -100,17 +72,6 @@ def _extract_prolific_params(player) -> tuple[str, str, str]:
             ).strip()
             study_id = (get_params.get("STUDY_ID") or get_params.get("study_id") or "").strip()
             sess_id = (get_params.get("SESSION_ID") or get_params.get("session_id") or "").strip()
-    except Exception:
-        pass
-    try:
-        if req is not None and not pid:
-            cookies = getattr(req, "COOKIES", None) or getattr(req, "cookies", None) or {}
-            payload = _load_signed_cookie(cookies.get(PROLIFIC_CAPTURE_COOKIE, ""))
-            pid = clean_str(payload.get("prolific_id", ""))
-            if not study_id:
-                study_id = clean_str(payload.get("study_id", ""))
-            if not sess_id:
-                sess_id = clean_str(payload.get("session_id", ""))
     except Exception:
         pass
     try:
@@ -181,19 +142,6 @@ def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id
 
     try:
         p.save()
-    except Exception:
-        pass
-
-    try:
-        from img_desc import store_prolific_mapping
-        store_prolific_mapping(
-            player.session,
-            p.code,
-            prolific_id=pid,
-            study_id=study_id,
-            prolific_session_id=sess_id,
-            participant_status=clean_str(p.vars.get(PARTICIPANT_STATUS_FIELD, "")),
-        )
     except Exception:
         pass
 
@@ -561,14 +509,6 @@ def custom_export(players):
         pid = participant.vars.get("prolific_id", "") or getattr(participant, "label", "")
         if pid:
             return pid
-        try:
-            from img_desc import get_prolific_mapping_by_participant_code
-            row = get_prolific_mapping_by_participant_code(getattr(participant, "code", ""))
-            pid = clean_str(getattr(row, "prolific_id", "")) if row else ""
-            if pid:
-                return pid
-        except Exception:
-            pass
         try:
             for pp in participant.get_players():
                 pid = clean_str(getattr(pp, "prolific_id_field", ""))

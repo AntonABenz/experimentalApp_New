@@ -255,21 +255,6 @@ class ProlificExpansionState(ExtraModel):
     last_attempt_ts = models.FloatField(initial=0)
     last_message = models.LongStringField(blank=True)
 
-
-class ProlificParticipantMap(ExtraModel):
-    """
-    Stable persistent mapping between oTree participant_code and Prolific IDs.
-    One row per participant in one session.
-    """
-    subsession = models.Link(Subsession)  # anchor to round-1 img_desc subsession
-    session_code = models.StringField(blank=True)
-    participant_code = models.StringField()
-    prolific_id = models.StringField(blank=True)
-    study_id = models.StringField(blank=True)
-    prolific_session_id = models.StringField(blank=True)
-    participant_status = models.StringField(blank=True)
-    updated_ts = models.FloatField(initial=0)
-
 def _root_subsession(obj):
     """
     Return the round-1 Subsession for:
@@ -327,115 +312,6 @@ def _root_subsession(obj):
         pass
 
     return None
-
-
-def _get_prolific_map_row(obj_or_session, participant_code: str):
-    root = _root_subsession(obj_or_session)
-    participant_code = clean_str(participant_code)
-    if not root or not participant_code:
-        return None
-    rows = ProlificParticipantMap.filter(subsession=root, participant_code=participant_code)
-    return rows[0] if rows else None
-
-
-def _iter_all_prolific_map_rows():
-    """
-    ExtraModel.filter() must be anchored to a model instance such as subsession=...
-    Scan round-1 img_desc subsessions across sessions and yield all mapping rows.
-    """
-    try:
-        from otree.models import Session
-        sessions = Session.objects.all().order_by("-id")[:500]
-    except Exception:
-        sessions = []
-
-    for session_obj in sessions:
-        root = _root_subsession(session_obj)
-        if not root:
-            continue
-        try:
-            rows = ProlificParticipantMap.filter(subsession=root)
-        except Exception:
-            rows = []
-        for row in rows or []:
-            yield row
-
-
-def get_prolific_mapping_by_participant_code(participant_code: str):
-    participant_code = clean_str(participant_code)
-    if not participant_code:
-        return None
-    rows = [row for row in _iter_all_prolific_map_rows() if clean_str(getattr(row, "participant_code", "")) == participant_code]
-    if not rows:
-        return None
-    rows = sorted(rows, key=lambda r: float(getattr(r, "updated_ts", 0) or 0), reverse=True)
-    return rows[0]
-
-
-def get_prolific_mapping_by_pid(prolific_id: str):
-    prolific_id = clean_str(prolific_id)
-    if not prolific_id:
-        return None
-    rows = [row for row in _iter_all_prolific_map_rows() if clean_str(getattr(row, "prolific_id", "")) == prolific_id]
-    if not rows:
-        return None
-    rows = sorted(rows, key=lambda r: float(getattr(r, "updated_ts", 0) or 0), reverse=True)
-    return rows[0]
-
-
-def store_prolific_mapping(
-    obj_or_session,
-    participant_code: str,
-    prolific_id: str = "",
-    study_id: str = "",
-    prolific_session_id: str = "",
-    participant_status: str = "",
-):
-    root = _root_subsession(obj_or_session)
-    participant_code = clean_str(participant_code)
-    if not root or not participant_code:
-        return None
-
-    session_obj = obj_or_session.session if hasattr(obj_or_session, "session") else obj_or_session
-    session_code = clean_str(getattr(session_obj, "code", ""))
-    prolific_id = clean_str(prolific_id)
-    study_id = clean_str(study_id)
-    prolific_session_id = clean_str(prolific_session_id)
-    participant_status = clean_str(participant_status).lower()
-
-    row = _get_prolific_map_row(root, participant_code)
-    now = time.time()
-    if row:
-        if session_code:
-            row.session_code = session_code
-        if prolific_id:
-            row.prolific_id = prolific_id
-        if study_id:
-            row.study_id = study_id
-        if prolific_session_id:
-            row.prolific_session_id = prolific_session_id
-        if participant_status:
-            row.participant_status = participant_status
-        row.updated_ts = now
-        try:
-            row.save()
-        except Exception:
-            pass
-        return row
-
-    try:
-        return ProlificParticipantMap.create(
-            subsession=root,
-            session_code=session_code,
-            participant_code=participant_code,
-            prolific_id=prolific_id,
-            study_id=study_id,
-            prolific_session_id=prolific_session_id,
-            participant_status=participant_status,
-            updated_ts=now,
-        )
-    except Exception:
-        return None
 
 # ---- Schedule store ----
 def get_schedule_item(obj, participant_code: str, round_number: int):
@@ -1077,14 +953,6 @@ def set_participant_status(participant, status: str):
     }:
         return
     participant.vars[Constants.PARTICIPANT_STATUS_FIELD] = status
-    store_prolific_mapping(
-        participant.session,
-        participant.code,
-        prolific_id=clean_str(participant.vars.get("prolific_id", "") or getattr(participant, "label", "")),
-        study_id=clean_str(participant.vars.get("study_id", "")),
-        prolific_session_id=clean_str(participant.vars.get("prolific_session_id", "")),
-        participant_status=status,
-    )
 
 
 def mark_participant_active(participant):
@@ -1105,13 +973,7 @@ def mark_participant_drop_out(participant):
 
 
 def get_participant_prolific_id(participant) -> str:
-    pid = clean_str(participant.vars.get("prolific_id", "") or getattr(participant, "label", ""))
-    if pid:
-        return pid
-    row = get_prolific_mapping_by_participant_code(getattr(participant, "code", ""))
-    if row:
-        return clean_str(getattr(row, "prolific_id", ""))
-    return ""
+    return clean_str(participant.vars.get("prolific_id", "") or getattr(participant, "label", ""))
 
 
 def get_participant_slot_rows(player_or_session, participant_code: str):
@@ -2070,14 +1932,6 @@ class CaptureProlificID(Page):
             p.vars["prolific_session_id"] = session_id
 
         mark_participant_active(p)
-        store_prolific_mapping(
-            p.session,
-            p.code,
-            prolific_id=prolific_id,
-            study_id=study_id,
-            prolific_session_id=session_id,
-            participant_status=get_participant_status(p),
-        )
 
         try:
             p.save()
@@ -2152,7 +2006,7 @@ def custom_export(players):
         return get_sentence(obj_for_db, k) or ""
 
     def _prolific_id_for_export(participant, bucket_players):
-        pid = get_participant_prolific_id(participant)
+        pid = participant.vars.get("prolific_id", "") or getattr(participant, "label", "")
         if pid:
             return pid
         for pp in bucket_players:
