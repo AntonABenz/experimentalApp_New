@@ -1200,7 +1200,43 @@ def _prolific_slot_map_table_available() -> bool:
             with conn.cursor() as cur:
                 cur.execute("SELECT to_regclass('public.img_desc_prolificslotmap')")
                 row = cur.fetchone()
-                _prolific_slot_map_table_available_cache = bool(row and row[0])
+                table_exists = bool(row and row[0])
+                if not table_exists:
+                    # Step 1 of the low-memory lookup-table rollout:
+                    # create the tiny operational table and its direct lookup
+                    # indexes, but do not change repair/webhook behavior yet.
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS public.img_desc_prolificslotmap (
+                            id BIGSERIAL PRIMARY KEY,
+                            subsession_id INTEGER NOT NULL REFERENCES public.img_desc_subsession(id) DEFERRABLE INITIALLY DEFERRED,
+                            participant_code TEXT NOT NULL,
+                            session_code TEXT NOT NULL,
+                            prolific_pid TEXT NOT NULL DEFAULT '',
+                            exp_num INTEGER NOT NULL,
+                            slot INTEGER NOT NULL,
+                            active BOOLEAN NOT NULL DEFAULT TRUE,
+                            last_status TEXT NOT NULL DEFAULT '',
+                            last_seen_ts DOUBLE PRECISION NOT NULL DEFAULT 0
+                        )
+                        """
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_img_desc_psm_subsession_participant ON public.img_desc_prolificslotmap (subsession_id, participant_code)"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_img_desc_psm_subsession_pid ON public.img_desc_prolificslotmap (subsession_id, prolific_pid)"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_img_desc_psm_participant ON public.img_desc_prolificslotmap (participant_code)"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_img_desc_psm_pid ON public.img_desc_prolificslotmap (prolific_pid)"
+                    )
+                    conn.commit()
+                    table_exists = True
+                    logger.warning("ProlificSlotMap bootstrap: created table img_desc_prolificslotmap")
+                _prolific_slot_map_table_available_cache = table_exists
         finally:
             conn.close()
     except Exception:
