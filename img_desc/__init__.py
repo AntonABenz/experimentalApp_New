@@ -21,7 +21,6 @@ _cohort_assignment_lock = threading.Lock()
 _pending_slot_reservations = {}
 _prolific_slot_map_table_available_cache = None
 PROLIFIC_CAPTURE_COOKIE = "prolific_capture"
-REPAIR_INDEX_SESSION_KEY = "cohort_repair_index"
 
 PRODUCER = "P"
 INTERPRETER = "I"
@@ -676,13 +675,6 @@ def assign_slot_for_participant(player_or_session, participant=None):
             _clear_pending_slot(session, p.code)
             p.vars["exp_target"] = int(existing.exp_num)
             p.vars["local_slot"] = int(existing.slot)
-            sync_session_repair_index(
-                session,
-                p.code,
-                prolific_id=get_participant_prolific_id(p),
-                exp_num=int(existing.exp_num),
-                local_slot=int(existing.slot),
-            )
             sync_prolific_slot_map(
                 p,
                 root_subsession=root,
@@ -731,13 +723,6 @@ def assign_slot_for_participant(player_or_session, participant=None):
                         )
                         p.vars["exp_target"] = int(exp_num)
                         p.vars["local_slot"] = int(s)
-                        sync_session_repair_index(
-                            session,
-                            p.code,
-                            prolific_id=get_participant_prolific_id(p),
-                            exp_num=int(exp_num),
-                            local_slot=int(s),
-                        )
                         _log_cohort_event_for_participant(
                             session,
                             p,
@@ -1053,150 +1038,6 @@ def mark_participant_drop_out(participant):
 
 def get_participant_prolific_id(participant) -> str:
     return clean_str(getattr(participant, "label", "") or participant.vars.get("prolific_id", ""))
-
-
-def _session_repair_index(session):
-    if not session:
-        return {"by_participant": {}, "by_prolific": {}}
-
-    data = session.vars.get(REPAIR_INDEX_SESSION_KEY)
-    if not isinstance(data, dict):
-        data = {}
-
-    by_participant = data.get("by_participant")
-    if not isinstance(by_participant, dict):
-        by_participant = {}
-
-    by_prolific = data.get("by_prolific")
-    if not isinstance(by_prolific, dict):
-        by_prolific = {}
-
-    data["by_participant"] = by_participant
-    data["by_prolific"] = by_prolific
-    session.vars[REPAIR_INDEX_SESSION_KEY] = data
-    return data
-
-
-def sync_session_repair_index(
-    session,
-    participant_code: str,
-    prolific_id: str = "",
-    exp_num: int = 0,
-    local_slot: int = 0,
-):
-    """
-    Minimal operational index for /admin/cohort-repair.
-    Stable semantics:
-      - participant_code remains the opaque oTree participant id.
-      - prolific_id remains the external Prolific identifier.
-      - exp_num/local_slot mirror the current real img_desc slot assignment when known.
-    """
-    session_code = clean_str(getattr(session, "code", ""))
-    participant_code = clean_str(participant_code)
-    prolific_id = clean_str(prolific_id)
-    if not session or not participant_code:
-        return
-
-    data = _session_repair_index(session)
-    by_participant = data["by_participant"]
-    by_prolific = data["by_prolific"]
-
-    previous = by_participant.get(participant_code)
-    if not isinstance(previous, dict):
-        previous = {}
-
-    previous_pid = clean_str(previous.get("prolific_id", ""))
-    entry = dict(
-        participant_code=participant_code,
-        prolific_id=prolific_id or previous_pid,
-        session_code=session_code,
-        exp_num=safe_int(exp_num or previous.get("exp_num"), 0),
-        local_slot=safe_int(local_slot or previous.get("local_slot"), 0),
-        updated_ts=float(time.time()),
-    )
-    by_participant[participant_code] = entry
-
-    if previous_pid and previous_pid != entry["prolific_id"]:
-        by_prolific.pop(previous_pid, None)
-
-    if entry["prolific_id"]:
-        by_prolific[entry["prolific_id"]] = dict(entry)
-
-    try:
-        session.save()
-    except Exception:
-        logger.warning(
-            "SessionRepairIndex save failed: session=%s participant=%s prolific_id=%s",
-            session_code,
-            participant_code,
-            entry["prolific_id"],
-        )
-
-    logger.warning(
-        "SessionRepairIndex sync: session=%s participant=%s prolific_id=%s exp_num=%s local_slot=%s",
-        session_code,
-        participant_code,
-        entry["prolific_id"],
-        entry["exp_num"],
-        entry["local_slot"],
-    )
-
-
-def find_session_repair_index(participant_code: str = "", prolific_id: str = "", limit: int = 200):
-    participant_code = clean_str(participant_code)
-    prolific_id = clean_str(prolific_id)
-    if not participant_code and not prolific_id:
-        return None
-
-    try:
-        sessions = Session.objects.order_by("-id")[: int(limit or 200)]
-    except Exception:
-        sessions = []
-
-    for session in sessions:
-        try:
-            data = session.vars.get(REPAIR_INDEX_SESSION_KEY)
-        except Exception:
-            data = None
-        if not isinstance(data, dict):
-            continue
-
-        by_participant = data.get("by_participant")
-        if not isinstance(by_participant, dict):
-            by_participant = {}
-        by_prolific = data.get("by_prolific")
-        if not isinstance(by_prolific, dict):
-            by_prolific = {}
-
-        entry = None
-        if participant_code:
-            raw = by_participant.get(participant_code)
-            if isinstance(raw, dict):
-                entry = dict(raw)
-        if not entry and prolific_id:
-            raw = by_prolific.get(prolific_id)
-            if isinstance(raw, dict):
-                entry = dict(raw)
-        if not entry:
-            continue
-
-        entry["participant_code"] = clean_str(entry.get("participant_code", participant_code))
-        entry["prolific_id"] = clean_str(entry.get("prolific_id", prolific_id))
-        entry["session_code"] = clean_str(entry.get("session_code", getattr(session, "code", "")))
-        entry["exp_num"] = safe_int(entry.get("exp_num"), 0)
-        entry["local_slot"] = safe_int(entry.get("local_slot"), 0)
-        entry["session"] = session
-        logger.warning(
-            "SessionRepairIndex lookup hit: session=%s participant=%s prolific_id=%s exp_num=%s local_slot=%s",
-            entry["session_code"],
-            entry["participant_code"],
-            entry["prolific_id"],
-            entry["exp_num"],
-            entry["local_slot"],
-        )
-        return entry
-
-    return None
 
 
 def _prolific_slot_map_table_available() -> bool:
@@ -2595,13 +2436,6 @@ class CaptureProlificID(Page):
             player.session_id_field = session_id
             p.vars["prolific_session_id"] = session_id
 
-        sync_session_repair_index(
-            player.session,
-            p.code,
-            prolific_id=prolific_id,
-            exp_num=safe_int(p.vars.get("exp_target"), 0),
-            local_slot=safe_int(p.vars.get("local_slot"), 0),
-        )
         mark_participant_active(p)
         sync_prolific_slot_map(p, root_subsession=_root_subsession(player), active=True)
 

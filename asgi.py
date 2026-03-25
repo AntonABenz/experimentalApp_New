@@ -26,7 +26,6 @@ from img_desc import (
     Player as ImgDescPlayer,
     ScheduleItem,
     clean_str,
-    find_session_repair_index,
     find_prolific_slot_map,
     free_slot_from_prolific_slot_map,
     free_slot_for_participant,
@@ -688,47 +687,6 @@ def _serialize_repair_fallback(fallback):
     )
 
 
-def _repair_fallback_from_session_index(index_entry):
-    if not index_entry:
-        return None
-
-    session = index_entry.get("session")
-    participant_code = clean_str(index_entry.get("participant_code", ""))
-    prolific_id = clean_str(index_entry.get("prolific_id", ""))
-    session_code = clean_str(index_entry.get("session_code", ""))
-    if session is None or not participant_code:
-        return None
-
-    slot_rows = get_participant_slot_rows(session, participant_code)
-    if not slot_rows:
-        exp_num = safe_int(index_entry.get("exp_num"), 0)
-        local_slot = safe_int(index_entry.get("local_slot"), 0)
-        if exp_num > 0 or local_slot > 0:
-            slot_rows = [
-                dict(
-                    exp_num=exp_num,
-                    slot=local_slot,
-                    active=bool(local_slot > 0),
-                    completed=False,
-                )
-            ]
-
-    logger.warning(
-        "CohortRepair session index fallback: participant=%s prolific_id=%s session=%s slot_rows=%s",
-        participant_code,
-        prolific_id,
-        session_code,
-        len(slot_rows),
-    )
-    return dict(
-        participant_code=participant_code,
-        prolific_id=prolific_id,
-        session=session,
-        session_code=session_code,
-        slot_rows=slot_rows,
-    )
-
-
 def _find_participant_for_repair(participant_code: str, prolific_id: str):
     participant_code = clean_str(participant_code)
     prolific_id = clean_str(prolific_id)
@@ -828,29 +786,6 @@ async def cohort_repair(request: Request):
 
     if not participant:
         participant = _find_participant_for_repair(participant_code, prolific_id)
-
-    session_index = None if (participant or mapping) else find_session_repair_index(participant_code=participant_code, prolific_id=prolific_id)
-    if session_index:
-        logger.warning(
-            "CohortRepair session index hit: participant=%s prolific_id=%s session=%s",
-            clean_str(session_index.get("participant_code", "")),
-            clean_str(session_index.get("prolific_id", "")),
-            clean_str(session_index.get("session_code", "")),
-        )
-        if not participant:
-            participant = _find_participant_in_session(
-                clean_str(session_index.get("session_code", "")),
-                participant_code=clean_str(session_index.get("participant_code", participant_code)),
-                prolific_id=clean_str(session_index.get("prolific_id", prolific_id)),
-            )
-        if not participant:
-            fallback = _repair_fallback_from_session_index(session_index)
-    elif not mapping:
-        logger.warning(
-            "CohortRepair session index miss: participant=%s prolific_id=%s",
-            participant_code,
-            prolific_id,
-        )
 
     if not participant and not fallback and not mapping:
         fallback = _find_repair_fallback(participant_code, prolific_id)
