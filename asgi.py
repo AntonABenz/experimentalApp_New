@@ -28,6 +28,7 @@ from img_desc import (
     clean_str,
     find_session_repair_index,
     find_prolific_slot_map,
+    free_slot_from_prolific_slot_map,
     free_slot_for_participant,
     get_cohort_snapshot_data,
     get_participant_prolific_id,
@@ -900,19 +901,23 @@ async def cohort_repair(request: Request):
         session = _find_session_by_code(session_code)
 
         if action in {"drop_out", "free_slot"}:
-            if not session or not mapped_code:
-                return JSONResponse(
-                    {
-                        "ok": False,
-                        "error": "mapping found but session/participant code unavailable",
-                        "participant_code": participant_code,
-                        "prolific_id": prolific_id,
-                    },
-                    status_code=409,
-                )
-            free_slot_for_participant(session, mapped_code)
-            mark_participant_complete_in_cohort(session, mapped_code, completed=False)
-            note = "mapping-only slot free completed; participant object unresolved"
+            if session and mapped_code:
+                free_slot_for_participant(session, mapped_code)
+                mark_participant_complete_in_cohort(session, mapped_code, completed=False)
+                note = "mapping-only slot free completed via session lookup; participant object unresolved"
+            else:
+                ok = free_slot_from_prolific_slot_map(mapping, status=("drop_out" if action == "drop_out" else "slot_freed"))
+                if not ok:
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error": "mapping found but session/participant code unavailable",
+                            "participant_code": participant_code,
+                            "prolific_id": prolific_id,
+                        },
+                        status_code=409,
+                    )
+                note = "mapping-only slot free completed directly from slot map; participant object unresolved"
         else:
             note = "mapping-only status; participant object unresolved"
     elif fallback and action in {"status", "drop_out", "free_slot"}:
