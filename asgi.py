@@ -199,10 +199,7 @@ def _find_participant_in_session(session_code: str, participant_code: str = "", 
     if not session_code:
         return None
 
-    try:
-        session = Session.objects.filter(code=session_code).first()
-    except Exception:
-        session = None
+    session = _find_session_by_code(session_code)
     if not session:
         return None
 
@@ -392,10 +389,7 @@ def _serialize_mapping_state(mapping):
     session_code = clean_str(getattr(mapping, "session_code", ""))
     exp_num = safe_int(getattr(mapping, "exp_num", 0), 0)
     snapshots = []
-    try:
-        session = Session.objects.filter(code=session_code).first() if session_code else None
-    except Exception:
-        session = None
+    session = _find_session_by_code(session_code)
     if session and exp_num > 0:
         try:
             snapshots = [get_cohort_snapshot_data(session, exp_num)]
@@ -430,6 +424,19 @@ def _recent_sessions(limit: int = 200):
         return list(Session.objects.order_by("-id")[: int(limit or 200)])
     except Exception:
         return []
+
+
+def _find_session_by_code(session_code: str, limit: int = 200):
+    session_code = clean_str(session_code)
+    if not session_code:
+        return None
+    for session in _recent_sessions(limit=limit):
+        try:
+            if clean_str(getattr(session, "code", "")) == session_code:
+                return session
+        except Exception:
+            continue
+    return None
 
 
 def _recent_img_desc_roots(limit: int = 200):
@@ -890,10 +897,7 @@ async def cohort_repair(request: Request):
     elif mapping and action in {"status", "drop_out", "free_slot"}:
         session_code = clean_str(getattr(mapping, "session_code", ""))
         mapped_code = clean_str(getattr(mapping, "participant_code", ""))
-        try:
-            session = Session.objects.filter(code=session_code).first() if session_code else None
-        except Exception:
-            session = None
+        session = _find_session_by_code(session_code)
 
         if action in {"drop_out", "free_slot"}:
             if not session or not mapped_code:
