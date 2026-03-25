@@ -786,9 +786,42 @@ async def cohort_repair(request: Request):
             status_code=400,
         )
 
-    session_index = find_session_repair_index(participant_code=participant_code, prolific_id=prolific_id)
     participant = None
     fallback = None
+    mapping = _find_mapping_for_repair(participant_code, prolific_id)
+    if mapping:
+        mapped_code = clean_str(getattr(mapping, "participant_code", ""))
+        mapped_pid = clean_str(getattr(mapping, "prolific_pid", ""))
+        mapped_session = clean_str(getattr(mapping, "session_code", ""))
+        logger.warning(
+            "CohortRepair slot-map hit: participant=%s prolific_id=%s session=%s exp=%s slot=%s active=%s",
+            mapped_code,
+            mapped_pid,
+            mapped_session,
+            safe_int(getattr(mapping, "exp_num", 0), 0),
+            safe_int(getattr(mapping, "slot", 0), 0),
+            bool(getattr(mapping, "active", False)),
+        )
+        if not participant_code:
+            participant_code = mapped_code
+        if not prolific_id:
+            prolific_id = mapped_pid
+        participant = _find_participant_in_session(
+            mapped_session,
+            participant_code=mapped_code,
+            prolific_id=mapped_pid,
+        )
+    else:
+        logger.warning(
+            "CohortRepair slot-map miss: participant=%s prolific_id=%s",
+            participant_code,
+            prolific_id,
+        )
+
+    if not participant:
+        participant = _find_participant_for_repair(participant_code, prolific_id)
+
+    session_index = None if (participant or mapping) else find_session_repair_index(participant_code=participant_code, prolific_id=prolific_id)
     if session_index:
         logger.warning(
             "CohortRepair session index hit: participant=%s prolific_id=%s session=%s",
@@ -796,23 +829,21 @@ async def cohort_repair(request: Request):
             clean_str(session_index.get("prolific_id", "")),
             clean_str(session_index.get("session_code", "")),
         )
-        participant = _find_participant_in_session(
-            clean_str(session_index.get("session_code", "")),
-            participant_code=clean_str(session_index.get("participant_code", participant_code)),
-            prolific_id=clean_str(session_index.get("prolific_id", prolific_id)),
-        )
+        if not participant:
+            participant = _find_participant_in_session(
+                clean_str(session_index.get("session_code", "")),
+                participant_code=clean_str(session_index.get("participant_code", participant_code)),
+                prolific_id=clean_str(session_index.get("prolific_id", prolific_id)),
+            )
         if not participant:
             fallback = _repair_fallback_from_session_index(session_index)
-    else:
+    elif not mapping:
         logger.warning(
             "CohortRepair session index miss: participant=%s prolific_id=%s",
             participant_code,
             prolific_id,
         )
 
-    if not participant:
-        participant = _find_participant_for_repair(participant_code, prolific_id)
-    mapping = None if (participant or fallback) else _find_mapping_for_repair(participant_code, prolific_id)
     if not participant and not fallback and not mapping:
         fallback = _find_repair_fallback(participant_code, prolific_id)
     if not participant and not mapping and not fallback:
