@@ -997,12 +997,7 @@ def clean_str(x) -> str:
 
 def get_participant_status(participant) -> str:
     status = clean_str(participant.vars.get(Constants.PARTICIPANT_STATUS_FIELD, "")).lower()
-    if status in {
-        Constants.STATUS_ACTIVE,
-        Constants.STATUS_FINISHED,
-        Constants.STATUS_DROP_OUT,
-    }:
-        return status
+    mapped_status = ""
     try:
         mapping = find_prolific_slot_map(
             participant_code=clean_str(getattr(participant, "code", "")),
@@ -1010,14 +1005,18 @@ def get_participant_status(participant) -> str:
             prefer_active=False,
         )
         mapped_status = clean_str(getattr(mapping, "last_status", "")).lower()
-        if mapped_status in {
-            Constants.STATUS_ACTIVE,
-            Constants.STATUS_FINISHED,
-            Constants.STATUS_DROP_OUT,
-        }:
-            return mapped_status
     except Exception:
-        pass
+        mapped_status = ""
+    if mapped_status in {Constants.STATUS_FINISHED, Constants.STATUS_DROP_OUT}:
+        return mapped_status
+    if status in {
+        Constants.STATUS_ACTIVE,
+        Constants.STATUS_FINISHED,
+        Constants.STATUS_DROP_OUT,
+    }:
+        return status
+    if mapped_status == Constants.STATUS_ACTIVE:
+        return mapped_status
     return ""
 
 
