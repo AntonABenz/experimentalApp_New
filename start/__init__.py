@@ -518,6 +518,17 @@ def custom_export(players):
             pass
         return ""
 
+    def _participant_status_for_export(participant):
+        status = clean_str(participant.vars.get(PARTICIPANT_STATUS_FIELD, "")).lower()
+        if status in {STATUS_ACTIVE, STATUS_FINISHED, STATUS_DROP_OUT}:
+            return status
+        try:
+            from img_desc import get_participant_status
+
+            return clean_str(get_participant_status(participant)).lower()
+        except Exception:
+            return ""
+
     yield [
         "session_code",
         "participant_code",
@@ -538,7 +549,7 @@ def custom_export(players):
             _prolific_id_for_export(participant),
             participant.vars.get("study_id", ""),
             participant.vars.get("prolific_session_id", ""),
-            participant.vars.get(PARTICIPANT_STATUS_FIELD, ""),
+            _participant_status_for_export(participant),
             player.survey_data or "",
             player.practice_response or "",
         ]

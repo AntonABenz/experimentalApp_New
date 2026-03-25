@@ -1003,6 +1003,21 @@ def get_participant_status(participant) -> str:
         Constants.STATUS_DROP_OUT,
     }:
         return status
+    try:
+        mapping = find_prolific_slot_map(
+            participant_code=clean_str(getattr(participant, "code", "")),
+            prolific_pid=get_participant_prolific_id(participant),
+            prefer_active=False,
+        )
+        mapped_status = clean_str(getattr(mapping, "last_status", "")).lower()
+        if mapped_status in {
+            Constants.STATUS_ACTIVE,
+            Constants.STATUS_FINISHED,
+            Constants.STATUS_DROP_OUT,
+        }:
+            return mapped_status
+    except Exception:
+        pass
     return ""
 
 
