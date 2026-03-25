@@ -9,6 +9,7 @@ import os
 import time
 import re
 import threading
+from types import SimpleNamespace
 import psycopg2
 from starlette.responses import RedirectResponse
 
@@ -1282,6 +1283,23 @@ def _best_prolific_slot_map(rows, prefer_active: bool = True):
     return rows[0]
 
 
+def _prolific_slot_map_row_from_db(row):
+    if not row:
+        return None
+    return SimpleNamespace(
+        id=safe_int(row[0], 0),
+        subsession_id=safe_int(row[1], 0),
+        participant_code=clean_str(row[2]),
+        session_code=clean_str(row[3]),
+        prolific_pid=clean_str(row[4]),
+        exp_num=safe_int(row[5], 0),
+        slot=safe_int(row[6], 0),
+        active=bool(row[7]),
+        last_status=clean_str(row[8]),
+        last_seen_ts=float(row[9] or 0),
+    )
+
+
 def find_prolific_slot_map(
     prolific_pid: str = "",
     participant_code: str = "",
@@ -1297,29 +1315,35 @@ def find_prolific_slot_map(
     if not _prolific_slot_map_table_available():
         return None
 
-    candidates = []
-    for root in _recent_root_subsessions():
+    database_url = clean_str(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        return None
+
+    sql = """
+        SELECT id, subsession_id, participant_code, session_code, prolific_pid, exp_num, slot, active, last_status, last_seen_ts
+        FROM public.img_desc_prolificslotmap
+        WHERE (%s = '' OR participant_code = %s)
+          AND (%s = '' OR prolific_pid = %s)
+          AND (%s = '' OR session_code = %s)
+        ORDER BY active DESC, last_seen_ts DESC, exp_num DESC, slot DESC
+        LIMIT 10
+    """
+    try:
+        conn = psycopg2.connect(database_url)
         try:
-            root_session_code = clean_str(getattr(root.session, "code", ""))
-            if session_code and root_session_code != session_code:
-                continue
+            with conn.cursor() as cur:
+                cur.execute(sql, (participant_code, participant_code, prolific_pid, prolific_pid, session_code, session_code))
+                rows = cur.fetchall() or []
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("find_prolific_slot_map: mapping lookup unavailable")
+        return None
 
-            if participant_code:
-                rows = ProlificSlotMap.filter(subsession=root, participant_code=participant_code)
-            else:
-                rows = ProlificSlotMap.filter(subsession=root, prolific_pid=prolific_pid)
-
-            for row in rows:
-                if participant_code and clean_str(getattr(row, "participant_code", "")) != participant_code:
-                    continue
-                if prolific_pid and clean_str(getattr(row, "prolific_pid", "")) != prolific_pid:
-                    continue
-                candidates.append(row)
-        except Exception:
-            logger.warning("find_prolific_slot_map: mapping lookup unavailable")
-            continue
-
-    return _best_prolific_slot_map(candidates, prefer_active=prefer_active)
+    return _best_prolific_slot_map(
+        [_prolific_slot_map_row_from_db(row) for row in rows],
+        prefer_active=prefer_active,
+    )
 
 
 def sync_prolific_slot_map(
@@ -1353,64 +1377,77 @@ def sync_prolific_slot_map(
     if not participant_code or exp_num <= 0 or slot <= 0:
         return None
 
+    database_url = clean_str(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        return None
+
+    active_value = bool(active) if active is not None else True
+    row = None
     try:
-        rows = ProlificSlotMap.filter(subsession=root, participant_code=participant_code)
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, subsession_id, participant_code, session_code, prolific_pid, exp_num, slot, active, last_status, last_seen_ts
+                    FROM public.img_desc_prolificslotmap
+                    WHERE participant_code = %s
+                      AND exp_num = %s
+                      AND slot = %s
+                    ORDER BY last_seen_ts DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (participant_code, exp_num, slot),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    existing_id = safe_int(existing[0], 0)
+                    existing_pid = clean_str(existing[4])
+                    effective_pid = prolific_pid or existing_pid
+                    effective_status = status or clean_str(existing[8])
+                    cur.execute(
+                        """
+                        UPDATE public.img_desc_prolificslotmap
+                        SET subsession_id = %s,
+                            session_code = %s,
+                            prolific_pid = %s,
+                            exp_num = %s,
+                            slot = %s,
+                            active = %s,
+                            last_status = %s,
+                            last_seen_ts = %s
+                        WHERE id = %s
+                        RETURNING id, subsession_id, participant_code, session_code, prolific_pid, exp_num, slot, active, last_status, last_seen_ts
+                        """,
+                        (int(getattr(root, "id", 0) or 0), session_code, effective_pid, exp_num, slot, active_value, effective_status, time.time(), existing_id),
+                    )
+                    row = _prolific_slot_map_row_from_db(cur.fetchone())
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO public.img_desc_prolificslotmap
+                            (subsession_id, participant_code, session_code, prolific_pid, exp_num, slot, active, last_status, last_seen_ts)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id, subsession_id, participant_code, session_code, prolific_pid, exp_num, slot, active, last_status, last_seen_ts
+                        """,
+                        (int(getattr(root, "id", 0) or 0), participant_code, session_code, prolific_pid, exp_num, slot, active_value, status, time.time()),
+                    )
+                    row = _prolific_slot_map_row_from_db(cur.fetchone())
+            conn.commit()
+        finally:
+            conn.close()
     except Exception:
         logger.warning(
-            "sync_prolific_slot_map: mapping table unavailable participant=%s session=%s exp=%s slot=%s",
+            "sync_prolific_slot_map: SQL write failed participant=%s session=%s exp=%s slot=%s",
             participant_code,
             session_code,
             exp_num,
             slot,
         )
         return None
-    exact = [
-        row
-        for row in rows
-        if safe_int(getattr(row, "exp_num", 0), 0) == exp_num and safe_int(getattr(row, "slot", 0), 0) == slot
-    ]
-    row = _best_prolific_slot_map(exact, prefer_active=False) or _best_prolific_slot_map(rows, prefer_active=False)
 
-    if row is None:
-        row = ProlificSlotMap.create(
-            subsession=root,
-            participant_code=participant_code,
-            session_code=session_code,
-            prolific_pid=prolific_pid,
-            exp_num=exp_num,
-            slot=slot,
-            active=bool(active) if active is not None else True,
-            last_status=status,
-            last_seen_ts=time.time(),
-        )
-        logger.info(
-            "sync_prolific_slot_map: created participant=%s prolific_id=%s session=%s exp=%s slot=%s active=%s status=%s",
-            participant_code,
-            prolific_pid,
-            session_code,
-            exp_num,
-            slot,
-            bool(active) if active is not None else True,
-            status,
-        )
-        return row
-
-    row.session_code = session_code
-    row.exp_num = exp_num
-    row.slot = slot
-    if prolific_pid:
-        row.prolific_pid = prolific_pid
-    if active is not None:
-        row.active = bool(active)
-    if status:
-        row.last_status = status
-    row.last_seen_ts = time.time()
-    try:
-        row.save()
-    except Exception:
-        pass
-    logger.info(
-        "sync_prolific_slot_map: updated participant=%s prolific_id=%s session=%s exp=%s slot=%s active=%s status=%s",
+    logger.warning(
+        "sync_prolific_slot_map: upserted participant=%s prolific_id=%s session=%s exp=%s slot=%s active=%s status=%s",
         participant_code,
         clean_str(getattr(row, "prolific_pid", "")),
         session_code,
@@ -1425,32 +1462,34 @@ def sync_prolific_slot_map(
 def deactivate_prolific_slot_map(session, participant_code: str, status: str = ""):
     if not _prolific_slot_map_table_available():
         return
-    root = _root_subsession(session)
-    if not root:
-        return
 
     participant_code = clean_str(participant_code)
     if not participant_code:
         return
-
-    try:
-        rows = ProlificSlotMap.filter(subsession=root, participant_code=participant_code, active=True)
-    except Exception:
-        logger.warning(
-            "deactivate_prolific_slot_map: mapping table unavailable participant=%s",
-            participant_code,
-        )
+    database_url = clean_str(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
         return
-    now_ts = time.time()
-    for row in rows:
-        row.active = False
-        if status:
-            row.last_status = clean_str(status)
-        row.last_seen_ts = now_ts
+    session_code = clean_str(getattr(session, "code", ""))
+    try:
+        conn = psycopg2.connect(database_url)
         try:
-            row.save()
-        except Exception:
-            pass
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE public.img_desc_prolificslotmap
+                    SET active = FALSE,
+                        last_status = CASE WHEN %s <> '' THEN %s ELSE last_status END,
+                        last_seen_ts = %s
+                    WHERE participant_code = %s
+                      AND (%s = '' OR session_code = %s)
+                    """,
+                    (clean_str(status), clean_str(status), time.time(), participant_code, session_code, session_code),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("deactivate_prolific_slot_map: SQL save failed participant=%s", participant_code)
 
 
 def _capture_cookie_secret() -> bytes:
