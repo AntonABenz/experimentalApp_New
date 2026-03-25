@@ -519,15 +519,18 @@ def custom_export(players):
         return ""
 
     def _participant_status_for_export(participant):
-        status = clean_str(participant.vars.get(PARTICIPANT_STATUS_FIELD, "")).lower()
-        if status in {STATUS_ACTIVE, STATUS_FINISHED, STATUS_DROP_OUT}:
-            return status
         try:
             from img_desc import get_participant_status
 
-            return clean_str(get_participant_status(participant)).lower()
+            status = clean_str(get_participant_status(participant)).lower()
+            if status in {STATUS_ACTIVE, STATUS_FINISHED, STATUS_DROP_OUT}:
+                return status
         except Exception:
-            return ""
+            pass
+        status = clean_str(participant.vars.get(PARTICIPANT_STATUS_FIELD, "")).lower()
+        if status in {STATUS_ACTIVE, STATUS_FINISHED, STATUS_DROP_OUT}:
+            return status
+        return ""
 
     yield [
         "session_code",
