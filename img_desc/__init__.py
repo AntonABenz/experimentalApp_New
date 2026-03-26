@@ -1417,6 +1417,75 @@ def free_slot_from_prolific_slot_map(mapping, status: str = "") -> bool:
     return bool(freed_rows > 0)
 
 
+def mark_finished_from_prolific_slot_map(mapping, status: str = "") -> bool:
+    if not mapping:
+        return False
+    if not _prolific_slot_map_table_available():
+        return False
+
+    database_url = clean_str(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        return False
+
+    subsession_id = safe_int(getattr(mapping, "subsession_id", 0), 0)
+    participant_code = clean_str(getattr(mapping, "participant_code", ""))
+    exp_num = safe_int(getattr(mapping, "exp_num", 0), 0)
+    slot = safe_int(getattr(mapping, "slot", 0), 0)
+    status = clean_str(status or Constants.STATUS_FINISHED) or Constants.STATUS_FINISHED
+
+    if subsession_id <= 0 or not participant_code or exp_num <= 0 or slot <= 0:
+        return False
+
+    try:
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE public.img_desc_cohortslot
+                    SET active = TRUE,
+                        completed = TRUE
+                    WHERE subsession_id = %s
+                      AND participant_code = %s
+                      AND exp_num = %s
+                      AND slot = %s
+                    """,
+                    (subsession_id, participant_code, exp_num, slot),
+                )
+                updated_rows = int(cur.rowcount or 0)
+                cur.execute(
+                    """
+                    UPDATE public.img_desc_prolificslotmap
+                    SET active = TRUE,
+                        last_status = %s,
+                        last_seen_ts = %s
+                    WHERE id = %s
+                    """,
+                    (status, time.time(), safe_int(getattr(mapping, "id", 0), 0)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning(
+            "mark_finished_from_prolific_slot_map: SQL update failed participant=%s exp=%s slot=%s",
+            participant_code,
+            exp_num,
+            slot,
+        )
+        return False
+
+    logger.warning(
+        "mark_finished_from_prolific_slot_map: participant=%s exp=%s slot=%s updated_rows=%s status=%s",
+        participant_code,
+        exp_num,
+        slot,
+        updated_rows,
+        status,
+    )
+    return bool(updated_rows > 0)
+
+
 def _capture_cookie_secret() -> bytes:
     secret = (
         os.environ.get("OTREE_SECRET_KEY")

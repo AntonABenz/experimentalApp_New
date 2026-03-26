@@ -34,6 +34,7 @@ from img_desc import (
     get_participant_slot_rows,
     get_schedule_item,
     get_participant_status,
+    mark_finished_from_prolific_slot_map,
     mark_participant_active,
     mark_participant_complete_in_cohort,
     mark_participant_drop_out,
@@ -830,7 +831,7 @@ async def cohort_repair(request: Request):
         mark_participant_active(participant)
         participant.save()
         note = "participant marked active"
-    elif mapping and action in {"status", "drop_out", "free_slot"}:
+    elif mapping and action in {"status", "drop_out", "free_slot", "finished"}:
         session_code = clean_str(getattr(mapping, "session_code", ""))
         mapped_code = clean_str(getattr(mapping, "participant_code", ""))
         session = _find_session_by_code(session_code)
@@ -853,6 +854,19 @@ async def cohort_repair(request: Request):
                         status_code=409,
                     )
                 note = "mapping-only slot free completed directly from slot map; participant object unresolved"
+        elif action == "finished":
+            ok = mark_finished_from_prolific_slot_map(mapping, status="finished")
+            if not ok:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "mapping found but finished status could not be persisted",
+                        "participant_code": participant_code,
+                        "prolific_id": prolific_id,
+                    },
+                    status_code=409,
+                )
+            note = "mapping-only finished completed directly from slot map; participant object unresolved"
         else:
             note = "mapping-only status; participant object unresolved"
     elif fallback and action in {"status", "drop_out", "free_slot"}:
