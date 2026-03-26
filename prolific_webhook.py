@@ -15,6 +15,7 @@ from img_desc import (
     reset_this_app_for_participant,
     find_prolific_slot_map,
     free_slot_for_participant,
+    free_slot_from_prolific_slot_map,
     mark_participant_active,
     mark_participant_complete_in_cohort,
     mark_participant_drop_out,
@@ -176,6 +177,17 @@ async def prolific_webhook_view(request: Request):
     if participant is None:
         mapping = find_prolific_slot_map(prolific_pid=prolific_pid, prefer_active=False)
         if mapping and status in Constants.BAD_PROLIFIC_STATUSES:
+            if free_slot_from_prolific_slot_map(mapping, status=Constants.STATUS_DROP_OUT):
+                logger.info(
+                    "Webhook: freed slot directly from mapping prolific_pid=%s participant=%s status=%s study_id=%s submission_id=%s",
+                    prolific_pid,
+                    clean_str(getattr(mapping, "participant_code", "")),
+                    status,
+                    study_id,
+                    submission_id,
+                )
+                return JSONResponse({"ok": True, "note": "mapping_slot_freed_direct"})
+
             session_code = clean_str(getattr(mapping, "session_code", ""))
             mapped_code = clean_str(getattr(mapping, "participant_code", ""))
             try:
