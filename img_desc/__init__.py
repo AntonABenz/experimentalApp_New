@@ -887,15 +887,38 @@ def _expansion_succeeded(player, exp_num: int) -> bool:
 def maybe_expand_prolific_when_cohort_complete(player) -> None:
     session = player.session
     if not session or not session.config.get("for_prolific"):
+        logger.warning(
+            "Prolific expansion skipped: participant=%s reason=session_not_for_prolific session=%s for_prolific=%s",
+            clean_str(getattr(getattr(player, "participant", None), "code", "")),
+            clean_str(getattr(session, "code", "")),
+            bool(session and session.config.get("for_prolific")),
+        )
         return
     if not session.config.get("expand_slots"):
+        logger.warning(
+            "Prolific expansion skipped: participant=%s reason=expand_slots_disabled session=%s",
+            clean_str(getattr(getattr(player, "participant", None), "code", "")),
+            clean_str(getattr(session, "code", "")),
+        )
         return
 
     exp_num = _current_exp_num_for_participant(player)
     if exp_num <= 0:
+        logger.warning(
+            "Prolific expansion skipped: participant=%s reason=no_current_exp_num session=%s",
+            clean_str(getattr(getattr(player, "participant", None), "code", "")),
+            clean_str(getattr(session, "code", "")),
+        )
         return
 
     if not cohort_complete(session, exp_num):
+        logger.warning(
+            "Prolific expansion skipped: participant=%s session=%s exp_num=%s reason=cohort_incomplete snapshot=%s",
+            clean_str(getattr(getattr(player, "participant", None), "code", "")),
+            clean_str(getattr(session, "code", "")),
+            exp_num,
+            cohort_debug_snapshot(session, exp_num),
+        )
         return
 
     if not experiment_exists(session, exp_num + 1):
@@ -913,6 +936,12 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
         return
 
     if _expansion_succeeded(player, exp_num):
+        logger.warning(
+            "Prolific expansion skipped: participant=%s session=%s exp_num=%s reason=already_succeeded",
+            clean_str(getattr(getattr(player, "participant", None), "code", "")),
+            clean_str(getattr(session, "code", "")),
+            exp_num,
+        )
         return
 
     _set_expansion_state(
