@@ -25,7 +25,12 @@ from img_desc import (
     Constants as ImgDescConstants,
     Player as ImgDescPlayer,
     ScheduleItem,
+    _current_exp_num_for_participant,
+    _get_expansion_state,
     clean_str,
+    cohort_complete,
+    cohort_debug_snapshot,
+    experiment_exists,
     find_prolific_slot_map,
     free_slot_from_prolific_slot_map,
     free_slot_for_participant,
@@ -688,6 +693,112 @@ def _serialize_repair_fallback(fallback):
     )
 
 
+def _serialize_expansion_state(row):
+    if not row:
+        return {}
+    return dict(
+        exp_num=safe_int(getattr(row, "exp_num", 0), 0),
+        status=clean_str(getattr(row, "status", "")),
+        attempts=safe_int(getattr(row, "attempts", 0), 0),
+        last_attempt_ts=float(getattr(row, "last_attempt_ts", 0) or 0),
+        last_message=clean_str(getattr(row, "last_message", "")),
+    )
+
+
+def _expansion_status_payload(participant, mapping, fallback, participant_code: str, prolific_id: str):
+    player = None
+    if participant is not None:
+        player = _find_recent_img_desc_player(
+            participant_code=clean_str(getattr(participant, "code", "")),
+            prolific_id=clean_str(get_participant_prolific_id(participant)),
+        )
+    if player is None:
+        player = _find_recent_img_desc_player(participant_code=participant_code, prolific_id=prolific_id)
+
+    session = None
+    if participant is not None:
+        session = getattr(participant, "session", None)
+    if session is None and fallback:
+        session = fallback.get("session")
+    if session is None and mapping:
+        session = _find_session_by_code(clean_str(getattr(mapping, "session_code", "")))
+
+    effective_code = clean_str(
+        (getattr(participant, "code", "") if participant is not None else "")
+        or participant_code
+        or clean_str(getattr(mapping, "participant_code", ""))
+        or clean_str((fallback or {}).get("participant_code", ""))
+    )
+    effective_pid = clean_str(
+        (get_participant_prolific_id(participant) if participant is not None else "")
+        or prolific_id
+        or clean_str(getattr(mapping, "prolific_pid", ""))
+        or clean_str((fallback or {}).get("prolific_id", ""))
+    )
+    participant_label = clean_str(
+        (getattr(participant, "label", "") if participant is not None else "")
+        or effective_pid
+    )
+
+    exp_num = 0
+    if player is not None:
+        exp_num = safe_int(_current_exp_num_for_participant(player), 0)
+    if exp_num <= 0 and mapping:
+        exp_num = safe_int(getattr(mapping, "exp_num", 0), 0)
+
+    expansion_state = _serialize_expansion_state(
+        _get_expansion_state(player, exp_num) if player is not None and exp_num > 0 else None
+    )
+
+    slot_rows = []
+    cohort_snapshots = []
+    if session is not None and effective_code:
+        try:
+            slot_rows = get_participant_slot_rows(session, effective_code)
+        except Exception:
+            slot_rows = []
+
+    if session is not None:
+        exp_candidates = []
+        if exp_num > 0:
+            exp_candidates.append(exp_num)
+        for row in slot_rows:
+            row_exp = safe_int(row.get("exp_num", 0), 0)
+            if row_exp > 0 and row_exp not in exp_candidates:
+                exp_candidates.append(row_exp)
+        for candidate in exp_candidates[:2]:
+            try:
+                cohort_snapshots.append(get_cohort_snapshot_data(session, candidate))
+            except Exception:
+                try:
+                    cohort_snapshots.append(
+                        dict(exp_num=int(candidate), snapshot=cohort_debug_snapshot(session, candidate))
+                    )
+                except Exception:
+                    pass
+
+    return dict(
+        participant_code=effective_code,
+        prolific_id=effective_pid,
+        participant_label=participant_label,
+        session_code=clean_str(getattr(session, "code", "")),
+        for_prolific=bool(session and session.config.get("for_prolific")),
+        expand_slots=bool(session and session.config.get("expand_slots")),
+        player_found=bool(player),
+        participant_found=bool(participant),
+        mapping_found=bool(mapping),
+        fallback_found=bool(fallback),
+        current_exp_num=safe_int(exp_num, 0),
+        cohort_complete=bool(session and exp_num > 0 and cohort_complete(session, exp_num)),
+        next_experiment_exists=bool(session and exp_num > 0 and experiment_exists(session, exp_num + 1)),
+        expansion_state=expansion_state,
+        participant_status=get_participant_status(participant) if participant is not None else "",
+        prolific_slot_map=_serialize_mapping_state(mapping).get("prolific_slot_map", {}) if mapping else {},
+        slot_rows=slot_rows,
+        cohort_snapshots=cohort_snapshots,
+    )
+
+
 def _find_participant_for_repair(participant_code: str, prolific_id: str):
     participant_code = clean_str(participant_code)
     prolific_id = clean_str(prolific_id)
@@ -747,9 +858,9 @@ async def cohort_repair(request: Request):
     participant_code = clean_str(body.get("participant_code") or request.query_params.get("participant_code") or "")
     prolific_id = clean_str(body.get("prolific_id") or request.query_params.get("prolific_id") or "")
 
-    if action not in {"status", "drop_out", "finished", "free_slot", "active"}:
+    if action not in {"status", "drop_out", "finished", "free_slot", "active", "expansion_status"}:
         return JSONResponse(
-            {"ok": False, "error": "action must be one of status, drop_out, finished, free_slot, active"},
+            {"ok": False, "error": "action must be one of status, drop_out, finished, free_slot, active, expansion_status"},
             status_code=400,
         )
 
@@ -808,7 +919,11 @@ async def cohort_repair(request: Request):
     )
     note = "status only"
 
-    if participant and action == "drop_out":
+    if action == "expansion_status":
+        note = "read-only expansion diagnostics"
+        before = _expansion_status_payload(participant, mapping, fallback, participant_code, prolific_id)
+        after = before
+    elif participant and action == "drop_out":
         mark_participant_drop_out(participant)
         free_slot_for_participant(participant.session, participant.code)
         reset_this_app_for_participant(participant)
@@ -909,11 +1024,12 @@ async def cohort_repair(request: Request):
             status_code=409,
         )
 
-    after = (
-        _serialize_participant_state(participant)
-        if participant
-        else (_serialize_mapping_state(mapping) if mapping else _serialize_repair_fallback(fallback))
-    )
+    if action != "expansion_status":
+        after = (
+            _serialize_participant_state(participant)
+            if participant
+            else (_serialize_mapping_state(mapping) if mapping else _serialize_repair_fallback(fallback))
+        )
     logger.info(
         "CohortRepair: action=%s participant=%s prolific_id=%s status_before=%s status_after=%s",
         action,
