@@ -911,17 +911,21 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
         )
         return
 
-    if not cohort_complete(session, exp_num):
+    # Use the live finishing player's app context here rather than asking
+    # cohort_complete()/experiment_exists() to rediscover the img_desc root
+    # from the Session object. Session-based root recovery has proven flaky at
+    # final-page time and caused false "cohort_incomplete" / "no-root" skips.
+    if not cohort_complete(player, exp_num):
         logger.warning(
             "Prolific expansion skipped: participant=%s session=%s exp_num=%s reason=cohort_incomplete snapshot=%s",
             clean_str(getattr(getattr(player, "participant", None), "code", "")),
             clean_str(getattr(session, "code", "")),
             exp_num,
-            cohort_debug_snapshot(session, exp_num),
+            cohort_debug_snapshot(player, exp_num),
         )
         return
 
-    if not experiment_exists(session, exp_num + 1):
+    if not experiment_exists(player, exp_num + 1):
         logger.info(
             "Prolific expansion skipped: no later experiment exists after exp_num=%s",
             exp_num,
