@@ -44,6 +44,7 @@ from img_desc import (
     mark_participant_complete_in_cohort,
     mark_participant_drop_out,
     mark_participant_finished,
+    maybe_expand_prolific_when_cohort_complete,
     maybe_expand_prolific_for_participant,
     _recent_root_subsessions,
     reset_this_app_for_participant,
@@ -981,7 +982,20 @@ async def cohort_repair(request: Request):
                     },
                     status_code=409,
                 )
-            note = "mapping-only finished completed directly from slot map; participant object unresolved"
+            if session and mapped_code:
+                mark_participant_complete_in_cohort(session, mapped_code, completed=True)
+            recent_player = _find_recent_img_desc_player(
+                participant_code=mapped_code,
+                prolific_id=clean_str(getattr(mapping, "prolific_pid", "")),
+            )
+            if recent_player is not None:
+                try:
+                    maybe_expand_prolific_when_cohort_complete(recent_player)
+                    note = "mapping-only finished completed directly from slot map; expansion check executed from recent player"
+                except Exception:
+                    note = "mapping-only finished completed directly from slot map; expansion check failed"
+            else:
+                note = "mapping-only finished completed directly from slot map; no recent player for expansion check"
         else:
             note = "mapping-only status; participant object unresolved"
     elif fallback and action in {"status", "drop_out", "free_slot"}:
