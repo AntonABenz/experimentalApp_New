@@ -420,8 +420,10 @@ def has_sentence(obj, key: str) -> bool:
 
 
 # ---- Cohort assignment (DB-backed) ----
-def cohort_size(session) -> int:
-    return safe_int(session.config.get("cohort_size", 4), 4)
+def cohort_size(session_or_obj) -> int:
+    session = getattr(session_or_obj, "session", None) or session_or_obj
+    config = getattr(session, "config", {}) or {}
+    return safe_int(config.get("cohort_size", 4), 4)
 
 
 def _active_slot_row(root, exp_num: int, slot: int):
