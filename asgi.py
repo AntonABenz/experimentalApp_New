@@ -416,6 +416,7 @@ def _serialize_mapping_state(mapping):
             session_code=session_code,
             participant_code=clean_str(getattr(mapping, "participant_code", "")),
             prolific_pid=clean_str(getattr(mapping, "prolific_pid", "")),
+            study_id=clean_str(getattr(mapping, "study_id", "")),
             exp_num=exp_num,
             slot=safe_int(getattr(mapping, "slot", 0), 0),
             active=bool(getattr(mapping, "active", False)),

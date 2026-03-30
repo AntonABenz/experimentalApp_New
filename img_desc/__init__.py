@@ -886,6 +886,80 @@ def _expansion_succeeded(player, exp_num: int) -> bool:
     return bool(row and str(getattr(row, "status", "")).lower() == "success")
 
 
+def _cohort_study_ids_from_slot_map(player, exp_num: int):
+    if not _prolific_slot_map_table_available():
+        return []
+
+    root = _root_subsession(player)
+    if not root:
+        return []
+
+    database_url = clean_str(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        return []
+
+    sql = """
+        SELECT cs.slot, cs.participant_code, COALESCE(psm.study_id, '')
+        FROM public.img_desc_cohortslot cs
+        LEFT JOIN LATERAL (
+            SELECT study_id
+            FROM public.img_desc_prolificslotmap psm
+            WHERE psm.subsession_id = cs.subsession_id
+              AND psm.participant_code = cs.participant_code
+              AND psm.exp_num = cs.exp_num
+              AND psm.slot = cs.slot
+              AND psm.active = TRUE
+            ORDER BY psm.last_seen_ts DESC, psm.id DESC
+            LIMIT 1
+        ) psm ON TRUE
+        WHERE cs.subsession_id = %s
+          AND cs.exp_num = %s
+          AND cs.active = TRUE
+        ORDER BY cs.slot ASC
+    """
+    rows = []
+    try:
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (int(getattr(root, "id", 0) or 0), int(exp_num)))
+                rows = cur.fetchall() or []
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning(
+            "cohort study-id lookup unavailable: participant=%s exp_num=%s",
+            clean_str(getattr(getattr(player, "participant", None), "code", "")),
+            int(exp_num or 0),
+        )
+        return []
+
+    return [
+        dict(
+            slot=safe_int(row[0], 0),
+            participant_code=clean_str(row[1]),
+            study_id=clean_str(row[2]),
+        )
+        for row in rows
+    ]
+
+
+def _resolve_expansion_study_id(player, exp_num: int) -> tuple[str, str]:
+    rows = _cohort_study_ids_from_slot_map(player, exp_num)
+    if rows:
+        study_ids = sorted({clean_str(row.get("study_id", "")) for row in rows if clean_str(row.get("study_id", ""))})
+        if len(study_ids) == 1 and len(study_ids) == len(rows):
+            return study_ids[0], "cohort_slot_map"
+        if len(study_ids) > 1:
+            return "", "inconsistent_cohort_study_ids"
+        return "", "missing_cohort_study_id"
+
+    current = get_participant_study_id(getattr(player, "participant", None))
+    if current:
+        return current, "finishing_participant"
+    return "", "missing_finishing_participant_study_id"
+
+
 def maybe_expand_prolific_when_cohort_complete(player) -> None:
     session = player.session
     if not session or not session.config.get("for_prolific"):
@@ -950,6 +1024,25 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
         )
         return
 
+    study_id, study_source = _resolve_expansion_study_id(player, exp_num)
+    if not study_id:
+        logger.warning(
+            "Prolific expansion skipped: participant=%s session=%s exp_num=%s reason=study_id_unavailable detail=%s snapshot=%s",
+            clean_str(getattr(getattr(player, "participant", None), "code", "")),
+            clean_str(getattr(session, "code", "")),
+            exp_num,
+            clean_str(study_source),
+            cohort_debug_snapshot(player, exp_num),
+        )
+        _set_expansion_state(
+            player,
+            exp_num,
+            status="failed",
+            message=f"study_id_unavailable:{clean_str(study_source)}",
+            bump_attempt=False,
+        )
+        return
+
     _set_expansion_state(
         player,
         exp_num,
@@ -959,8 +1052,15 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
     )
 
     try:
-        ok, msg = maybe_expand_slots(enabled=True, batch_done=True)
-        logger.info("Prolific expansion result: exp_num=%s ok=%s msg=%s", exp_num, ok, msg)
+        ok, msg = maybe_expand_slots(enabled=True, batch_done=True, study_id=study_id)
+        logger.info(
+            "Prolific expansion result: exp_num=%s study_id=%s source=%s ok=%s msg=%s",
+            exp_num,
+            study_id,
+            study_source,
+            ok,
+            msg,
+        )
         if ok:
             _set_expansion_state(player, exp_num, status="success", message=msg)
         else:
@@ -1075,6 +1175,12 @@ def get_participant_prolific_id(participant) -> str:
     return clean_str(getattr(participant, "label", "") or participant.vars.get("prolific_id", ""))
 
 
+def get_participant_study_id(participant) -> str:
+    if participant is None:
+        return ""
+    return clean_str(participant.vars.get("study_id", ""))
+
+
 def _prolific_slot_map_table_available() -> bool:
     global _prolific_slot_map_table_available_cache
     if _prolific_slot_map_table_available_cache is not None:
@@ -1104,6 +1210,7 @@ def _prolific_slot_map_table_available() -> bool:
                             participant_code TEXT NOT NULL,
                             session_code TEXT NOT NULL,
                             prolific_pid TEXT NOT NULL DEFAULT '',
+                            study_id TEXT NOT NULL DEFAULT '',
                             exp_num INTEGER NOT NULL,
                             slot INTEGER NOT NULL,
                             active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -1124,9 +1231,20 @@ def _prolific_slot_map_table_available() -> bool:
                     cur.execute(
                         "CREATE INDEX IF NOT EXISTS idx_img_desc_psm_pid ON public.img_desc_prolificslotmap (prolific_pid)"
                     )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_img_desc_psm_study_id ON public.img_desc_prolificslotmap (study_id)"
+                    )
                     conn.commit()
                     table_exists = True
                     logger.warning("ProlificSlotMap bootstrap: created table img_desc_prolificslotmap")
+                else:
+                    cur.execute(
+                        "ALTER TABLE public.img_desc_prolificslotmap ADD COLUMN IF NOT EXISTS study_id TEXT NOT NULL DEFAULT ''"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_img_desc_psm_study_id ON public.img_desc_prolificslotmap (study_id)"
+                    )
+                    conn.commit()
                 _prolific_slot_map_table_available_cache = table_exists
         finally:
             conn.close()
@@ -1182,11 +1300,12 @@ def _prolific_slot_map_row_from_db(row):
         participant_code=clean_str(row[2]),
         session_code=clean_str(row[3]),
         prolific_pid=clean_str(row[4]),
-        exp_num=safe_int(row[5], 0),
-        slot=safe_int(row[6], 0),
-        active=bool(row[7]),
-        last_status=clean_str(row[8]),
-        last_seen_ts=float(row[9] or 0),
+        study_id=clean_str(row[5]),
+        exp_num=safe_int(row[6], 0),
+        slot=safe_int(row[7], 0),
+        active=bool(row[8]),
+        last_status=clean_str(row[9]),
+        last_seen_ts=float(row[10] or 0),
     )
 
 
@@ -1210,7 +1329,7 @@ def find_prolific_slot_map(
         return None
 
     sql = """
-        SELECT id, subsession_id, participant_code, session_code, prolific_pid, exp_num, slot, active, last_status, last_seen_ts
+        SELECT id, subsession_id, participant_code, session_code, prolific_pid, study_id, exp_num, slot, active, last_status, last_seen_ts
         FROM public.img_desc_prolificslotmap
         WHERE (%s = '' OR participant_code = %s)
           AND (%s = '' OR prolific_pid = %s)
@@ -1262,6 +1381,7 @@ def sync_prolific_slot_map(
     exp_num = safe_int(exp_num if exp_num is not None else participant.vars.get("exp_target"), 0)
     slot = safe_int(slot if slot is not None else participant.vars.get("local_slot"), 0)
     prolific_pid = get_participant_prolific_id(participant)
+    study_id = get_participant_study_id(participant)
     status = clean_str(status or get_participant_status(participant))
 
     if not participant_code or exp_num <= 0 or slot <= 0:
@@ -1279,7 +1399,7 @@ def sync_prolific_slot_map(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, subsession_id, participant_code, session_code, prolific_pid, exp_num, slot, active, last_status, last_seen_ts
+                    SELECT id, subsession_id, participant_code, session_code, prolific_pid, study_id, exp_num, slot, active, last_status, last_seen_ts
                     FROM public.img_desc_prolificslotmap
                     WHERE participant_code = %s
                       AND exp_num = %s
@@ -1293,34 +1413,37 @@ def sync_prolific_slot_map(
                 if existing:
                     existing_id = safe_int(existing[0], 0)
                     existing_pid = clean_str(existing[4])
+                    existing_study_id = clean_str(existing[5])
                     effective_pid = prolific_pid or existing_pid
-                    effective_status = status or clean_str(existing[8])
+                    effective_study_id = study_id or existing_study_id
+                    effective_status = status or clean_str(existing[9])
                     cur.execute(
                         """
                         UPDATE public.img_desc_prolificslotmap
                         SET subsession_id = %s,
                             session_code = %s,
                             prolific_pid = %s,
+                            study_id = %s,
                             exp_num = %s,
                             slot = %s,
                             active = %s,
                             last_status = %s,
                             last_seen_ts = %s
                         WHERE id = %s
-                        RETURNING id, subsession_id, participant_code, session_code, prolific_pid, exp_num, slot, active, last_status, last_seen_ts
+                        RETURNING id, subsession_id, participant_code, session_code, prolific_pid, study_id, exp_num, slot, active, last_status, last_seen_ts
                         """,
-                        (int(getattr(root, "id", 0) or 0), session_code, effective_pid, exp_num, slot, active_value, effective_status, time.time(), existing_id),
+                        (int(getattr(root, "id", 0) or 0), session_code, effective_pid, effective_study_id, exp_num, slot, active_value, effective_status, time.time(), existing_id),
                     )
                     row = _prolific_slot_map_row_from_db(cur.fetchone())
                 else:
                     cur.execute(
                         """
                         INSERT INTO public.img_desc_prolificslotmap
-                            (subsession_id, participant_code, session_code, prolific_pid, exp_num, slot, active, last_status, last_seen_ts)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        RETURNING id, subsession_id, participant_code, session_code, prolific_pid, exp_num, slot, active, last_status, last_seen_ts
+                            (subsession_id, participant_code, session_code, prolific_pid, study_id, exp_num, slot, active, last_status, last_seen_ts)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id, subsession_id, participant_code, session_code, prolific_pid, study_id, exp_num, slot, active, last_status, last_seen_ts
                         """,
-                        (int(getattr(root, "id", 0) or 0), participant_code, session_code, prolific_pid, exp_num, slot, active_value, status, time.time()),
+                        (int(getattr(root, "id", 0) or 0), participant_code, session_code, prolific_pid, study_id, exp_num, slot, active_value, status, time.time()),
                     )
                     row = _prolific_slot_map_row_from_db(cur.fetchone())
             conn.commit()

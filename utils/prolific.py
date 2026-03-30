@@ -66,15 +66,15 @@ def _allowed_statuses() -> set[str]:
     return set(parts) if parts else {"ACTIVE"}
 
 
-def maybe_expand_slots(enabled: bool, batch_done: bool) -> Tuple[bool, str]:
+def maybe_expand_slots(enabled: bool, batch_done: bool, study_id: str = "") -> Tuple[bool, str]:
     """
     Increase Prolific study places when a batch is done.
 
     Required env vars:
       - PROLIFIC_API_TOKEN or PROLIFIC_API_KEY
-      - PROLIFIC_STUDY_ID
 
     Optional env vars:
+      - PROLIFIC_STUDY_ID (fallback only if study_id argument is empty)
       - PROLIFIC_EXPAND_BY (default: 4)
       - PROLIFIC_MAX_PLACES (optional cap, default: unset)
       - PROLIFIC_ALLOWED_STATUSES (default: "ACTIVE")
@@ -92,7 +92,9 @@ def maybe_expand_slots(enabled: bool, batch_done: bool) -> Tuple[bool, str]:
 
     try:
         token = _get_prolific_token()
-        study_id = _get_env("PROLIFIC_STUDY_ID")
+        study_id = (study_id or os.environ.get("PROLIFIC_STUDY_ID") or "").strip()
+        if not study_id:
+            raise RuntimeError("Missing required study_id or env var PROLIFIC_STUDY_ID")
 
         expand_by_raw = (os.environ.get("PROLIFIC_EXPAND_BY") or "4").strip()
         expand_by = int(expand_by_raw)
