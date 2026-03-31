@@ -1248,8 +1248,9 @@ def _prolific_slot_map_table_available() -> bool:
                 _prolific_slot_map_table_available_cache = table_exists
         finally:
             conn.close()
-    except Exception:
+    except Exception as e:
         _prolific_slot_map_table_available_cache = False
+        logger.warning("ProlificSlotMap availability check failed: %s", e)
 
     if not _prolific_slot_map_table_available_cache:
         logger.warning("ProlificSlotMap disabled: table img_desc_prolificslotmap not available")
@@ -1345,8 +1346,8 @@ def find_prolific_slot_map(
                 rows = cur.fetchall() or []
         finally:
             conn.close()
-    except Exception:
-        logger.warning("find_prolific_slot_map: mapping lookup unavailable")
+    except Exception as e:
+        logger.warning("find_prolific_slot_map: mapping lookup unavailable (%s)", e)
         return None
 
     return _best_prolific_slot_map(
@@ -1449,13 +1450,14 @@ def sync_prolific_slot_map(
             conn.commit()
         finally:
             conn.close()
-    except Exception:
+    except Exception as e:
         logger.warning(
-            "sync_prolific_slot_map: SQL write failed participant=%s session=%s exp=%s slot=%s",
+            "sync_prolific_slot_map: SQL write failed participant=%s session=%s exp=%s slot=%s error=%s",
             participant_code,
             session_code,
             exp_num,
             slot,
+            e,
         )
         return None
 
