@@ -76,16 +76,17 @@ def _extract_prolific_params(player) -> tuple[str, str, str]:
         pass
     try:
         url = player.participant._url_i_should_be_on()
-        if not pid and "?" in url:
+        if (not pid or not study_id or not sess_id) and "?" in url:
             params = _parse_querystring(url.split("?", 1)[1])
-            pid = (
-                params.get("PROLIFIC_PID")
-                or params.get("prolific_pid")
-                or params.get("prolific_id")
-                or params.get("participant_id")
-                or params.get("participant_label")
-                or ""
-            ).strip()
+            if not pid:
+                pid = (
+                    params.get("PROLIFIC_PID")
+                    or params.get("prolific_pid")
+                    or params.get("prolific_id")
+                    or params.get("participant_id")
+                    or params.get("participant_label")
+                    or ""
+                ).strip()
             if not study_id:
                 study_id = (params.get("STUDY_ID") or params.get("study_id") or "").strip()
             if not sess_id:
@@ -371,8 +372,15 @@ class _ProlificCaptureMixin:
 
     @staticmethod
     def before_next_page(player, timeout_happened):
-        # safety retry
-        if player.session.config.get("for_prolific") and not player.participant.vars.get("prolific_id"):
+        # safety retry when any Prolific identifier is still missing
+        if (
+            player.session.config.get("for_prolific")
+            and (
+                not clean_str(player.participant.vars.get("prolific_id"))
+                or not clean_str(player.participant.vars.get("study_id"))
+                or not clean_str(player.participant.vars.get("prolific_session_id"))
+            )
+        ):
             _ProlificCaptureMixin._capture(player)
 
 
