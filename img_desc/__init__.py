@@ -946,17 +946,28 @@ def _cohort_study_ids_from_slot_map(player, exp_num: int):
 
 def _resolve_expansion_study_id(player, exp_num: int) -> tuple[str, str]:
     rows = _cohort_study_ids_from_slot_map(player, exp_num)
+    current = get_participant_study_id(getattr(player, "participant", None))
     if rows:
         study_ids = sorted({clean_str(row.get("study_id", "")) for row in rows if clean_str(row.get("study_id", ""))})
-        if len(study_ids) == 1 and len(study_ids) == len(rows):
+        # Accept one consistent non-empty study_id even if some older slot-map
+        # rows are blank. Mixed non-empty values are still treated as unsafe.
+        if len(study_ids) == 1:
+            if current and current != study_ids[0]:
+                return "", "inconsistent_finishing_participant_study_id"
             return study_ids[0], "cohort_slot_map"
         if len(study_ids) > 1:
             return "", "inconsistent_cohort_study_ids"
-        return "", "missing_cohort_study_id"
+        if current:
+            return current, "finishing_participant"
 
-    current = get_participant_study_id(getattr(player, "participant", None))
     if current:
         return current, "finishing_participant"
+    participant_code = clean_str(getattr(getattr(player, "participant", None), "code", ""))
+    if participant_code:
+        mapping = find_prolific_slot_map(participant_code=participant_code, prefer_active=False)
+        mapped_study_id = clean_str(getattr(mapping, "study_id", ""))
+        if mapped_study_id:
+            return mapped_study_id, "finishing_participant_slot_map"
     return "", "missing_finishing_participant_study_id"
 
 
