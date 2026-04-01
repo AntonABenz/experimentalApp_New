@@ -1189,7 +1189,11 @@ def get_participant_prolific_id(participant) -> str:
 def get_participant_study_id(participant) -> str:
     if participant is None:
         return ""
-    return clean_str(participant.vars.get("study_id", ""))
+    study_id = clean_str(participant.vars.get("study_id", ""))
+    if study_id:
+        return study_id
+    intake_payload = _load_start_prolific_intake_for_participant(participant)
+    return clean_str(intake_payload.get("study_id", ""))
 
 
 def _prolific_slot_map_table_available() -> bool:
@@ -1695,6 +1699,38 @@ def _load_prolific_capture_cookie_from_player(player) -> dict:
         "prolific_id": clean_str(payload.get("prolific_id", "")),
         "study_id": clean_str(payload.get("study_id", "")),
         "session_id": clean_str(payload.get("session_id", "")),
+    }
+
+
+def _load_start_prolific_intake_for_participant(obj) -> dict:
+    participant = getattr(obj, "participant", None) or obj
+    if participant is None:
+        return {}
+
+    participant_code = clean_str(getattr(participant, "code", ""))
+    prolific_id = clean_str(getattr(participant, "label", "") or participant.vars.get("prolific_id", ""))
+    if not participant_code and not prolific_id:
+        return {}
+
+    try:
+        from start import find_start_prolific_intake
+    except Exception:
+        return {}
+
+    try:
+        row = find_start_prolific_intake(participant_code=participant_code, prolific_pid=prolific_id)
+    except Exception:
+        return {}
+
+    if not row:
+        return {}
+
+    return {
+        "prolific_id": clean_str(row.get("prolific_pid", "") or row.get("participant_label", "")),
+        "participant_label": clean_str(row.get("participant_label", "") or row.get("prolific_pid", "")),
+        "study_id": clean_str(row.get("study_id", "")),
+        "session_id": clean_str(row.get("session_id", "")),
+        "session_code": clean_str(row.get("session_code", "")),
     }
 
 
@@ -2599,6 +2635,7 @@ class CaptureProlificID(Page):
         prolific_id_field = clean_str(player.field_maybe_none("prolific_id_field"))
         study_id_field = clean_str(player.field_maybe_none("study_id_field"))
         session_id_field = clean_str(player.field_maybe_none("session_id_field"))
+        intake_payload = _load_start_prolific_intake_for_participant(p)
         cookie_payload = _load_prolific_capture_cookie_from_player(player)
 
         # Keep the player-level fields in sync with the already-captured
@@ -2609,11 +2646,17 @@ class CaptureProlificID(Page):
                 p.vars.get("prolific_id", "") or getattr(p, "label", "")
             )
         if not prolific_id_field:
+            prolific_id_field = clean_str(
+                intake_payload.get("prolific_id", "") or intake_payload.get("participant_label", "")
+            )
+        if not prolific_id_field:
             prolific_id_field = clean_str(cookie_payload.get("prolific_id", ""))
         if prolific_id_field:
             player.prolific_id_field = prolific_id_field
         if not study_id_field:
             study_id_field = clean_str(p.vars.get("study_id", ""))
+        if not study_id_field:
+            study_id_field = clean_str(intake_payload.get("study_id", ""))
         if not study_id_field:
             study_id_field = clean_str(cookie_payload.get("study_id", ""))
         if study_id_field:
@@ -2621,16 +2664,19 @@ class CaptureProlificID(Page):
         if not session_id_field:
             session_id_field = clean_str(p.vars.get("prolific_session_id", ""))
         if not session_id_field:
+            session_id_field = clean_str(intake_payload.get("session_id", ""))
+        if not session_id_field:
             session_id_field = clean_str(cookie_payload.get("session_id", ""))
         if session_id_field:
             player.session_id_field = session_id_field
 
         logger.info(
-            "CaptureProlificID vars: participant=%s prolific_id=%s study_id=%s session_id=%s source_cookie=%s",
+            "CaptureProlificID vars: participant=%s prolific_id=%s study_id=%s session_id=%s source_intake=%s source_cookie=%s",
             clean_str(p.code),
             prolific_id_field,
             study_id_field,
             session_id_field,
+            bool(intake_payload.get("prolific_id") or intake_payload.get("study_id") or intake_payload.get("session_id")),
             bool(cookie_payload.get("prolific_id")),
         )
 
@@ -2644,22 +2690,27 @@ class CaptureProlificID(Page):
     @staticmethod
     def before_next_page(player, timeout_happened):
         p = player.participant
+        intake_payload = _load_start_prolific_intake_for_participant(p)
         cookie_payload = _load_prolific_capture_cookie_from_player(player)
         prolific_id = clean_str(
             player.field_maybe_none("prolific_id_field")
-            or cookie_payload.get("prolific_id", "")
             or p.vars.get("prolific_id", "")
             or getattr(p, "label", "")
+            or intake_payload.get("prolific_id", "")
+            or intake_payload.get("participant_label", "")
+            or cookie_payload.get("prolific_id", "")
         )
         study_id = clean_str(
             player.field_maybe_none("study_id_field")
-            or cookie_payload.get("study_id", "")
             or p.vars.get("study_id", "")
+            or intake_payload.get("study_id", "")
+            or cookie_payload.get("study_id", "")
         )
         session_id = clean_str(
             player.field_maybe_none("session_id_field")
-            or cookie_payload.get("session_id", "")
             or p.vars.get("prolific_session_id", "")
+            or intake_payload.get("session_id", "")
+            or cookie_payload.get("session_id", "")
         )
 
         if prolific_id:
@@ -2685,11 +2736,12 @@ class CaptureProlificID(Page):
             pass
 
         logger.info(
-            "CaptureProlificID saved: participant=%s prolific_id=%s study_id=%s session_id=%s source_cookie=%s",
+            "CaptureProlificID saved: participant=%s prolific_id=%s study_id=%s session_id=%s source_intake=%s source_cookie=%s",
             clean_str(p.code),
             prolific_id,
             study_id,
             session_id,
+            bool(intake_payload.get("prolific_id") or intake_payload.get("study_id") or intake_payload.get("session_id")),
             bool(cookie_payload.get("prolific_id")),
         )
 

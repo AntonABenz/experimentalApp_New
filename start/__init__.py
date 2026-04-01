@@ -1,7 +1,14 @@
 from otree.api import *
-import logging
+import base64
+import hashlib
+import hmac
 import json
+import logging
+import os
 import re
+import time
+
+import psycopg2
 
 from reading_xls.get_data import get_data
 
@@ -11,6 +18,8 @@ PARTICIPANT_STATUS_FIELD = "participant_status"
 STATUS_ACTIVE = "active"
 STATUS_FINISHED = "finished"
 STATUS_DROP_OUT = "drop_out"
+PROLIFIC_CAPTURE_COOKIE = "prolific_capture"
+_start_prolific_intake_table_available_cache = None
 
 # -------------------------------------------------------------------
 # Helpers
@@ -56,8 +65,253 @@ def _parse_querystring(qs: str) -> dict:
     return out
 
 
-def _extract_prolific_params(player) -> tuple[str, str, str]:
-    pid = study_id = sess_id = ""
+def _capture_cookie_secret() -> bytes:
+    secret = (
+        os.environ.get("OTREE_SECRET_KEY")
+        or os.environ.get("SECRET_KEY")
+        or os.environ.get("ADMIN_PASSWORD")
+        or "otree-secret"
+    )
+    return str(secret).encode("utf-8")
+
+
+def _load_prolific_capture_cookie_from_player(player) -> dict:
+    req = getattr(player, "request", None)
+    if req is None:
+        return {}
+
+    cookies = getattr(req, "COOKIES", None) or getattr(req, "cookies", None) or {}
+    raw = clean_str(cookies.get(PROLIFIC_CAPTURE_COOKIE, ""))
+    if "." not in raw:
+        return {}
+
+    encoded, signature = raw.rsplit(".", 1)
+    expected = hmac.new(_capture_cookie_secret(), encoded.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return {}
+
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    return {
+        "prolific_id": clean_str(payload.get("prolific_id", "")),
+        "participant_label": clean_str(payload.get("participant_label", "")),
+        "study_id": clean_str(payload.get("study_id", "")),
+        "session_id": clean_str(payload.get("session_id", "")),
+    }
+
+
+def _start_prolific_intake_table_available() -> bool:
+    global _start_prolific_intake_table_available_cache
+    if _start_prolific_intake_table_available_cache is not None:
+        return _start_prolific_intake_table_available_cache
+
+    database_url = clean_str(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        _start_prolific_intake_table_available_cache = False
+        return False
+
+    try:
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.start_prolificintake')")
+                row = cur.fetchone()
+                table_exists = bool(row and row[0])
+                if not table_exists:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS public.start_prolificintake (
+                            id BIGSERIAL PRIMARY KEY,
+                            participant_code TEXT NOT NULL UNIQUE,
+                            session_code TEXT NOT NULL DEFAULT '',
+                            prolific_pid TEXT NOT NULL DEFAULT '',
+                            participant_label TEXT NOT NULL DEFAULT '',
+                            study_id TEXT NOT NULL DEFAULT '',
+                            session_id TEXT NOT NULL DEFAULT '',
+                            last_seen_ts DOUBLE PRECISION NOT NULL DEFAULT 0
+                        )
+                        """
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_start_pi_participant ON public.start_prolificintake (participant_code)"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_start_pi_pid ON public.start_prolificintake (prolific_pid)"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_start_pi_session ON public.start_prolificintake (session_code)"
+                    )
+                    conn.commit()
+                    logger.warning("StartProlificIntake bootstrap: created table start_prolificintake")
+                    table_exists = True
+                _start_prolific_intake_table_available_cache = table_exists
+        finally:
+            conn.close()
+    except Exception as e:
+        _start_prolific_intake_table_available_cache = False
+        logger.warning("StartProlificIntake availability check failed: %s", e)
+
+    return bool(_start_prolific_intake_table_available_cache)
+
+
+def _start_intake_row_from_db(row):
+    if not row:
+        return {}
+    return dict(
+        participant_code=clean_str(row[0]),
+        session_code=clean_str(row[1]),
+        prolific_pid=clean_str(row[2]),
+        participant_label=clean_str(row[3]),
+        study_id=clean_str(row[4]),
+        session_id=clean_str(row[5]),
+        last_seen_ts=float(row[6] or 0),
+    )
+
+
+def find_start_prolific_intake(participant_code: str = "", prolific_pid: str = "") -> dict:
+    participant_code = clean_str(participant_code)
+    prolific_pid = clean_str(prolific_pid)
+    if not participant_code and not prolific_pid:
+        return {}
+    if not _start_prolific_intake_table_available():
+        return {}
+
+    database_url = clean_str(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        return {}
+
+    try:
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts
+                    FROM public.start_prolificintake
+                    WHERE (%s = '' OR participant_code = %s)
+                      AND (%s = '' OR prolific_pid = %s OR participant_label = %s)
+                    ORDER BY last_seen_ts DESC, participant_code DESC
+                    LIMIT 1
+                    """,
+                    (participant_code, participant_code, prolific_pid, prolific_pid, prolific_pid),
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("find_start_prolific_intake: lookup failed participant=%s prolific_id=%s error=%s", participant_code, prolific_pid, e)
+        return {}
+
+    return _start_intake_row_from_db(row)
+
+
+def sync_start_prolific_intake(player, pid: str = "", participant_label: str = "", study_id: str = "", sess_id: str = "") -> dict:
+    participant = getattr(player, "participant", None)
+    if participant is None:
+        return {}
+    if not _start_prolific_intake_table_available():
+        return {}
+
+    participant_code = clean_str(getattr(participant, "code", ""))
+    session_code = clean_str(getattr(getattr(player, "session", None), "code", ""))
+    pid = clean_str(pid)
+    participant_label = clean_str(participant_label)
+    study_id = clean_str(study_id)
+    sess_id = clean_str(sess_id)
+
+    if not pid:
+        pid = participant_label
+    if not participant_label:
+        participant_label = pid
+    if not participant_code:
+        return {}
+
+    database_url = clean_str(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        return {}
+
+    row = {}
+    try:
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts
+                    FROM public.start_prolificintake
+                    WHERE participant_code = %s
+                    LIMIT 1
+                    """,
+                    (participant_code,),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    existing_row = _start_intake_row_from_db(existing)
+                    effective_pid = pid or clean_str(existing_row.get("prolific_pid", "")) or clean_str(existing_row.get("participant_label", ""))
+                    effective_label = participant_label or effective_pid or clean_str(existing_row.get("participant_label", "")) or clean_str(existing_row.get("prolific_pid", ""))
+                    effective_study_id = study_id or clean_str(existing_row.get("study_id", ""))
+                    effective_session_id = sess_id or clean_str(existing_row.get("session_id", ""))
+                    effective_session_code = session_code or clean_str(existing_row.get("session_code", ""))
+                    cur.execute(
+                        """
+                        UPDATE public.start_prolificintake
+                        SET session_code = %s,
+                            prolific_pid = %s,
+                            participant_label = %s,
+                            study_id = %s,
+                            session_id = %s,
+                            last_seen_ts = %s
+                        WHERE participant_code = %s
+                        RETURNING participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts
+                        """,
+                        (effective_session_code, effective_pid, effective_label, effective_study_id, effective_session_id, time.time(), participant_code),
+                    )
+                    row = _start_intake_row_from_db(cur.fetchone())
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO public.start_prolificintake
+                            (participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        RETURNING participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts
+                        """,
+                        (participant_code, session_code, pid, participant_label or pid, study_id, sess_id, time.time()),
+                    )
+                    row = _start_intake_row_from_db(cur.fetchone())
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(
+            "sync_start_prolific_intake: SQL write failed participant=%s prolific_id=%s study_id=%s session_id=%s error=%s",
+            participant_code,
+            pid,
+            study_id,
+            sess_id,
+            e,
+        )
+        return {}
+
+    logger.info(
+        "sync_start_prolific_intake: participant=%s prolific_id=%s participant_label=%s study_id=%s session_id=%s",
+        participant_code,
+        clean_str(row.get("prolific_pid", "")),
+        clean_str(row.get("participant_label", "")),
+        clean_str(row.get("study_id", "")),
+        clean_str(row.get("session_id", "")),
+    )
+    return row
+
+
+def _extract_prolific_params(player) -> tuple[str, str, str, str]:
+    pid = participant_label = study_id = sess_id = ""
     try:
         req = getattr(player, "request", None)
         if req is not None:
@@ -70,13 +324,14 @@ def _extract_prolific_params(player) -> tuple[str, str, str]:
                 or get_params.get("participant_label")
                 or ""
             ).strip()
+            participant_label = (get_params.get("participant_label") or get_params.get("PARTICIPANT_LABEL") or "").strip()
             study_id = (get_params.get("STUDY_ID") or get_params.get("study_id") or "").strip()
             sess_id = (get_params.get("SESSION_ID") or get_params.get("session_id") or "").strip()
     except Exception:
         pass
     try:
         url = player.participant._url_i_should_be_on()
-        if (not pid or not study_id or not sess_id) and "?" in url:
+        if (not pid or not participant_label or not study_id or not sess_id) and "?" in url:
             params = _parse_querystring(url.split("?", 1)[1])
             if not pid:
                 pid = (
@@ -87,6 +342,8 @@ def _extract_prolific_params(player) -> tuple[str, str, str]:
                     or params.get("participant_label")
                     or ""
                 ).strip()
+            if not participant_label:
+                participant_label = (params.get("participant_label") or params.get("PARTICIPANT_LABEL") or "").strip()
             if not study_id:
                 study_id = (params.get("STUDY_ID") or params.get("study_id") or "").strip()
             if not sess_id:
@@ -94,17 +351,58 @@ def _extract_prolific_params(player) -> tuple[str, str, str]:
     except Exception:
         pass
     if not pid:
-        try:
+        pid = participant_label
+    if not participant_label:
+        participant_label = pid
+
+    intake_payload = find_start_prolific_intake(
+        participant_code=clean_str(getattr(player.participant, "code", "")),
+        prolific_pid=pid or participant_label,
+    )
+    if intake_payload:
+        if not pid:
+            pid = clean_str(intake_payload.get("prolific_pid", "") or intake_payload.get("participant_label", ""))
+        if not participant_label:
+            participant_label = clean_str(intake_payload.get("participant_label", "") or intake_payload.get("prolific_pid", ""))
+        if not study_id:
+            study_id = clean_str(intake_payload.get("study_id", ""))
+        if not sess_id:
+            sess_id = clean_str(intake_payload.get("session_id", ""))
+
+    try:
+        if not pid:
             pid = clean_str(
                 player.participant.vars.get("prolific_id", "")
                 or getattr(player.participant, "label", "")
             )
-        except Exception:
-            pid = ""
-    return pid, study_id, sess_id
+        if not participant_label:
+            participant_label = clean_str(getattr(player.participant, "label", "") or pid)
+        if not study_id:
+            study_id = clean_str(player.participant.vars.get("study_id", ""))
+        if not sess_id:
+            sess_id = clean_str(player.participant.vars.get("prolific_session_id", ""))
+    except Exception:
+        pass
+
+    cookie_payload = _load_prolific_capture_cookie_from_player(player)
+    if not pid:
+        pid = clean_str(cookie_payload.get("prolific_id", "") or cookie_payload.get("participant_label", ""))
+    if not participant_label:
+        participant_label = clean_str(cookie_payload.get("participant_label", "") or cookie_payload.get("prolific_id", "") or pid)
+    if not study_id:
+        study_id = clean_str(cookie_payload.get("study_id", ""))
+    if not sess_id:
+        sess_id = clean_str(cookie_payload.get("session_id", ""))
+
+    if not pid:
+        pid = participant_label
+    if not participant_label:
+        participant_label = pid
+
+    return pid, participant_label, study_id, sess_id
 
 
-def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id: str = "") -> None:
+def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id: str = "", participant_label: str = "") -> None:
     """
     Store Prolific identifiers robustly WITHOUT adding DB fields.
     Stores into:
@@ -121,13 +419,19 @@ def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id
     p = player.participant
 
     pid = clean_str(pid)
+    participant_label = clean_str(participant_label)
     study_id = clean_str(study_id)
     sess_id = clean_str(sess_id)
+
+    if not pid:
+        pid = participant_label
+    if not participant_label:
+        participant_label = pid
 
     if pid:
         p.vars["prolific_id"] = pid
         try:
-            p.label = pid
+            p.label = participant_label or pid
         except Exception:
             pass
 
@@ -146,9 +450,12 @@ def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id
     except Exception:
         pass
 
+    sync_start_prolific_intake(player, pid=pid, participant_label=participant_label, study_id=study_id, sess_id=sess_id)
+
     logger.info(
-        "Captured Prolific params: pid=%s study_id=%s session_id=%s participant_code=%s",
+        "Captured Prolific params: pid=%s participant_label=%s study_id=%s session_id=%s participant_code=%s",
         pid or "",
+        participant_label or "",
         study_id or "",
         sess_id or "",
         getattr(p, "code", ""),
@@ -360,9 +667,9 @@ class _ProlificCaptureMixin:
     @staticmethod
     def _capture(player):
         if player.session.config.get("for_prolific"):
-            pid, study_id, sess_id = _extract_prolific_params(player)
-            if pid:
-                _store_prolific_on_participant(player, pid, study_id, sess_id)
+            pid, participant_label, study_id, sess_id = _extract_prolific_params(player)
+            if pid or participant_label or study_id or sess_id:
+                _store_prolific_on_participant(player, pid, study_id, sess_id, participant_label=participant_label)
 
     @staticmethod
     def vars_for_template(player):
