@@ -187,22 +187,37 @@ def find_start_prolific_intake(participant_code: str = "", prolific_pid: str = "
     if not database_url:
         return {}
 
+    row = None
     try:
         conn = psycopg2.connect(database_url)
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts
-                    FROM public.start_prolificintake
-                    WHERE (%s = '' OR participant_code = %s)
-                      AND (%s = '' OR prolific_pid = %s OR participant_label = %s)
-                    ORDER BY last_seen_ts DESC, participant_code DESC
-                    LIMIT 1
-                    """,
-                    (participant_code, participant_code, prolific_pid, prolific_pid, prolific_pid),
-                )
-                row = cur.fetchone()
+                # participant_code is the primary stable key for this intake row once
+                # the first real start page exists. Prefer it over PID-based lookup.
+                if participant_code:
+                    cur.execute(
+                        """
+                        SELECT participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts
+                        FROM public.start_prolificintake
+                        WHERE participant_code = %s
+                        LIMIT 1
+                        """,
+                        (participant_code,),
+                    )
+                    row = cur.fetchone()
+
+                if row is None and prolific_pid:
+                    cur.execute(
+                        """
+                        SELECT participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts
+                        FROM public.start_prolificintake
+                        WHERE prolific_pid = %s OR participant_label = %s
+                        ORDER BY last_seen_ts DESC, participant_code DESC
+                        LIMIT 1
+                        """,
+                        (prolific_pid, prolific_pid),
+                    )
+                    row = cur.fetchone()
         finally:
             conn.close()
     except Exception as e:

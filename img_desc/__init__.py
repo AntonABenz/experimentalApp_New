@@ -1718,7 +1718,9 @@ def _load_start_prolific_intake_for_participant(obj) -> dict:
         return {}
 
     try:
-        row = find_start_prolific_intake(participant_code=participant_code, prolific_pid=prolific_id)
+        row = find_start_prolific_intake(participant_code=participant_code)
+        if not row and prolific_id:
+            row = find_start_prolific_intake(prolific_pid=prolific_id)
     except Exception:
         return {}
 
