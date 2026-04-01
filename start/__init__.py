@@ -66,12 +66,9 @@ def _parse_querystring(qs: str) -> dict:
 
 
 def _capture_cookie_secret() -> bytes:
-    secret = (
-        os.environ.get("OTREE_SECRET_KEY")
-        or os.environ.get("SECRET_KEY")
-        or os.environ.get("ADMIN_PASSWORD")
-        or "otree-secret"
-    )
+    # Must match the signing secret used in asgi.py exactly, otherwise the
+    # start/img_desc fallback cannot read the same signed cookie.
+    secret = os.environ.get("OTREE_SECRET_KEY") or "dev-secret"
     return str(secret).encode("utf-8")
 
 
@@ -314,9 +311,10 @@ def sync_start_prolific_intake(player, pid: str = "", participant_label: str = "
         )
         return {}
 
-    logger.info(
-        "sync_start_prolific_intake: participant=%s prolific_id=%s participant_label=%s study_id=%s session_id=%s",
+    logger.warning(
+        "sync_start_prolific_intake: participant=%s session=%s prolific_id=%s participant_label=%s study_id=%s session_id=%s",
         participant_code,
+        session_code,
         clean_str(row.get("prolific_pid", "")),
         clean_str(row.get("participant_label", "")),
         clean_str(row.get("study_id", "")),
@@ -327,6 +325,7 @@ def sync_start_prolific_intake(player, pid: str = "", participant_label: str = "
 
 def _extract_prolific_params(player) -> tuple[str, str, str, str]:
     pid = participant_label = study_id = sess_id = ""
+    source_request = source_url = source_intake = source_participant = source_cookie = False
     try:
         req = getattr(player, "request", None)
         if req is not None:
@@ -342,6 +341,7 @@ def _extract_prolific_params(player) -> tuple[str, str, str, str]:
             participant_label = (get_params.get("participant_label") or get_params.get("PARTICIPANT_LABEL") or "").strip()
             study_id = (get_params.get("STUDY_ID") or get_params.get("study_id") or "").strip()
             sess_id = (get_params.get("SESSION_ID") or get_params.get("session_id") or "").strip()
+            source_request = bool(pid or participant_label or study_id or sess_id)
     except Exception:
         pass
     try:
@@ -363,6 +363,18 @@ def _extract_prolific_params(player) -> tuple[str, str, str, str]:
                 study_id = (params.get("STUDY_ID") or params.get("study_id") or "").strip()
             if not sess_id:
                 sess_id = (params.get("SESSION_ID") or params.get("session_id") or "").strip()
+            source_url = bool(
+                params.get("PROLIFIC_PID")
+                or params.get("prolific_pid")
+                or params.get("prolific_id")
+                or params.get("participant_id")
+                or params.get("participant_label")
+                or params.get("PARTICIPANT_LABEL")
+                or params.get("STUDY_ID")
+                or params.get("study_id")
+                or params.get("SESSION_ID")
+                or params.get("session_id")
+            )
     except Exception:
         pass
     if not pid:
@@ -375,6 +387,7 @@ def _extract_prolific_params(player) -> tuple[str, str, str, str]:
         prolific_pid=pid or participant_label,
     )
     if intake_payload:
+        source_intake = True
         if not pid:
             pid = clean_str(intake_payload.get("prolific_pid", "") or intake_payload.get("participant_label", ""))
         if not participant_label:
@@ -385,21 +398,35 @@ def _extract_prolific_params(player) -> tuple[str, str, str, str]:
             sess_id = clean_str(intake_payload.get("session_id", ""))
 
     try:
+        participant_vars = getattr(player.participant, "vars", {}) or {}
+        participant_label_existing = clean_str(getattr(player.participant, "label", ""))
+        source_participant = bool(
+            clean_str(participant_vars.get("prolific_id", ""))
+            or participant_label_existing
+            or clean_str(participant_vars.get("study_id", ""))
+            or clean_str(participant_vars.get("prolific_session_id", ""))
+        )
         if not pid:
             pid = clean_str(
-                player.participant.vars.get("prolific_id", "")
-                or getattr(player.participant, "label", "")
+                participant_vars.get("prolific_id", "")
+                or participant_label_existing
             )
         if not participant_label:
-            participant_label = clean_str(getattr(player.participant, "label", "") or pid)
+            participant_label = clean_str(participant_label_existing or pid)
         if not study_id:
-            study_id = clean_str(player.participant.vars.get("study_id", ""))
+            study_id = clean_str(participant_vars.get("study_id", ""))
         if not sess_id:
-            sess_id = clean_str(player.participant.vars.get("prolific_session_id", ""))
+            sess_id = clean_str(participant_vars.get("prolific_session_id", ""))
     except Exception:
         pass
 
     cookie_payload = _load_prolific_capture_cookie_from_player(player)
+    source_cookie = bool(
+        cookie_payload.get("prolific_id")
+        or cookie_payload.get("participant_label")
+        or cookie_payload.get("study_id")
+        or cookie_payload.get("session_id")
+    )
     if not pid:
         pid = clean_str(cookie_payload.get("prolific_id", "") or cookie_payload.get("participant_label", ""))
     if not participant_label:
@@ -413,6 +440,20 @@ def _extract_prolific_params(player) -> tuple[str, str, str, str]:
         pid = participant_label
     if not participant_label:
         participant_label = pid
+
+    logger.warning(
+        "extract_prolific_params: participant=%s pid=%s participant_label=%s study_id=%s session_id=%s source_request=%s source_url=%s source_intake=%s source_participant=%s source_cookie=%s",
+        clean_str(getattr(getattr(player, "participant", None), "code", "")),
+        pid,
+        participant_label,
+        study_id,
+        sess_id,
+        source_request,
+        source_url,
+        source_intake,
+        source_participant,
+        source_cookie,
+    )
 
     return pid, participant_label, study_id, sess_id
 

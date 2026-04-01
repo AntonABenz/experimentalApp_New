@@ -1662,12 +1662,9 @@ def mark_finished_from_prolific_slot_map(mapping, status: str = "") -> bool:
 
 
 def _capture_cookie_secret() -> bytes:
-    secret = (
-        os.environ.get("OTREE_SECRET_KEY")
-        or os.environ.get("SECRET_KEY")
-        or os.environ.get("ADMIN_PASSWORD")
-        or "otree-secret"
-    )
+    # Must match the signing secret used in asgi.py exactly, otherwise the
+    # img_desc fallback cannot read the same signed cookie.
+    secret = os.environ.get("OTREE_SECRET_KEY") or "dev-secret"
     return str(secret).encode("utf-8")
 
 
@@ -2737,14 +2734,25 @@ class CaptureProlificID(Page):
         except Exception:
             pass
 
-        logger.info(
-            "CaptureProlificID saved: participant=%s prolific_id=%s study_id=%s session_id=%s source_intake=%s source_cookie=%s",
+        logger.warning(
+            "CaptureProlificID saved: participant=%s prolific_id=%s study_id=%s session_id=%s source_participant=%s source_intake=%s source_cookie=%s",
             clean_str(p.code),
             prolific_id,
             study_id,
             session_id,
+            bool(
+                clean_str(p.vars.get("prolific_id", ""))
+                or clean_str(getattr(p, "label", ""))
+                or clean_str(p.vars.get("study_id", ""))
+                or clean_str(p.vars.get("prolific_session_id", ""))
+            ),
             bool(intake_payload.get("prolific_id") or intake_payload.get("study_id") or intake_payload.get("session_id")),
-            bool(cookie_payload.get("prolific_id")),
+            bool(
+                cookie_payload.get("prolific_id")
+                or cookie_payload.get("participant_label")
+                or cookie_payload.get("study_id")
+                or cookie_payload.get("session_id")
+            ),
         )
 
 # ----------------------------------------------------------------------------
