@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import secrets
+import time
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -17,6 +18,7 @@ from starlette.requests import Request
 from otree.asgi import app as otree_app
 from prolific_webhook import prolific_webhook_view, _find_participant_by_prolific_id
 from start import Player as StartPlayer
+import psycopg2
 
 # NEW
 from otree.models import Session  # Django ORM
@@ -54,6 +56,7 @@ from img_desc import (
 logger = logging.getLogger("benzapp.admin")
 PROLIFIC_CAPTURE_COOKIE = "prolific_capture"
 PROLIFIC_CAPTURE_MAX_AGE = 6 * 60 * 60
+_start_prolific_intake_table_available_cache = None
 
 async def ping(request):
     return JSONResponse({"ok": True})
@@ -112,6 +115,123 @@ def _extract_prolific_cookie_payload(request: Request) -> dict:
             or request.query_params.get("session_id")
         ),
     }
+
+
+def _start_prolific_intake_table_available() -> bool:
+    global _start_prolific_intake_table_available_cache
+    if _start_prolific_intake_table_available_cache is not None:
+        return _start_prolific_intake_table_available_cache
+
+    database_url = _clean_cookie_value(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        _start_prolific_intake_table_available_cache = False
+        return False
+
+    try:
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.start_prolificintake')")
+                table_exists = bool(cur.fetchone()[0])
+                if not table_exists:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS public.start_prolificintake (
+                            id BIGSERIAL PRIMARY KEY,
+                            participant_code TEXT NOT NULL UNIQUE,
+                            session_code TEXT NOT NULL DEFAULT '',
+                            prolific_pid TEXT NOT NULL DEFAULT '',
+                            participant_label TEXT NOT NULL DEFAULT '',
+                            study_id TEXT NOT NULL DEFAULT '',
+                            session_id TEXT NOT NULL DEFAULT '',
+                            last_seen_ts DOUBLE PRECISION NOT NULL DEFAULT 0
+                        )
+                        """
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_start_pi_participant ON public.start_prolificintake (participant_code)"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_start_pi_pid ON public.start_prolificintake (prolific_pid)"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_start_pi_session ON public.start_prolificintake (session_code)"
+                    )
+                    conn.commit()
+                    logger.warning("ASGI StartProlificIntake bootstrap: created table start_prolificintake")
+                    table_exists = True
+                _start_prolific_intake_table_available_cache = table_exists
+        finally:
+            conn.close()
+    except Exception as e:
+        _start_prolific_intake_table_available_cache = False
+        logger.warning("ASGI StartProlificIntake availability check failed: %s", e)
+
+    return bool(_start_prolific_intake_table_available_cache)
+
+
+def _sync_start_prolific_intake_from_participant(participant, payload: dict) -> bool:
+    if participant is None or not _start_prolific_intake_table_available():
+        return False
+
+    participant_code = _clean_cookie_value(getattr(participant, "code", ""))
+    session_code = _clean_cookie_value(getattr(getattr(participant, "session", None), "code", ""))
+    prolific_id = _clean_cookie_value(payload.get("prolific_id") or getattr(participant, "label", "") or participant.vars.get("prolific_id"))
+    participant_label = _clean_cookie_value(payload.get("participant_label") or prolific_id)
+    study_id = _clean_cookie_value(payload.get("study_id") or participant.vars.get("study_id"))
+    session_id = _clean_cookie_value(payload.get("session_id") or participant.vars.get("prolific_session_id"))
+
+    if not participant_code or not prolific_id:
+        return False
+
+    database_url = _clean_cookie_value(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        return False
+
+    try:
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO public.start_prolificintake
+                        (participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (participant_code) DO UPDATE
+                    SET session_code = COALESCE(NULLIF(EXCLUDED.session_code, ''), public.start_prolificintake.session_code),
+                        prolific_pid = COALESCE(NULLIF(EXCLUDED.prolific_pid, ''), public.start_prolificintake.prolific_pid),
+                        participant_label = COALESCE(NULLIF(EXCLUDED.participant_label, ''), public.start_prolificintake.participant_label),
+                        study_id = COALESCE(NULLIF(EXCLUDED.study_id, ''), public.start_prolificintake.study_id),
+                        session_id = COALESCE(NULLIF(EXCLUDED.session_id, ''), public.start_prolificintake.session_id),
+                        last_seen_ts = EXCLUDED.last_seen_ts
+                    """,
+                    (participant_code, session_code, prolific_id, participant_label, study_id, session_id, time.time()),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(
+            "ASGI sync_start_prolific_intake failed: participant=%s session=%s prolific_id=%s study_id=%s session_id=%s error=%s",
+            participant_code,
+            session_code,
+            prolific_id,
+            study_id,
+            session_id,
+            e,
+        )
+        return False
+
+    logger.warning(
+        "ASGI sync_start_prolific_intake: participant=%s session=%s prolific_id=%s participant_label=%s study_id=%s session_id=%s",
+        participant_code,
+        session_code,
+        prolific_id,
+        participant_label,
+        study_id,
+        session_id,
+    )
+    return True
 
 
 def _participant_code_from_path(path: str) -> str:
@@ -277,15 +397,21 @@ class ProlificCaptureCookieMiddleware(BaseHTTPMiddleware):
         if payload:
             if participant_code:
                 participant = _find_participant_by_code(participant_code)
-                if participant and _apply_prolific_cookie_to_participant(participant, payload):
-                    should_clear_cookie = True
+                if participant:
+                    synced = _sync_start_prolific_intake_from_participant(participant, payload)
+                    applied = _apply_prolific_cookie_to_participant(participant, payload)
+                    if synced or applied:
+                        should_clear_cookie = True
 
         response = await call_next(request)
 
         if payload and not should_clear_cookie and participant_code:
             participant = _find_participant_by_code(participant_code)
-            if participant and _apply_prolific_cookie_to_participant(participant, payload):
-                should_clear_cookie = True
+            if participant:
+                synced = _sync_start_prolific_intake_from_participant(participant, payload)
+                applied = _apply_prolific_cookie_to_participant(participant, payload)
+                if synced or applied:
+                    should_clear_cookie = True
 
         if request_payload.get("prolific_id") and not payload:
             response.set_cookie(
