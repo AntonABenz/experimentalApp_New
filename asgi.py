@@ -234,6 +234,190 @@ def _sync_start_prolific_intake_from_participant(participant, payload: dict) -> 
     return True
 
 
+def _join_session_code_from_path(path: str) -> str:
+    parts = [p for p in (path or "").split("/") if p]
+    if len(parts) >= 2 and parts[0] == "join":
+        return _clean_cookie_value(parts[1])
+    return ""
+
+
+def _pending_start_intake_code(payload: dict) -> str:
+    prolific_id = _clean_cookie_value(payload.get("prolific_id"))
+    study_id = _clean_cookie_value(payload.get("study_id"))
+    session_id = _clean_cookie_value(payload.get("session_id"))
+    if not prolific_id:
+        return ""
+    return f"pending:{prolific_id}:{study_id}:{session_id}"
+
+
+def _sync_start_prolific_intake_pending(session_code: str, payload: dict) -> bool:
+    if not _start_prolific_intake_table_available():
+        return False
+
+    pending_code = _pending_start_intake_code(payload)
+    prolific_id = _clean_cookie_value(payload.get("prolific_id"))
+    participant_label = _clean_cookie_value(payload.get("participant_label") or prolific_id)
+    study_id = _clean_cookie_value(payload.get("study_id"))
+    session_id = _clean_cookie_value(payload.get("session_id"))
+    session_code = _clean_cookie_value(session_code)
+
+    if not pending_code or not prolific_id:
+        return False
+
+    database_url = _clean_cookie_value(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        return False
+
+    try:
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO public.start_prolificintake
+                        (participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (participant_code) DO UPDATE
+                    SET session_code = COALESCE(NULLIF(EXCLUDED.session_code, ''), public.start_prolificintake.session_code),
+                        prolific_pid = COALESCE(NULLIF(EXCLUDED.prolific_pid, ''), public.start_prolificintake.prolific_pid),
+                        participant_label = COALESCE(NULLIF(EXCLUDED.participant_label, ''), public.start_prolificintake.participant_label),
+                        study_id = COALESCE(NULLIF(EXCLUDED.study_id, ''), public.start_prolificintake.study_id),
+                        session_id = COALESCE(NULLIF(EXCLUDED.session_id, ''), public.start_prolificintake.session_id),
+                        last_seen_ts = EXCLUDED.last_seen_ts
+                    """,
+                    (pending_code, session_code, prolific_id, participant_label, study_id, session_id, time.time()),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(
+            "ASGI sync_start_prolific_intake pending failed: pending=%s session=%s prolific_id=%s study_id=%s session_id=%s error=%s",
+            pending_code,
+            session_code,
+            prolific_id,
+            study_id,
+            session_id,
+            e,
+        )
+        return False
+
+    logger.warning(
+        "ASGI sync_start_prolific_intake pending: pending=%s session=%s prolific_id=%s participant_label=%s study_id=%s session_id=%s",
+        pending_code,
+        session_code,
+        prolific_id,
+        participant_label,
+        study_id,
+        session_id,
+    )
+    return True
+
+
+def _bind_start_prolific_intake_participant_code(participant_code: str, payload: dict) -> bool:
+    if not _start_prolific_intake_table_available():
+        return False
+
+    participant_code = _clean_cookie_value(participant_code)
+    pending_code = _pending_start_intake_code(payload)
+    prolific_id = _clean_cookie_value(payload.get("prolific_id"))
+    study_id = _clean_cookie_value(payload.get("study_id"))
+    session_id = _clean_cookie_value(payload.get("session_id"))
+
+    if not participant_code or not pending_code or not prolific_id:
+        return False
+
+    database_url = _clean_cookie_value(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
+    if not database_url:
+        return False
+
+    try:
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT participant_code, session_code, prolific_pid, participant_label, study_id, session_id
+                    FROM public.start_prolificintake
+                    WHERE participant_code = %s
+                    LIMIT 1
+                    """,
+                    (pending_code,),
+                )
+                pending_row = cur.fetchone()
+                if not pending_row:
+                    return False
+
+                cur.execute(
+                    """
+                    SELECT participant_code, session_code, prolific_pid, participant_label, study_id, session_id
+                    FROM public.start_prolificintake
+                    WHERE participant_code = %s
+                    LIMIT 1
+                    """,
+                    (participant_code,),
+                )
+                actual_row = cur.fetchone()
+
+                if actual_row:
+                    cur.execute(
+                        """
+                        UPDATE public.start_prolificintake
+                        SET session_code = %s,
+                            prolific_pid = %s,
+                            participant_label = %s,
+                            study_id = %s,
+                            session_id = %s,
+                            last_seen_ts = %s
+                        WHERE participant_code = %s
+                        """,
+                        (
+                            _clean_cookie_value(actual_row[1]) or _clean_cookie_value(pending_row[1]),
+                            _clean_cookie_value(actual_row[2]) or _clean_cookie_value(pending_row[2]) or prolific_id,
+                            _clean_cookie_value(actual_row[3]) or _clean_cookie_value(pending_row[3]) or prolific_id,
+                            _clean_cookie_value(actual_row[4]) or _clean_cookie_value(pending_row[4]) or study_id,
+                            _clean_cookie_value(actual_row[5]) or _clean_cookie_value(pending_row[5]) or session_id,
+                            time.time(),
+                            participant_code,
+                        ),
+                    )
+                    cur.execute("DELETE FROM public.start_prolificintake WHERE participant_code = %s", (pending_code,))
+                else:
+                    cur.execute(
+                        """
+                        UPDATE public.start_prolificintake
+                        SET participant_code = %s,
+                            last_seen_ts = %s
+                        WHERE participant_code = %s
+                        """,
+                        (participant_code, time.time(), pending_code),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(
+            "ASGI bind_start_prolific_intake failed: participant=%s pending=%s prolific_id=%s study_id=%s session_id=%s error=%s",
+            participant_code,
+            pending_code,
+            prolific_id,
+            study_id,
+            session_id,
+            e,
+        )
+        return False
+
+    logger.warning(
+        "ASGI bind_start_prolific_intake: participant=%s pending=%s prolific_id=%s study_id=%s session_id=%s",
+        participant_code,
+        pending_code,
+        prolific_id,
+        study_id,
+        session_id,
+    )
+    return True
+
+
 def _participant_code_from_path(path: str) -> str:
     parts = [p for p in (path or "").split("/") if p]
     if len(parts) >= 2 and parts[0] == "InitializeParticipant":
@@ -393,9 +577,14 @@ class ProlificCaptureCookieMiddleware(BaseHTTPMiddleware):
         payload = _load_signed_cookie(request.cookies.get(PROLIFIC_CAPTURE_COOKIE, ""))
         request_payload = _extract_prolific_cookie_payload(request)
         participant_code = _participant_code_from_path(request.url.path)
+        join_session_code = _join_session_code_from_path(request.url.path)
+
+        if request_payload.get("prolific_id") and join_session_code:
+            _sync_start_prolific_intake_pending(join_session_code, request_payload)
 
         if payload:
             if participant_code:
+                _bind_start_prolific_intake_participant_code(participant_code, payload)
                 participant = _find_participant_by_code(participant_code)
                 if participant:
                     synced = _sync_start_prolific_intake_from_participant(participant, payload)
@@ -406,6 +595,7 @@ class ProlificCaptureCookieMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         if payload and not should_clear_cookie and participant_code:
+            _bind_start_prolific_intake_participant_code(participant_code, payload)
             participant = _find_participant_by_code(participant_code)
             if participant:
                 synced = _sync_start_prolific_intake_from_participant(participant, payload)
@@ -452,6 +642,7 @@ async def entry(request):
 
     payload = _extract_prolific_cookie_payload(request)
     if payload.get("prolific_id"):
+        _sync_start_prolific_intake_pending(s.code, payload)
         response.set_cookie(
             PROLIFIC_CAPTURE_COOKIE,
             _sign_cookie_payload(payload),
