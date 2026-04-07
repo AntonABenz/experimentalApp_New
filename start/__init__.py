@@ -526,7 +526,7 @@ def _cohort_entry_state(player) -> dict:
 
     exp_target, local_slot = preview_slot_for_participant(player)
     waiting_for_prev = bool(
-        int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1)
+        int(exp_target or 1) > 1 and not cohort_complete(player, int(exp_target) - 1)
     )
 
     # Stable semantics, do not repurpose:

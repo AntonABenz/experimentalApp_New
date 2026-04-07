@@ -472,12 +472,12 @@ def _clear_pending_slot(session, participant_code: str):
     if not by_participant and skey in _pending_slot_reservations:
         _pending_slot_reservations.pop(skey, None)
 
-def cohort_complete(session, exp_num: int) -> bool:
+def cohort_complete(session_or_obj, exp_num: int) -> bool:
     # complete when all slots 1..csize exist as active AND completed
-    root = _root_subsession(session)
+    root = _root_subsession(session_or_obj)
     if not root:
         return False
-    csize = cohort_size(session)
+    csize = cohort_size(session_or_obj)
 
     for s in range(1, csize + 1):
         row = _active_slot_row(root, exp_num, s)
@@ -488,11 +488,12 @@ def cohort_complete(session, exp_num: int) -> bool:
     return True
 
 
-def _cohort_has_free_slot(session, exp_num: int) -> bool:
-    root = _root_subsession(session)
+def _cohort_has_free_slot(session_or_obj, exp_num: int) -> bool:
+    session = getattr(session_or_obj, "session", None) or session_or_obj
+    root = _root_subsession(session_or_obj)
     if not root:
         return True
-    csize = cohort_size(session)
+    csize = cohort_size(session_or_obj)
     for s in range(1, csize + 1):
         if not _active_slot_row(root, exp_num, s) and not _pending_slot_taken(session, exp_num, s):
             return True
@@ -531,16 +532,16 @@ def preview_slot_for_participant(player_or_session, participant=None):
 
     exp_num = 1
     while True:
-        if exp_num > 1 and not cohort_complete(session, exp_num - 1):
+        if exp_num > 1 and not cohort_complete(player_or_session, exp_num - 1):
             return int(exp_num), 0
 
-        if _cohort_has_free_slot(session, exp_num):
-            csize = cohort_size(session)
+        if _cohort_has_free_slot(player_or_session, exp_num):
+            csize = cohort_size(player_or_session)
             for s in range(1, csize + 1):
                 if not _active_slot_row(root, exp_num, s) and not _pending_slot_taken(session, exp_num, s):
                     return int(exp_num), int(s)
 
-        if not cohort_complete(session, exp_num):
+        if not cohort_complete(player_or_session, exp_num):
             return int(exp_num), 0
 
         exp_num += 1
@@ -694,7 +695,7 @@ def assign_slot_for_participant(player_or_session, participant=None):
 
         exp_num = 1
         while True:
-            if exp_num > 1 and not cohort_complete(session, exp_num - 1):
+            if exp_num > 1 and not cohort_complete(player, exp_num - 1):
                 p.vars["exp_target"] = int(exp_num)
                 p.vars["local_slot"] = 0
                 _log_cohort_event_for_participant(
@@ -707,8 +708,8 @@ def assign_slot_for_participant(player_or_session, participant=None):
                 )
                 return int(exp_num), 0
 
-            if _cohort_has_free_slot(session, exp_num):
-                csize = cohort_size(session)
+            if _cohort_has_free_slot(player, exp_num):
+                csize = cohort_size(player)
                 for s in range(1, csize + 1):
                     if not _active_slot_row(root, exp_num, s) and not _pending_slot_taken(session, exp_num, s):
                         row_now = _active_slot_row(root, exp_num, s)
@@ -742,7 +743,7 @@ def assign_slot_for_participant(player_or_session, participant=None):
                         )
                         return int(exp_num), int(s)
 
-            if not cohort_complete(session, exp_num):
+            if not cohort_complete(player, exp_num):
                 p.vars["exp_target"] = int(exp_num)
                 p.vars["local_slot"] = 0
                 _log_cohort_event_for_participant(
@@ -2154,7 +2155,7 @@ def build_schedule_for_participant(player):
             int(exp_target or 0),
         )
         return
-    if int(exp_target or 1) > 1 and not cohort_complete(session, int(exp_target) - 1):
+    if int(exp_target or 1) > 1 and not cohort_complete(player, int(exp_target) - 1):
         return
 
     root = _root_subsession(player)
@@ -2348,7 +2349,7 @@ class WaitForCohort(Page):
         # Case A: no slot yet
         if int(local_slot or 0) == 0:
             reason = "current_cohort_full_not_complete"
-            if int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1):
+            if int(exp_target or 1) > 1 and not cohort_complete(player, int(exp_target) - 1):
                 reason = f"previous_exp_{int(exp_target) - 1}_incomplete"
             _log_cohort_event(
                 player,
@@ -2360,7 +2361,7 @@ class WaitForCohort(Page):
             return True
 
         # Case B: have slot but previous cohort not complete -> must wait
-        if int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1):
+        if int(exp_target or 1) > 1 and not cohort_complete(player, int(exp_target) - 1):
             _log_cohort_event(
                 player,
                 "wait_page_displayed",
@@ -2381,7 +2382,7 @@ class WaitForCohort(Page):
         prev_exp = int(exp_target) - 1
         prev_done = True
         if int(exp_target) > 1:
-            prev_done = cohort_complete(player.session, prev_exp)
+            prev_done = cohort_complete(player, prev_exp)
             waiting_for_prev = not prev_done
     
         return dict(
@@ -2405,7 +2406,7 @@ class Q(Page):
         if int(local_slot or 0) == 0:
             return False
     
-        if int(exp_target or 1) > 1 and not cohort_complete(player.session, int(exp_target) - 1):
+        if int(exp_target or 1) > 1 and not cohort_complete(player, int(exp_target) - 1):
             return False
     
         ensure_schedule_built(player)

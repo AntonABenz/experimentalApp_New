@@ -9,7 +9,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from otree.models import Participant, Session
 
 from img_desc.utils import verify_prolific_webhook
-from start import Player as StartPlayer
+from start import Player as StartPlayer, find_start_prolific_intake
 from img_desc import (
     Player as ImgDescPlayer,
     reset_this_app_for_participant,
@@ -65,9 +65,8 @@ def _find_participant_in_session(session_code: str, participant_code: str = "", 
 def _find_participant_by_prolific_id(prolific_pid: str):
     """
     Best-effort lookup.
-    Primary: participant.label (canonical Prolific identifier).
-    Fallbacks: vars['prolific_id'], recent Player-row scans, then
-    player.prolific_id_field in img_desc.
+    Primary: the two control tables (slot-map, then start-intake).
+    Fallbacks: participant.label / vars['prolific_id'], then recent Player-row scans.
     """
     prolific_pid = (prolific_pid or "").strip()
     if not prolific_pid:
@@ -78,6 +77,16 @@ def _find_participant_by_prolific_id(prolific_pid: str):
         participant = _find_participant_in_session(
             clean_str(getattr(mapping, "session_code", "")),
             participant_code=clean_str(getattr(mapping, "participant_code", "")),
+            prolific_pid=prolific_pid,
+        )
+        if participant:
+            return participant
+
+    intake = find_start_prolific_intake(prolific_pid=prolific_pid)
+    if intake:
+        participant = _find_participant_in_session(
+            clean_str(intake.get("session_code", "")),
+            participant_code=clean_str(intake.get("participant_code", "")),
             prolific_pid=prolific_pid,
         )
         if participant:
