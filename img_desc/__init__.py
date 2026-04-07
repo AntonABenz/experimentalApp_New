@@ -695,7 +695,7 @@ def assign_slot_for_participant(player_or_session, participant=None):
 
         exp_num = 1
         while True:
-            if exp_num > 1 and not cohort_complete(player, exp_num - 1):
+            if exp_num > 1 and not cohort_complete(player_or_session, exp_num - 1):
                 p.vars["exp_target"] = int(exp_num)
                 p.vars["local_slot"] = 0
                 _log_cohort_event_for_participant(
@@ -708,8 +708,8 @@ def assign_slot_for_participant(player_or_session, participant=None):
                 )
                 return int(exp_num), 0
 
-            if _cohort_has_free_slot(player, exp_num):
-                csize = cohort_size(player)
+            if _cohort_has_free_slot(player_or_session, exp_num):
+                csize = cohort_size(player_or_session)
                 for s in range(1, csize + 1):
                     if not _active_slot_row(root, exp_num, s) and not _pending_slot_taken(session, exp_num, s):
                         row_now = _active_slot_row(root, exp_num, s)
@@ -743,7 +743,7 @@ def assign_slot_for_participant(player_or_session, participant=None):
                         )
                         return int(exp_num), int(s)
 
-            if not cohort_complete(player, exp_num):
+            if not cohort_complete(player_or_session, exp_num):
                 p.vars["exp_target"] = int(exp_num)
                 p.vars["local_slot"] = 0
                 _log_cohort_event_for_participant(
