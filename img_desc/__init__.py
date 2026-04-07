@@ -264,6 +264,7 @@ class ProlificSlotMap(ExtraModel):
     participant_code = models.StringField()
     session_code = models.StringField()
     prolific_pid = models.StringField(blank=True)
+    study_id = models.StringField(blank=True)
     exp_num = models.IntegerField()
     slot = models.IntegerField()
     active = models.BooleanField(initial=True)
@@ -927,13 +928,35 @@ def _cohort_study_ids_from_slot_map(player, exp_num: int):
                 rows = cur.fetchall() or []
         finally:
             conn.close()
-    except Exception:
-        logger.warning(
-            "cohort study-id lookup unavailable: participant=%s exp_num=%s",
-            clean_str(getattr(getattr(player, "participant", None), "code", "")),
-            int(exp_num or 0),
-        )
-        return []
+    except Exception as e:
+        if _is_missing_prolific_slot_map_study_id_error(e):
+            _reset_prolific_slot_map_table_cache()
+            if _prolific_slot_map_table_available():
+                try:
+                    conn = psycopg2.connect(database_url)
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(sql, (int(getattr(root, "id", 0) or 0), int(exp_num)))
+                            rows = cur.fetchall() or []
+                    finally:
+                        conn.close()
+                except Exception as retry_error:
+                    logger.warning(
+                        "cohort study-id lookup unavailable after schema repair: participant=%s exp_num=%s error=%s",
+                        clean_str(getattr(getattr(player, "participant", None), "code", "")),
+                        int(exp_num or 0),
+                        retry_error,
+                    )
+                    return []
+            else:
+                return []
+        else:
+            logger.warning(
+                "cohort study-id lookup unavailable: participant=%s exp_num=%s",
+                clean_str(getattr(getattr(player, "participant", None), "code", "")),
+                int(exp_num or 0),
+            )
+            return []
 
     return [
         dict(
@@ -1197,6 +1220,20 @@ def get_participant_study_id(participant) -> str:
     return clean_str(intake_payload.get("study_id", ""))
 
 
+def _reset_prolific_slot_map_table_cache():
+    global _prolific_slot_map_table_available_cache
+    _prolific_slot_map_table_available_cache = None
+
+
+def _is_missing_prolific_slot_map_study_id_error(exc: Exception) -> bool:
+    message = clean_str(exc).lower()
+    return (
+        "img_desc_prolificslotmap" in message
+        and "study_id" in message
+        and "does not exist" in message
+    )
+
+
 def _prolific_slot_map_table_available() -> bool:
     global _prolific_slot_map_table_available_cache
     if _prolific_slot_map_table_available_cache is not None:
@@ -1363,8 +1400,25 @@ def find_prolific_slot_map(
         finally:
             conn.close()
     except Exception as e:
-        logger.warning("find_prolific_slot_map: mapping lookup unavailable (%s)", e)
-        return None
+        if _is_missing_prolific_slot_map_study_id_error(e):
+            _reset_prolific_slot_map_table_cache()
+            if _prolific_slot_map_table_available():
+                try:
+                    conn = psycopg2.connect(database_url)
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(sql, (participant_code, participant_code, prolific_pid, prolific_pid, session_code, session_code))
+                            rows = cur.fetchall() or []
+                    finally:
+                        conn.close()
+                except Exception as retry_error:
+                    logger.warning("find_prolific_slot_map: mapping lookup unavailable after schema repair (%s)", retry_error)
+                    return None
+            else:
+                return None
+        else:
+            logger.warning("find_prolific_slot_map: mapping lookup unavailable (%s)", e)
+            return None
 
     return _best_prolific_slot_map(
         [_prolific_slot_map_row_from_db(row) for row in rows],
@@ -1467,6 +1521,17 @@ def sync_prolific_slot_map(
         finally:
             conn.close()
     except Exception as e:
+        if _is_missing_prolific_slot_map_study_id_error(e):
+            _reset_prolific_slot_map_table_cache()
+            if _prolific_slot_map_table_available():
+                return sync_prolific_slot_map(
+                    participant,
+                    root_subsession=root_subsession,
+                    exp_num=exp_num,
+                    slot=slot,
+                    active=active,
+                    status=status,
+                )
         logger.warning(
             "sync_prolific_slot_map: SQL write failed participant=%s session=%s exp=%s slot=%s error=%s",
             participant_code,
