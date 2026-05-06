@@ -39,54 +39,109 @@
     </div>
   </div>
 
-  <div class="vocab-box text-center">
-    <h5>Allowed Vocabulary</h5>
-    <div class="row">
-      <div class="col-md-6" v-if="props.allowedValues[0]">
-        <div v-for="v in props.allowedValues[0]">[[ v ]]</div>
-      </div>
-      <div class="col-md-6" v-if="props.allowedValues[1]">
-        <div v-for="v in props.allowedValues[1]">[[ v ]]</div>
-      </div>
-    </div>
+  <div v-if="startupError" class="alert alert-danger mt-4 mx-auto" style="max-width: 700px;">
+    <p class="font-weight-bold mb-2">This task could not be loaded correctly in your browser.</p>
+    <p class="mb-2">The page could not verify the response-field rules, so you should not continue here.</p>
+    <ul class="mb-0 text-left">
+      <li>Reload the page once.</li>
+      <li>Try opening the study in Chrome or Firefox, outside an in-app browser.</li>
+      <li>If the problem remains, please return the task.</li>
+    </ul>
   </div>
 
-  <div class="text-center mt-4">
-    <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
-      <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
-        <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
-          <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off" @input="errorMsg=''">
-          <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
+  <template v-else>
+    <div class="vocab-box text-center">
+      <h5>Allowed Vocabulary</h5>
+      <div class="row">
+        <div class="col-md-6" v-if="props.allowedValues[0]">
+          <div v-for="v in props.allowedValues[0]">[[ v ]]</div>
         </div>
-        <button class="btn btn-outline-secondary ml-2" @click.prevent="addItem" :disabled="items.length >= 5">+</button>
-        <button class="btn btn-outline-danger ml-1" @click.prevent="removeItem(itemIndex)" :disabled="items.length <= 1">-</button>
+        <div class="col-md-6" v-if="props.allowedValues[1]">
+          <div v-for="v in props.allowedValues[1]">[[ v ]]</div>
+        </div>
       </div>
     </div>
-  </div>
 
-  <input type="hidden" name="practice_response" :value="jsonPayload">
-  
-  <p v-if="errorMsg" class="alert alert-danger text-center mt-3" style="max-width: 600px; margin: 0 auto;">
-    [[ errorMsg ]]
-  </p>
+    <div class="text-center mt-4">
+      <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
+        <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
+          <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
+            <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off" @input="errorMsg=''">
+            <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
+          </div>
+          <button type="button" class="btn btn-outline-secondary ml-2" @click.prevent="addItem" :disabled="items.length >= 5">+</button>
+          <button type="button" class="btn btn-outline-danger ml-1" @click.prevent="removeItem(itemIndex)" :disabled="items.length <= 1">-</button>
+        </div>
+      </div>
+    </div>
 
-  <div class="text-center mt-5">
-    <button class="btn btn-primary btn-lg" @click.prevent="check">Next</button>
-  </div>
+    <input type="hidden" name="practice_response" :value="jsonPayload">
+
+    <p v-if="errorMsg" class="alert alert-danger text-center mt-3" style="max-width: 600px; margin: 0 auto;">
+      [[ errorMsg ]]
+    </p>
+
+    <div class="text-center mt-5">
+      <button type="button" class="btn btn-primary btn-lg" @click.prevent="check">Next</button>
+    </div>
+  </template>
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
+function buildRegexPreflight(patterns, allowedValues, fieldCount) {
+  const regexList = [];
+  const errors = [];
+  const sourcePatterns = Array.isArray(patterns) ? patterns : [];
+
+  for (let i = 0; i < fieldCount; i++) {
+    const pattern = sourcePatterns[i];
+    if (!pattern) {
+      regexList.push(null);
+      errors.push(`Missing validation rule for field ${i + 1}.`);
+      continue;
+    }
+
+    try {
+      const regex = new RegExp(`^${pattern}$`, 'i');
+      const examples = Array.isArray(allowedValues[i]) ? allowedValues[i] : [];
+      let example = "";
+      for (let j = 0; j < examples.length; j++) {
+        const candidate = String(examples[j] || "").trim();
+        if (candidate) {
+          example = candidate;
+          break;
+        }
+      }
+
+      if (example && !regex.test(example)) {
+        errors.push(`Validation rule ${i + 1} did not accept an allowed example.`);
+      }
+
+      regexList.push(regex);
+    } catch (e) {
+      regexList.push(null);
+      errors.push(`Validation rule ${i + 1} could not be loaded.`);
+    }
+  }
+
+  return {
+    regexList,
+    startupError: errors.length > 0
+  };
+}
+
 const app = Vue.createApp({
   data() {
     const p = window.props || {};
     let suffixes = p.suffixes || ["", ""];
-    const regexList = (p.regexStr || []).map(r => new RegExp(`^${r}$`, 'i'));
+    const preflight = buildRegexPreflight(p.regexStr || [], p.allowedValues || [], suffixes.length);
 
     return {
       props: p,
       suffixes,
-      regexList,
+      regexList: preflight.regexList,
+      startupError: preflight.startupError,
       items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
       requiredRows: 3, // Practice 6 requires 3 sentences
       errorMsg: ""
@@ -102,6 +157,10 @@ const app = Vue.createApp({
     check() {
       this.errorMsg = "";
 
+      if (this.startupError) {
+        return;
+      }
+
       // 1. Check Row Count
       if (this.items.length !== this.requiredRows) {
         this.errorMsg = `You must produce exactly ${this.requiredRows} sentences.`;
@@ -114,10 +173,10 @@ const app = Vue.createApp({
         for (let j = 0; j < row.fields.length; j++) {
           const val = (row.fields[j].value || "").trim();
           const reg = this.regexList[j];
-          
-          if (reg && !reg.test(val)) {
+
+          if (!reg || !reg.test(val)) {
             this.errorMsg = `Sentence ${i+1}, Field ${j+1}: "${val}" is not valid. Please choose from the allowed vocabulary.`;
-            return; 
+            return;
           }
         }
       }

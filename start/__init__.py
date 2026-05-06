@@ -34,6 +34,26 @@ def clean_str(x):
     return s
 
 
+def _normalize_prolific_identity(pid: str, participant_label: str, *, participant_code: str = "", source: str = "") -> tuple[str, str, bool]:
+    pid = clean_str(pid)
+    participant_label = clean_str(participant_label)
+    mismatch = bool(pid and participant_label and pid != participant_label)
+    if mismatch:
+        logger.warning(
+            "Normalized mismatched Prolific identifiers: participant=%s source=%s pid=%s participant_label=%s",
+            clean_str(participant_code),
+            clean_str(source),
+            pid,
+            participant_label,
+        )
+        participant_label = pid
+    if not pid:
+        pid = participant_label
+    if not participant_label:
+        participant_label = pid
+    return pid, participant_label, mismatch
+
+
 def _maybe_cast(v):
     """Cast numbers/bools coming from sheets into Python types where sensible."""
     if isinstance(v, str):
@@ -238,10 +258,12 @@ def sync_start_prolific_intake(player, pid: str = "", participant_label: str = "
     study_id = clean_str(study_id)
     sess_id = clean_str(sess_id)
 
-    if not pid:
-        pid = participant_label
-    if not participant_label:
-        participant_label = pid
+    pid, participant_label, _ = _normalize_prolific_identity(
+        pid,
+        participant_label,
+        participant_code=participant_code,
+        source="start.sync_start_prolific_intake",
+    )
     if not participant_code:
         return {}
 
@@ -268,6 +290,12 @@ def sync_start_prolific_intake(player, pid: str = "", participant_label: str = "
                     existing_row = _start_intake_row_from_db(existing)
                     effective_pid = pid or clean_str(existing_row.get("prolific_pid", "")) or clean_str(existing_row.get("participant_label", ""))
                     effective_label = participant_label or effective_pid or clean_str(existing_row.get("participant_label", "")) or clean_str(existing_row.get("prolific_pid", ""))
+                    effective_pid, effective_label, _ = _normalize_prolific_identity(
+                        effective_pid,
+                        effective_label,
+                        participant_code=participant_code,
+                        source="start.sync_start_prolific_intake.update",
+                    )
                     effective_study_id = study_id or clean_str(existing_row.get("study_id", ""))
                     effective_session_id = sess_id or clean_str(existing_row.get("session_id", ""))
                     effective_session_code = session_code or clean_str(existing_row.get("session_code", ""))
@@ -326,6 +354,7 @@ def sync_start_prolific_intake(player, pid: str = "", participant_label: str = "
 def _extract_prolific_params(player) -> tuple[str, str, str, str]:
     pid = participant_label = study_id = sess_id = ""
     source_request = source_url = source_intake = source_participant = source_cookie = False
+    participant_code = clean_str(getattr(getattr(player, "participant", None), "code", ""))
     try:
         req = getattr(player, "request", None)
         if req is not None:
@@ -341,6 +370,12 @@ def _extract_prolific_params(player) -> tuple[str, str, str, str]:
             participant_label = (get_params.get("participant_label") or get_params.get("PARTICIPANT_LABEL") or "").strip()
             study_id = (get_params.get("STUDY_ID") or get_params.get("study_id") or "").strip()
             sess_id = (get_params.get("SESSION_ID") or get_params.get("session_id") or "").strip()
+            pid, participant_label, _ = _normalize_prolific_identity(
+                pid,
+                participant_label,
+                participant_code=participant_code,
+                source="start.request",
+            )
             source_request = bool(pid or participant_label or study_id or sess_id)
     except Exception:
         pass
@@ -363,6 +398,12 @@ def _extract_prolific_params(player) -> tuple[str, str, str, str]:
                 study_id = (params.get("STUDY_ID") or params.get("study_id") or "").strip()
             if not sess_id:
                 sess_id = (params.get("SESSION_ID") or params.get("session_id") or "").strip()
+            pid, participant_label, _ = _normalize_prolific_identity(
+                pid,
+                participant_label,
+                participant_code=participant_code,
+                source="start.url",
+            )
             source_url = bool(
                 params.get("PROLIFIC_PID")
                 or params.get("prolific_pid")
@@ -377,10 +418,12 @@ def _extract_prolific_params(player) -> tuple[str, str, str, str]:
             )
     except Exception:
         pass
-    if not pid:
-        pid = participant_label
-    if not participant_label:
-        participant_label = pid
+    pid, participant_label, _ = _normalize_prolific_identity(
+        pid,
+        participant_label,
+        participant_code=participant_code,
+        source="start.pre_intake",
+    )
 
     intake_payload = find_start_prolific_intake(
         participant_code=clean_str(getattr(player.participant, "code", "")),
@@ -436,14 +479,16 @@ def _extract_prolific_params(player) -> tuple[str, str, str, str]:
     if not sess_id:
         sess_id = clean_str(cookie_payload.get("session_id", ""))
 
-    if not pid:
-        pid = participant_label
-    if not participant_label:
-        participant_label = pid
+    pid, participant_label, _ = _normalize_prolific_identity(
+        pid,
+        participant_label,
+        participant_code=participant_code,
+        source="start.final",
+    )
 
     logger.warning(
         "extract_prolific_params: participant=%s pid=%s participant_label=%s study_id=%s session_id=%s source_request=%s source_url=%s source_intake=%s source_participant=%s source_cookie=%s",
-        clean_str(getattr(getattr(player, "participant", None), "code", "")),
+        participant_code,
         pid,
         participant_label,
         study_id,
@@ -479,10 +524,12 @@ def _store_prolific_on_participant(player, pid: str, study_id: str = "", sess_id
     study_id = clean_str(study_id)
     sess_id = clean_str(sess_id)
 
-    if not pid:
-        pid = participant_label
-    if not participant_label:
-        participant_label = pid
+    pid, participant_label, _ = _normalize_prolific_identity(
+        pid,
+        participant_label,
+        participant_code=clean_str(getattr(p, "code", "")),
+        source="start.store",
+    )
 
     if pid:
         p.vars["prolific_id"] = pid

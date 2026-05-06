@@ -30,9 +30,11 @@ Codex_Guidelines_for_fixing_app.txt
 code_changes_2026-03-19.txt
 code_changes_2026-03-21.txt
 developer_note_2026-03-24_pid_lookup_options.txt
+developer_note_2026-03-27_webhook_lookup_todo.txt
 pid_mapping_rollback_note_2026-03-23.txt
 pid_slot_mapping_note_2026-03-23.txt
 session_repair_index_note_2026-03-23.txt
+to_do_list.txt
 push_to_github.bat
 update_from_github.bat
 

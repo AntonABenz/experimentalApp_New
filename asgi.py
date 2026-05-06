@@ -70,6 +70,17 @@ def _clean_cookie_value(value) -> str:
     return (value or "").strip()
 
 
+def _normalize_prolific_identity_pair(prolific_id: str, participant_label: str) -> tuple[str, str, bool]:
+    prolific_id = _clean_cookie_value(prolific_id)
+    participant_label = _clean_cookie_value(participant_label)
+    mismatch = bool(prolific_id and participant_label and prolific_id != participant_label)
+    if not prolific_id:
+        prolific_id = participant_label
+    if not participant_label:
+        participant_label = prolific_id
+    return prolific_id, participant_label, mismatch
+
+
 def _sign_cookie_payload(payload: dict) -> str:
     raw = json.dumps(payload or {}, separators=(",", ":"), sort_keys=True)
     encoded = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
@@ -98,14 +109,23 @@ def _load_signed_cookie(value: str) -> dict:
 
 
 def _extract_prolific_cookie_payload(request: Request) -> dict:
+    prolific_id_raw = _clean_cookie_value(
+        request.query_params.get("PROLIFIC_PID")
+        or request.query_params.get("prolific_pid")
+        or request.query_params.get("prolific_id")
+        or request.query_params.get("participant_id")
+    )
+    participant_label_raw = _clean_cookie_value(
+        request.query_params.get("participant_label")
+        or request.query_params.get("PARTICIPANT_LABEL")
+    )
+    prolific_id, participant_label, mismatch = _normalize_prolific_identity_pair(
+        prolific_id_raw,
+        participant_label_raw,
+    )
     return {
-        "prolific_id": _clean_cookie_value(
-            request.query_params.get("PROLIFIC_PID")
-            or request.query_params.get("prolific_pid")
-            or request.query_params.get("prolific_id")
-            or request.query_params.get("participant_id")
-            or request.query_params.get("participant_label")
-        ),
+        "prolific_id": prolific_id,
+        "participant_label": participant_label,
         "study_id": _clean_cookie_value(
             request.query_params.get("STUDY_ID")
             or request.query_params.get("study_id")
@@ -114,6 +134,9 @@ def _extract_prolific_cookie_payload(request: Request) -> dict:
             request.query_params.get("SESSION_ID")
             or request.query_params.get("session_id")
         ),
+        "identity_mismatch": mismatch,
+        "raw_prolific_id": prolific_id_raw,
+        "raw_participant_label": participant_label_raw,
     }
 
 
@@ -176,8 +199,12 @@ def _sync_start_prolific_intake_from_participant(participant, payload: dict) -> 
 
     participant_code = _clean_cookie_value(getattr(participant, "code", ""))
     session_code = _clean_cookie_value(getattr(getattr(participant, "session", None), "code", ""))
-    prolific_id = _clean_cookie_value(payload.get("prolific_id") or getattr(participant, "label", "") or participant.vars.get("prolific_id"))
-    participant_label = _clean_cookie_value(payload.get("participant_label") or prolific_id)
+    payload_prolific_id = payload.get("prolific_id") or getattr(participant, "label", "") or participant.vars.get("prolific_id")
+    payload_participant_label = payload.get("participant_label") or payload_prolific_id
+    prolific_id, participant_label, _ = _normalize_prolific_identity_pair(
+        payload_prolific_id,
+        payload_participant_label,
+    )
     study_id = _clean_cookie_value(payload.get("study_id") or participant.vars.get("study_id"))
     session_id = _clean_cookie_value(payload.get("session_id") or participant.vars.get("prolific_session_id"))
 
@@ -255,8 +282,10 @@ def _sync_start_prolific_intake_pending(session_code: str, payload: dict) -> boo
         return False
 
     pending_code = _pending_start_intake_code(payload)
-    prolific_id = _clean_cookie_value(payload.get("prolific_id"))
-    participant_label = _clean_cookie_value(payload.get("participant_label") or prolific_id)
+    prolific_id, participant_label, _ = _normalize_prolific_identity_pair(
+        payload.get("prolific_id"),
+        payload.get("participant_label"),
+    )
     study_id = _clean_cookie_value(payload.get("study_id"))
     session_id = _clean_cookie_value(payload.get("session_id"))
     session_code = _clean_cookie_value(session_code)
@@ -579,6 +608,21 @@ class ProlificCaptureCookieMiddleware(BaseHTTPMiddleware):
         participant_code = _participant_code_from_path(request.url.path)
         join_session_code = _join_session_code_from_path(request.url.path)
 
+        if request_payload.get("identity_mismatch") and join_session_code:
+            logger.warning(
+                "Rejected mismatched Prolific join: session=%s raw_prolific_id=%s raw_participant_label=%s study_id=%s session_id=%s path=%s",
+                join_session_code,
+                request_payload.get("raw_prolific_id", ""),
+                request_payload.get("raw_participant_label", ""),
+                request_payload.get("study_id", ""),
+                request_payload.get("session_id", ""),
+                request.url.path,
+            )
+            return PlainTextResponse(
+                "We could not safely admit you to the experiment because the incoming participant identifiers were inconsistent. Please return the study and contact the researcher.",
+                status_code=400,
+            )
+
         if request_payload.get("prolific_id") and join_session_code:
             _sync_start_prolific_intake_pending(join_session_code, request_payload)
 
@@ -638,9 +682,22 @@ async def entry(request):
     if not s:
         return PlainTextResponse("No active session found. Create a 'full_study' session in admin.", status_code=500)
 
-    response = RedirectResponse(f"/join/{s.code}{suffix}", status_code=302)
-
     payload = _extract_prolific_cookie_payload(request)
+    if payload.get("identity_mismatch"):
+        logger.warning(
+            "Rejected mismatched Prolific entry: session=%s raw_prolific_id=%s raw_participant_label=%s study_id=%s session_id=%s",
+            getattr(s, "code", ""),
+            payload.get("raw_prolific_id", ""),
+            payload.get("raw_participant_label", ""),
+            payload.get("study_id", ""),
+            payload.get("session_id", ""),
+        )
+        return PlainTextResponse(
+            "We could not safely admit you to the experiment because the incoming participant identifiers were inconsistent. Please return the study and contact the researcher.",
+            status_code=400,
+        )
+
+    response = RedirectResponse(f"/join/{s.code}{suffix}", status_code=302)
     if payload.get("prolific_id"):
         _sync_start_prolific_intake_pending(s.code, payload)
         response.set_cookie(
