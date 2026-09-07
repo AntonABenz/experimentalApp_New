@@ -192,7 +192,7 @@ window.props = {
         <div v-else class="sentence-card">
             <div v-for="(s,idx) in props.full_sentences" :key="'fs-'+idx">[[ s ]]</div>
         </div>
-        <h5 class="text-center mb-3">Buy medals:</h5>
+        <h5 class="text-center mb-3">[[ props.interpreter_title ]]</h5>
         <table class="table table-bordered buy-table">
             <thead>
                 <tr>
