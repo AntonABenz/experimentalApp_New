@@ -861,6 +861,12 @@ class Instructions(_BasePage):
     show_instructions = True
     instructions_path = "start/Instructions.html"
 
+    @staticmethod
+    def vars_for_template(player):
+        # The instructions document link is a session-config field, entered on the
+        # session configuration page when the session is created.
+        return dict(instructions_url=player.session.config.get("instructions_url", ""))
+
 
 class Practice1(_PracticePage):
     practice_id = 1

@@ -6,12 +6,16 @@
 <div class="card bg-light m-3">
     <div class="card-body">
         
-        <iframe 
-            src="https://docs.google.com/document/d/e/2PACX-1vTg_Hd8hXK-TZS77rC6W_BlY2NtWhQqCLzlgW0LeomoEUdhoDNYPNVOO7Pt6g0-JksykUrgRdtcVL3u/pub?embedded=true"
-            width="100%" 
-            height="800px" 
+        {% if instructions_url %}
+        <iframe
+            src="{{ instructions_url }}"
+            width="100%"
+            height="800px"
             style="border: 1px solid #ccc;">
         </iframe>
+        {% else %}
+        <p class="text-muted">No instructions document has been configured.</p>
+        {% endif %}
 
     </div>
 </div>

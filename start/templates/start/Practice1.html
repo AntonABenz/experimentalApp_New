@@ -73,7 +73,7 @@ const app = Vue.createApp({
       title: S.title || "Practice",
       main_text: S.main_text || "",
       image_path: S.full_image_path || "",
-      interpreter_title: window.interpreter_title || "Buy medals:",
+      interpreter_title: window.interpreter_title || "",
       rows: IC.map(label => ({ name: label, choice: null })),
       correct,
       error: false,
