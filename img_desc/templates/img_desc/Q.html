@@ -61,11 +61,13 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
     /* Confirm Modal specific style */
     .confirm-box { max-width: 400px; height: auto; }
 
-    .input-group { max-width: 900px; margin: 0 auto; }
-    .input-kids { min-width: 260px; }
+    /* Keep the whole sentence frame (both text fields + labels + add/remove
+       buttons) on a single line that fits the width without horizontal scroll. */
+    .input-group { display: flex; flex-wrap: nowrap; align-items: center; justify-content: center; gap: 8px; max-width: 100%; margin: 0 auto; }
+    .input-kids { min-width: 80px; flex: 0 1 190px; }
     .clean-row { margin-bottom: 16px; }
-    .field-wrap { display: inline-flex; align-items: center; margin-right: 14px; margin-bottom: 8px; }
-    .suffix { margin-left: 10px; font-weight: 700; }
+    .field-wrap { display: inline-flex; align-items: center; white-space: nowrap; min-width: 0; }
+    .suffix { margin-left: 8px; margin-right: 4px; font-weight: 700; white-space: nowrap; }
     .invalid { border-color: #dc3545 !important; box-shadow: 0 0 0 0.15rem rgba(220,53,69,.25); }
     .sentence-card { background: #e3f2fd; border-left: 5px solid #2196f3; padding: 18px; margin: 18px auto; max-width: 900px; font-size: 1.15rem; text-align: center; }
     table.buy-table { max-width: 900px; margin: 0 auto; }
