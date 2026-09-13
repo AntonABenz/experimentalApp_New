@@ -2115,6 +2115,9 @@ def creating_session(subsession: Subsession):
         session.vars["extension"] = clean_settings.get("extension") or "png"
         session.vars["prefix"] = clean_settings.get("prefix") or ""
         session.vars["interpreter_title"] = clean_settings.get("interpreter_title") or "Buy medals:"
+        # Header of the interpreter table's left column; configurable via the
+        # spreadsheet ("interpreter_col_title") instead of being hard-coded.
+        session.vars["interpreter_col_title"] = clean_settings.get("interpreter_col_title") or "Sweets"
         session.vars["caseflag"] = _truthy(clean_settings.get("caseflag"))
 
         session.vars["instructions_url"] = (
@@ -2521,6 +2524,7 @@ class Q(Page):
             prefix=player.session.vars.get("prefix", ""),
             interpreter_choices=interpreter_choices,
             interpreter_title=player.session.vars.get("interpreter_title") or "Buy medals:",
+            interpreter_col_title=player.session.vars.get("interpreter_col_title") or "Sweets",
             instructions_url=player.session.vars.get("instructions_url"),
             introduction_text=player.session.vars.get("introduction_text", ""),
             doc_link=player.session.vars.get("doc_link", ""),

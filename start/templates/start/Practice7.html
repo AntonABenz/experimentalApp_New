@@ -27,13 +27,12 @@
   <div class="text-center my-4">
     <img v-if="props.settings.full_image_path" :src="props.settings.full_image_path" style="max-width: 100%; max-height: 400px; border: 1px solid #ddd;">
     <div v-else class="image-box">
-      This area is intentionally blank in this practice task.
-      In the real experiment, a picture will be shown here.
+      [[ props.settings.blank_area_text || "This area is intentionally blank in this practice task. In the real experiment, a picture will be shown here." ]]
     </div>
   </div>
 
   <div class="vocab-box text-center">
-    <h5>Allowed Vocabulary</h5>
+    <h5>[[ props.settings.vocab_title || "Allowed Vocabulary" ]]</h5>
     <div class="row">
       <div class="col-md-6" v-if="props.allowedValues[0]">
         <div v-for="v in props.allowedValues[0]">[[ v ]]</div>
@@ -49,7 +48,7 @@
       <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
         <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
           <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off" @input="errorMsg=''">
-          <span class="mx-2 font-weight-bold">[[ field.suffix ]]</span>
+          <span class="mx-2 font-weight-bold text-nowrap">[[ field.suffix ]]</span>
         </div>
         <button class="btn btn-outline-secondary ml-2" @click.prevent="addItem" :disabled="items.length >= 5">+</button>
         <button class="btn btn-outline-danger ml-1" @click.prevent="removeItem(itemIndex)" :disabled="items.length <= 1">-</button>

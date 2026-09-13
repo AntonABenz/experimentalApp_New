@@ -15,14 +15,19 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
         z-index: 3500;
         box-shadow: 0 2px 8px rgba(0,0,0,0.12);
     }
+    /* Small, unobtrusive help marker sitting inside the text field (right edge),
+       so it does not break up the sentence. */
+    .field-input-wrap { position: relative; display: inline-flex; align-items: center; flex: 0 1 190px; min-width: 80px; }
+    .field-input-wrap .input-kids { width: 100%; padding-right: 26px; }
     .field-help {
+        position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
         display: inline-flex; align-items: center; justify-content: center;
-        width: 22px; height: 22px; border-radius: 50%;
-        border: 1px solid #888; background: #fff;
-        font-weight: 800; font-size: 12px; margin-left: 8px;
-        cursor: pointer; user-select: none; flex: 0 0 auto;
+        width: 17px; height: 17px; border-radius: 50%;
+        border: 1px solid #ccc; background: #f2f2f2; color: #666;
+        font-weight: 700; font-size: 11px;
+        cursor: pointer; user-select: none;
     }
-    .field-help:hover { background: #f6f6f6; }
+    .field-help:hover { background: #e4e4e4; }
 
     .modal-overlay {
         position: fixed; inset: 0;
@@ -64,7 +69,7 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
     /* Keep the whole sentence frame (both text fields + labels + add/remove
        buttons) on a single line that fits the width without horizontal scroll. */
     .input-group { display: flex; flex-wrap: nowrap; align-items: center; justify-content: center; gap: 8px; max-width: 100%; margin: 0 auto; }
-    .input-kids { min-width: 80px; flex: 0 1 190px; }
+    .input-kids { min-width: 0; }
     .clean-row { margin-bottom: 16px; }
     .field-wrap { display: inline-flex; align-items: center; white-space: nowrap; min-width: 0; }
     .suffix { margin-left: 8px; margin-right: 4px; font-weight: 700; white-space: nowrap; }
@@ -170,12 +175,14 @@ window.props = {
             <div v-for="(item, i) in items" :key="i" class="clean-row">
                 <div class="input-group">
                     <div v-for="(f, j) in item.fields" :key="j" class="field-wrap">
-                        <input class="form-control input-kids"
-                               :class="{ invalid: fieldInvalid(i,j) }"
-                               v-model="f.value"
-                               :placeholder="'Field ' + (j+1)"
-                               autocomplete="off">
-                        <div class="field-help" :title="'Show allowed options for Field ' + (j+1)" @click="openOptions(j)">?</div>
+                        <span class="field-input-wrap">
+                            <input class="form-control input-kids"
+                                   :class="{ invalid: fieldInvalid(i,j) }"
+                                   v-model="f.value"
+                                   :placeholder="'Field ' + (j+1)"
+                                   autocomplete="off">
+                            <span class="field-help" :title="'Show allowed options for Field ' + (j+1)" @click="openOptions(j)">?</span>
+                        </span>
                         <span v-if="f.suffix" class="suffix">[[ f.suffix ]]</span>
                     </div>
                     <button type="button" class="btn btn-outline-secondary ml-2" @click="addItem" :disabled="items.length>=maxItems">+</button>
@@ -198,7 +205,7 @@ window.props = {
         <table class="table table-bordered buy-table">
             <thead>
                 <tr>
-                    <th>Description</th><th class="text-center">Yes</th><th class="text-center">No</th>
+                    <th>{{ interpreter_col_title }}</th><th class="text-center">Yes</th><th class="text-center">No</th>
                 </tr>
             </thead>
             <tbody>

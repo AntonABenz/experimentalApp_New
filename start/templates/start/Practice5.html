@@ -36,7 +36,7 @@
   </div>
 
   <div class="vocabulary-box text-center">
-    <h5 class="mb-3">Allowed Vocabulary</h5>
+    <h5 class="mb-3">[[ vocabTitle ]]</h5>
     <div class="row justify-content-center">
       <div class="col-md-5 vocab-column px-4">
         <div v-for="(w, i) in vocab1" :key="'v1-'+i" class="vocab-item">[[ w ]]</div>
@@ -66,6 +66,7 @@ const app = Vue.createApp({
       title: s.title || "Practice 5",
       main_text: s.main_text || "",
       image_path: s.full_image_path || "",
+      vocabTitle: s.vocab_title || "Allowed Vocabulary",
       vocab1: allowed[0] || [],
       vocab2: allowed[1] || [],
     };
