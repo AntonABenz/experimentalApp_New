@@ -2072,6 +2072,231 @@ class ProlificStatusGate(Page):
 # ----------------------------------------------------------------------------
 # SESSION CREATION (store Excel rows in DB, not in memory)
 # ----------------------------------------------------------------------------
+def vars_for_admin_report(subsession):
+    """
+    Live cohort-monitoring dashboard, shown in the oTree admin report tab
+    (admin-only). Reads the DB-backed cohort tables and reports, per experiment
+    cohort, which slots are open / in progress / completed / dropped, plus
+    session totals. Additive and read-only: does not affect the participant flow.
+    """
+    session = subsession.session
+    root = _root_subsession(subsession)
+    csize = int(cohort_size(session))
+
+
+    # participant_code -> status, and -> participant object
+    status_by_code = {}
+    code_to_participant = {}
+    try:
+        for p in session.get_participants():
+            c = clean_str(p.code)
+            status_by_code[c] = clean_str(get_participant_status(p))
+            code_to_participant[c] = p
+    except Exception:
+        status_by_code, code_to_participant = {}, {}
+
+    # participant_code -> number of scheduled questions (one ScheduleItem per round)
+    total_by_code = {}
+    if root:
+        try:
+            for it in ScheduleItem.filter(subsession=root):
+                c = clean_str(getattr(it, "participant_code", ""))
+                if c:
+                    total_by_code[c] = total_by_code.get(c, 0) + 1
+        except Exception:
+            total_by_code = {}
+
+    IDLE_ALERT_SECONDS = 180
+    FAST_ANSWER_SECONDS = 1.5
+    now_ts = int(time.time())
+
+    def _metrics(participant):
+        # one pass over the participant's img_desc rounds:
+        #   answered = rounds with a decision; avg = mean response time (s);
+        #   too_fast = answers under FAST_ANSWER_SECONDS
+        if participant is None:
+            return 0, 0.0, 0
+        try:
+            answered = 0
+            total_secs = 0.0
+            n_timed = 0
+            too_fast = 0
+            for pl in participant.get_players():
+                if not isinstance(pl, Player):
+                    continue
+                if clean_str(pl.field_maybe_none("producer_decision")) or clean_str(
+                    pl.field_maybe_none("interpreter_decision")
+                ):
+                    answered += 1
+                    secs = float(getattr(pl, "decision_seconds", 0) or 0)
+                    if secs > 0:
+                        total_secs += secs
+                        n_timed += 1
+                        if secs < FAST_ANSWER_SECONDS:
+                            too_fast += 1
+            avg = round(total_secs / n_timed, 1) if n_timed else 0.0
+            return answered, avg, too_fast
+        except Exception:
+            return 0, 0.0, 0
+
+    def _idle_seconds(participant):
+        try:
+            ts = int(getattr(participant, "_last_page_timestamp", 0) or 0)
+            return max(0, now_ts - ts) if ts else 0
+        except Exception:
+            return 0
+
+    # All active slot rows for this study, grouped by experiment then slot.
+    # Read straight from the resolved root so it stays consistent (avoids the
+    # session-based root re-resolution that can collapse to a fallback).
+    # Active rows drive the live slot grid. Inactive rows are slots that were
+    # filled then freed by free_slot_for_participant (a drop that a replacement
+    # took over) -> we count them per cohort as churn ("dropped / replaced").
+    by_exp = {}
+    churn_by_exp = {}
+    if root:
+        try:
+            for r in CohortSlot.filter(subsession=root):
+                if bool(getattr(r, "active", False)):
+                    by_exp.setdefault(int(r.exp_num), {})[int(r.slot)] = r
+                else:
+                    churn_by_exp[int(r.exp_num)] = churn_by_exp.get(int(r.exp_num), 0) + 1
+        except Exception:
+            by_exp, churn_by_exp = {}, {}
+
+    totals = dict(filled=0, open=0, completed=0, active=0, dropped=0, replaced=0)
+    cohorts = []
+    for e in sorted(set(by_exp) | set(churn_by_exp)):
+        slot_rows = by_exp.get(e, {})
+        slots = []
+        complete = bool(slot_rows)
+        for s in range(1, csize + 1):
+            r = slot_rows.get(s)
+            if r is None:
+                slots.append(dict(slot=s, open=True, state="open", short_code="", idle=False))
+                totals["open"] += 1
+                complete = False
+                continue
+            totals["filled"] += 1
+            code = clean_str(getattr(r, "participant_code", ""))
+            participant = code_to_participant.get(code)
+            status = status_by_code.get(code, "")
+            total_q = int(total_by_code.get(code, 0))
+            answered_q, avg_secs, too_fast_n = _metrics(participant)
+            idle_secs = _idle_seconds(participant)
+            prolific_status = (
+                clean_str(participant.vars.get("prolific_submission_status", ""))
+                if participant is not None else ""
+            )
+            if status == Constants.STATUS_DROP_OUT:
+                state = "dropped"
+                totals["dropped"] += 1
+                complete = False
+            elif bool(getattr(r, "completed", False)) or status == Constants.STATUS_FINISHED:
+                state = "completed"
+                totals["completed"] += 1
+                answered_q = total_q
+            else:
+                state = "active"
+                totals["active"] += 1
+                complete = False
+            slots.append(dict(
+                slot=s, open=False, state=state, short_code=code[:6],
+                answered=int(answered_q), total=total_q,
+                avg_seconds=avg_secs,
+                too_fast=bool(too_fast_n > 0 and answered_q > 0),
+                idle=bool(state == "active" and idle_secs >= IDLE_ALERT_SECONDS),
+                idle_min=round(idle_secs / 60.0, 1),
+                prolific_status=prolific_status,
+            ))
+        churn = int(churn_by_exp.get(e, 0))
+        totals["replaced"] += churn
+        cohorts.append(dict(exp_num=e, complete=complete, dropped_replaced=churn, slots=slots))
+
+    # Participants still in the intro/practice app (not yet placed in a cohort).
+    def _practice_label(page):
+        page = clean_str(page)
+        m = re.match(r"Practice(\d+)", page)
+        if m:
+            return "practice " + m.group(1) + " / 7"
+        return {
+            "Consent": "consent",
+            "Demographics": "demographics",
+            "Instructions": "instructions",
+            "EndOfIntro": "finishing intro",
+        }.get(page, (page.lower() or "starting"))
+
+    cohort_codes = {
+        clean_str(getattr(row, "participant_code", ""))
+        for rows in by_exp.values()
+        for row in rows.values()
+    }
+    practice = []
+    try:
+        for p in session.get_participants():
+            code = clean_str(p.code)
+            if code in cohort_codes:
+                continue
+            if clean_str(getattr(p, "_current_app_name", "") or "") == "start":
+                practice.append(dict(
+                    short_code=code[:6],
+                    label=_practice_label(getattr(p, "_current_page_name", "")),
+                ))
+    except Exception:
+        practice = []
+
+    # Idle alerts: active participants stalled beyond the threshold.
+    alerts = []
+    for c in cohorts:
+        for s in c["slots"]:
+            if s.get("idle"):
+                alerts.append(dict(short_code=s["short_code"], idle_min=s["idle_min"]))
+
+    # Recruitment funnel.
+    funnel = dict(
+        accepted=len(code_to_participant),
+        in_practice=len(practice),
+        in_study=int(totals["active"]),
+        completed=int(totals["completed"]),
+        dropped=int(totals["dropped"]) + int(totals["replaced"]),
+    )
+
+    # Latest Prolific slot-expansion attempt (recruitment status line).
+    expansion = dict(status="", attempts=0)
+    if root:
+        try:
+            rows = ProlificExpansionState.filter(subsession=root)
+            if rows:
+                latest = max(rows, key=lambda x: float(getattr(x, "last_attempt_ts", 0) or 0))
+                expansion = dict(
+                    status=clean_str(getattr(latest, "status", "")),
+                    attempts=int(getattr(latest, "attempts", 0) or 0),
+                )
+        except Exception:
+            expansion = dict(status="", attempts=0)
+
+    # Auto-refresh cadence. Defaults to 20s (production); a local demo can set
+    # DASHBOARD_REFRESH_SECONDS=5 so the dashboard visibly ticks while presenting.
+    refresh_seconds = safe_int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "20"), 20)
+    if refresh_seconds < 1:
+        refresh_seconds = 20
+
+    return dict(
+        cohorts=cohorts,
+        totals=totals,
+        practice=practice,
+        alerts=alerts,
+        funnel=funnel,
+        expansion=expansion,
+        idle_threshold_min=int(IDLE_ALERT_SECONDS / 60),
+        cohort_size=csize,
+        num_experiments=len(cohorts),
+        total_participants_needed=safe_int(session.vars.get("total_participants_needed"), 0),
+        refresh_seconds=refresh_seconds,
+    )
+
+
+
 def creating_session(subsession: Subsession):
     session = subsession.session
     if subsession.round_number != 1:

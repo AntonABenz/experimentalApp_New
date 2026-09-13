@@ -1,0 +1,92 @@
+<meta http-equiv="refresh" content="{{ refresh_seconds }}">
+<style>
+  .mon-wrap { font-family: Arial, sans-serif; margin: 8px 0 20px; }
+  .mon-summary { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 18px; }
+  .mon-card { border: 1px solid #e2e2e2; border-radius: 8px; padding: 10px 16px; min-width: 92px; }
+  .mon-card .num { font-size: 22px; font-weight: 600; line-height: 1.1; }
+  .mon-card .lbl { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: .03em; }
+  .mon-cohort { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  .mon-cohort-label { width: 200px; font-weight: 600; font-size: 13px; }
+  .mon-slot { width: 96px; padding: 8px 6px; border-radius: 6px; font-size: 11px; color: #fff; text-align: center; line-height: 1.3; }
+  .mon-slot.open { background: #c9c9c9; color: #333; }
+  .mon-slot.active { background: #3b82f6; }
+  .mon-slot.completed { background: #16a34a; }
+  .mon-slot.dropped { background: #dc2626; }
+  .mon-code { font-family: monospace; opacity: .9; }
+  .mon-prog { font-size: 11px; opacity: .9; }
+  .mon-meta { font-size: 10px; opacity: .9; }
+  .mon-slot.mon-idle { outline: 2px solid #dc2626; outline-offset: 1px; }
+  .mon-alert { background: #fdecea; border: 1px solid #f5c6cb; color: #842029; padding: 8px 12px; border-radius: 8px; margin: 2px 0 14px; font-size: 13px; }
+  .mon-alert-item { display: inline-block; margin-left: 8px; font-weight: 600; }
+  .mon-done { color: #16a34a; font-weight: 600; }
+  .mon-filling { color: #b45309; font-weight: 600; }
+  .mon-churn { color: #b45309; font-weight: 600; }
+  .mon-legend { margin-top: 14px; font-size: 12px; color: #888; }
+  .mon-pill { display: inline-block; padding: 2px 10px; border-radius: 10px; color: #fff; margin-right: 4px; }
+  .mon-practice { display: inline-block; background: #eef2f7; color: #33415a; padding: 6px 12px; border-radius: 8px; font-size: 12px; }
+</style>
+
+<div class="mon-wrap">
+  <h2 style="margin-bottom: 2px;">Cohort monitoring</h2>
+  <div style="color:#888; font-size:12px;">
+    {{ num_experiments }} cohort(s) of {{ cohort_size }} &middot; target sample {{ total_participants_needed }} &middot; updates every {{ refresh_seconds }}s{% if expansion.status %} &middot; recruitment: {{ expansion.status }}{% endif %}
+  </div>
+
+  <div class="mon-summary">
+    <div class="mon-card"><div class="num">{{ funnel.accepted }}</div><div class="lbl">accepted</div></div>
+    <div class="mon-card"><div class="num">{{ total_participants_needed }}</div><div class="lbl">needed</div></div>
+    <div class="mon-card"><div class="num">{{ totals.filled }}</div><div class="lbl">filled</div></div>
+    <div class="mon-card"><div class="num">{{ totals.completed }}</div><div class="lbl">completed</div></div>
+    <div class="mon-card"><div class="num">{{ totals.active }}</div><div class="lbl">in progress</div></div>
+    <div class="mon-card"><div class="num">{{ totals.replaced }}</div><div class="lbl">dropped / replaced</div></div>
+    <div class="mon-card"><div class="num">{{ totals.open }}</div><div class="lbl">open</div></div>
+    <div class="mon-card"><div class="num">{{ funnel.in_practice }}</div><div class="lbl">in practice</div></div>
+  </div>
+
+  {% if alerts %}
+    <div class="mon-alert">
+      &#9888; idle &gt; {{ idle_threshold_min }} min:
+      {% for a in alerts %}<span class="mon-alert-item">{{ a.short_code }} &middot; {{ a.idle_min }}m</span>{% endfor %}
+    </div>
+  {% endif %}
+
+  {% if cohorts %}
+    {% for c in cohorts %}
+      <div class="mon-cohort">
+        <div class="mon-cohort-label">
+          Cohort {{ c.exp_num }}
+          {% if c.complete %}<span class="mon-done">complete</span>{% else %}<span class="mon-filling">filling</span>{% endif %}
+          {% if c.dropped_replaced %}<span class="mon-churn">&middot; {{ c.dropped_replaced }} replaced</span>{% endif %}
+        </div>
+        {% for s in c.slots %}
+          <div class="mon-slot {{ s.state }}{% if s.idle %} mon-idle{% endif %}">
+            {% if s.open %}
+              slot {{ s.slot }}<br>open
+            {% else %}
+              <span class="mon-code">{{ s.short_code }}</span><br>{{ s.state }}<br><span class="mon-prog">{{ s.answered }} / {{ s.total }}</span>
+              <br><span class="mon-meta">{% if s.avg_seconds %}~{{ s.avg_seconds }}s{% if s.too_fast %} &#9888;{% endif %}{% endif %}{% if s.prolific_status %} &middot; {{ s.prolific_status }}{% endif %}</span>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endfor %}
+  {% else %}
+    <p style="color:#888;">No cohort activity yet — the dashboard fills in as participants are grouped.</p>
+  {% endif %}
+
+  {% if practice %}
+    <p style="margin: 16px 0 6px; font-size: 13px; font-weight: 600; color: #555;">In practice / intro <span style="font-weight: 400; color: #888;">(not yet in a cohort)</span></p>
+    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+      {% for pp in practice %}
+        <div class="mon-practice"><span class="mon-code">{{ pp.short_code }}</span> &middot; {{ pp.label }}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <div class="mon-legend">
+    <span class="mon-pill" style="background:#c9c9c9; color:#333;">open</span>
+    <span class="mon-pill" style="background:#3b82f6;">in progress</span>
+    <span class="mon-pill" style="background:#16a34a;">completed</span>
+    <span class="mon-pill" style="background:#dc2626;">dropped</span>
+  </div>
+</div>
