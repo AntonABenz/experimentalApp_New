@@ -17,7 +17,7 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
     }
     /* Small, unobtrusive help marker sitting inside the text field (right edge),
        so it does not break up the sentence. */
-    .field-input-wrap { position: relative; display: inline-flex; align-items: center; flex: 0 1 190px; min-width: 80px; }
+    .field-input-wrap { position: relative; display: inline-flex; align-items: center; flex: 0 1 160px; min-width: 72px; }
     .field-input-wrap .input-kids { width: 100%; padding-right: 26px; }
     .field-help {
         position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
@@ -68,14 +68,21 @@ Round {{ player.round_number }} / {{ Constants.num_rounds }}
 
     /* Keep the whole sentence frame (both text fields + labels + add/remove
        buttons) on a single line that fits the width without horizontal scroll. */
-    .input-group { display: flex; flex-wrap: nowrap; align-items: center; justify-content: center; gap: 8px; max-width: 100%; margin: 0 auto; }
-    .input-kids { min-width: 0; }
+    .input-group { display: flex; flex-wrap: nowrap; align-items: center; justify-content: center; gap: 6px; max-width: 100%; margin: 0 auto; }
+    .input-kids { min-width: 0; font-size: 1.05rem; height: auto; padding: 0.45rem 0.6rem; }
     .clean-row { margin-bottom: 16px; }
     .field-wrap { display: inline-flex; align-items: center; white-space: nowrap; min-width: 0; }
-    .suffix { margin-left: 8px; margin-right: 4px; font-weight: 700; white-space: nowrap; }
+    .suffix { margin-left: 6px; margin-right: 2px; font-weight: 700; white-space: nowrap; font-size: 1.05rem; }
     .invalid { border-color: #dc3545 !important; box-shadow: 0 0 0 0.15rem rgba(220,53,69,.25); }
-    .sentence-card { background: #e3f2fd; border-left: 5px solid #2196f3; padding: 18px; margin: 18px auto; max-width: 900px; font-size: 1.15rem; text-align: center; }
-    table.buy-table { max-width: 900px; margin: 0 auto; }
+    .sentence-card { background: #e3f2fd; border-left: 5px solid #2196f3; padding: 22px; margin: 18px auto; max-width: 900px; font-size: 1.4rem; line-height: 1.5; text-align: center; }
+
+    /* Interpreter title headings a little larger and clearer. */
+    .interp-title { font-size: 1.5rem; }
+
+    /* Larger, easier-to-read interpreter table. */
+    table.buy-table { max-width: 900px; margin: 0 auto; font-size: 1.25rem; }
+    table.buy-table th, table.buy-table td { padding: 0.85rem 1rem; vertical-align: middle; }
+    table.buy-table input[type="radio"] { width: 1.25rem; height: 1.25rem; }
 </style>
 
 <script>
@@ -194,14 +201,14 @@ window.props = {
     </div>
 
     <div v-else>
-        <h4 class="text-center mb-3">[[ props.interpreter_title ]]</h4>
+        <h4 class="text-center mb-3 interp-title">[[ props.interpreter_title ]]</h4>
         <div v-if="props.full_sentences.length === 0" class="alert alert-danger text-center">
             Internal error: no sentences received. Please contact the experimenter.
         </div>
         <div v-else class="sentence-card">
             <div v-for="(s,idx) in props.full_sentences" :key="'fs-'+idx">[[ s ]]</div>
         </div>
-        <h5 class="text-center mb-3">[[ props.interpreter_title ]]</h5>
+        <h5 class="text-center mb-3 interp-title">[[ props.interpreter_title ]]</h5>
         <table class="table table-bordered buy-table">
             <thead>
                 <tr>

@@ -1146,7 +1146,11 @@ def clean_str(x) -> str:
     if s.lower() == "nan":
         return ""
     if s.lower() == "none":
-        return "None"
+        # Keep the token exactly as written in the data (e.g. lowercase
+        # "none"); only guard it from being dropped like NaN/empty. Do not
+        # force-capitalise it, otherwise a data value of "none" would show
+        # up mid-sentence as "None".
+        return s
     return s
 
 
