@@ -392,6 +392,34 @@ def ensure_schedule_built(player):
     build_schedule_for_participant(player)
 
 
+def scheduled_total_rounds(player) -> int:
+    """
+    Number of real rounds scheduled for this participant (one ScheduleItem per
+    round, created contiguously from round 1). The app reserves up to
+    Constants.num_rounds oTree rounds, but a given study normally uses fewer, so
+    this is the participant's true last round. Returns 0 until the schedule has
+    been built. Cached on participant.vars once known.
+    """
+    p = player.participant
+    cached = p.vars.get("img_desc_total_rounds")
+    if cached:
+        try:
+            return int(cached)
+        except Exception:
+            pass
+    root = _root_subsession(player)
+    pcode = clean_str(getattr(p, "code", ""))
+    total = 0
+    if root and pcode:
+        try:
+            total = len(ScheduleItem.filter(subsession=root, participant_code=pcode))
+        except Exception:
+            total = 0
+    if total:
+        p.vars["img_desc_total_rounds"] = int(total)
+    return int(total)
+
+
 # ---- Sentence store ----
 def set_sentence(obj, key: str, value: str):
     root = _root_subsession(obj)
@@ -2637,6 +2665,12 @@ class WaitForCohort(Page):
 
     @staticmethod
     def is_displayed(player):
+        # Nothing to wait for in the reserved-but-empty rounds past the
+        # participant's real last round; skip them cheaply.
+        total = scheduled_total_rounds(player)
+        if total and player.round_number > total:
+            return False
+
         exp_target, local_slot = assign_slot_if_needed(player)
 
         # blocked participants are handled by ProlificStatusGate
@@ -2697,9 +2731,16 @@ class Q(Page):
     def is_displayed(player):
         if player.round_number > Constants.num_rounds:
             return False
-    
+
+        # Once the schedule is built we know the participant's real last round.
+        # Skip the reserved-but-empty rounds cheaply so the app does not grind
+        # through them (and delay the feedback page) at the end of the study.
+        total = scheduled_total_rounds(player)
+        if total and player.round_number > total:
+            return False
+
         exp_target, local_slot = assign_slot_if_needed(player)
-    
+
         if int(local_slot or 0) == 0:
             return False
     
@@ -2745,8 +2786,14 @@ class Q(Page):
                 d = d.copy()
                 d["producer_sentences"] = resolved
 
+        # Record the moment the page is actually served, server-side, so the
+        # response time does not depend on a client-set hidden field (which can
+        # be unreliable inside the Vue app). Read back in before_next_page.
+        player.participant.vars[f"img_desc_qstart_{player.round_number}"] = time.time()
+
         return dict(
             d=d,
+            num_total=scheduled_total_rounds(player) or Constants.num_rounds,
             allowed_values=player.session.vars.get("allowed_values", []),
             allowed_regex=player.session.vars.get("allowed_regex", []),
             suffixes=player.session.vars.get("suffixes", []),
@@ -2770,12 +2817,19 @@ class Q(Page):
     def before_next_page(player, timeout_happened):
         player.end_decision_time = time.time()
 
-        if player.client_start_ts and player.client_start_ts > 0:
+        # Prefer the server-side start recorded when the page was served; fall
+        # back to the client hidden field, then to no elapsed time.
+        server_start = player.participant.vars.pop(
+            f"img_desc_qstart_{player.round_number}", 0
+        )
+        if server_start and float(server_start) > 0:
+            player.start_decision_time = float(server_start)
+        elif player.client_start_ts and player.client_start_ts > 0:
             player.start_decision_time = float(player.client_start_ts)
         else:
-            # fallback if hidden field is missing
+            # fallback if neither start time is available
             player.start_decision_time = player.end_decision_time
-        
+
         player.decision_seconds = max(0, player.end_decision_time - player.start_decision_time)
 
         data = player.get_current_batch_data() or {}
@@ -2870,7 +2924,10 @@ class Feedback(Page):
 
     @staticmethod
     def is_displayed(player):
-        return player.round_number == Constants.num_rounds
+        # Show right after the participant's real last round, not after the
+        # reserved round 80, so there is no long wait for the feedback page.
+        total = scheduled_total_rounds(player)
+        return total > 0 and player.round_number == total
 
     @staticmethod
     def before_next_page(player, timeout_happened):
@@ -2888,9 +2945,11 @@ PROLIFIC_COMPLETE_BASE = "https://app.prolific.com/submissions/complete?cc="
 class FinalForProlific(Page):
     @staticmethod
     def is_displayed(player):
+        total = scheduled_total_rounds(player)
         return (
             player.session.config.get("for_prolific")
-            and player.round_number == Constants.num_rounds
+            and total > 0
+            and player.round_number == total
         )
 
     def get(self):
@@ -3092,9 +3151,11 @@ def custom_export(players):
             choices = [str(x).strip() for x in ic if str(x).strip()]
         else:
             choices = []
-        choices = choices[:4]
-        while len(choices) < 4:
-            choices.append(f"Option_{len(choices) + 1}")
+        # Use however many choices the study actually defines (do not pad to a
+        # fixed 4, which added a superfluous empty "Option_4" column).
+        choices = choices[:10]
+        if not choices:
+            choices = ["Option_1"]
         return choices
 
     def _parse_interp_answers(raw_interp, choices):
@@ -3193,7 +3254,6 @@ def custom_export(players):
         "Sentence_5_1",
         "Sentence_5_2",
         *choice_headers,
-        "rewards_raw",
         "seconds",
         "feedback",
         "excel_row_number_guess",
@@ -3263,8 +3323,15 @@ def custom_export(players):
             rn = getattr(pp, "round_number", 0) or 0
             if rn:
                 timing_map[rn] = getattr(pp, "decision_seconds", 0) or 0
-            if rn == Constants.num_rounds and getattr(pp, "feedback", ""):
-                feedback_str = getattr(pp, "feedback", "")
+            # Feedback is entered once, on the participant's last real round
+            # (no longer pinned to round 80), so capture it wherever it is.
+            # feedback is nullable, so read it without tripping the null guard.
+            try:
+                fb = pp.field_maybe_none("feedback")
+            except Exception:
+                fb = None
+            if fb:
+                feedback_str = fb
 
         # schedule from DB
         sub1 = bucket_players[0].subsession.in_round(1)
@@ -3274,6 +3341,9 @@ def custom_export(players):
             participant_code=participant_code,
         )
         sched_items.sort(key=lambda it: int(getattr(it, "round_number", 0) or 0))
+        last_sched_round = (
+            int(getattr(sched_items[-1], "round_number", 0) or 0) if sched_items else 0
+        )
 
         obj_for_db = bucket_players[0]
 
@@ -3329,9 +3399,8 @@ def custom_export(players):
                 item.get("image", ""),
                 *sentence_cells,
                 *interp_cols,
-                raw_interp,
                 seconds,
-                feedback_str if rnd == Constants.num_rounds else "",
+                feedback_str if rnd == last_sched_round else "",
                 item.get("excel_row_number_guess", ""),
                 item.get("excel_row_index0", ""),
             ]
