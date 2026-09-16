@@ -80,7 +80,7 @@ const app = Vue.createApp({
   data() {
     const p = window.props || {};
     let suffixes = p.suffixes || ["", ""];
-    const regexList = (p.regexStr || []).map(r => new RegExp(`^${r}$`, 'i'));
+    const regexList = (p.regexStr || []).map(r => new RegExp(`^(?:${r})$`, 'i'));
 
     return {
       props: p,

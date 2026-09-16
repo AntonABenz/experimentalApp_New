@@ -310,7 +310,10 @@ const app = Vue.createApp({
             const regexStr = (this.props.allowedRegexes || [])[fieldIdx];
             if (!regexStr) return false;
             try {
-                const re = new RegExp("^" + regexStr + "$", "i");
+                // Group the pattern so ^ and $ anchor the whole alternation,
+                // otherwise "^a|b|c$" only anchors the first/last option and
+                // accepts anything merely containing an allowed word.
+                const re = new RegExp("^(?:" + regexStr + ")$", "i");
                 return !re.test(val);
             } catch (e) { return false; }
         },
@@ -336,7 +339,7 @@ const app = Vue.createApp({
                         const regexStr = (this.props.allowedRegexes || [])[c];
                         if (regexStr) {
                             try {
-                                const re = new RegExp("^" + regexStr + "$", "i");
+                                const re = new RegExp("^(?:" + regexStr + ")$", "i");
                                 if (!re.test(val)) {
                                     this.errorMsg = `Field ${c+1} does not match the allowed format.`;
                                     return;
