@@ -41,6 +41,7 @@
     <div class="mon-card"><div class="num">{{ totals.replaced }}</div><div class="lbl">dropped / replaced</div></div>
     <div class="mon-card"><div class="num">{{ totals.open }}</div><div class="lbl">open</div></div>
     <div class="mon-card"><div class="num">{{ funnel.in_practice }}</div><div class="lbl">in practice</div></div>
+    {% if funnel.left_in_practice %}<div class="mon-card"><div class="num">{{ funnel.left_in_practice }}</div><div class="lbl">left in practice</div></div>{% endif %}
   </div>
 
   {% if alerts %}

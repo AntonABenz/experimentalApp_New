@@ -2140,6 +2140,11 @@ def vars_for_admin_report(subsession):
 
     IDLE_ALERT_SECONDS = 180
     FAST_ANSWER_SECONDS = 1.5
+    # A participant still in the intro/practice app but idle longer than this is
+    # treated as having left during practice, so drop-outs stop showing as
+    # "active in practice". Generous by default to avoid dropping someone who is
+    # simply reading a long instructions page; tunable without a code change.
+    PRACTICE_DROP_SECONDS = safe_int(os.environ.get("DASHBOARD_PRACTICE_DROP_SECONDS", "600"), 600)
     now_ts = int(time.time())
 
     def _metrics(participant):
@@ -2264,18 +2269,26 @@ def vars_for_admin_report(subsession):
         for row in rows.values()
     }
     practice = []
+    practice_dropped = 0
     try:
         for p in session.get_participants():
             code = clean_str(p.code)
             if code in cohort_codes:
                 continue
             if clean_str(getattr(p, "_current_app_name", "") or "") == "start":
+                # Someone who abandoned during practice keeps "start" as their
+                # current app forever; treat a long idle time as a drop-out so
+                # they no longer count as active in practice.
+                if _idle_seconds(p) >= PRACTICE_DROP_SECONDS:
+                    practice_dropped += 1
+                    continue
                 practice.append(dict(
                     short_code=code[:6],
                     label=_practice_label(getattr(p, "_current_page_name", "")),
                 ))
     except Exception:
         practice = []
+        practice_dropped = 0
 
     # Idle alerts: active participants stalled beyond the threshold.
     alerts = []
@@ -2288,6 +2301,7 @@ def vars_for_admin_report(subsession):
     funnel = dict(
         accepted=len(code_to_participant),
         in_practice=len(practice),
+        left_in_practice=int(practice_dropped),
         in_study=int(totals["active"]),
         completed=int(totals["completed"]),
         dropped=int(totals["dropped"]) + int(totals["replaced"]),
