@@ -140,14 +140,23 @@ def _extract_prolific_cookie_payload(request: Request) -> dict:
     }
 
 
+def reset_start_prolific_intake_cache():
+    """Forget a previous availability result so the next call re-checks."""
+    global _start_prolific_intake_table_available_cache
+    _start_prolific_intake_table_available_cache = None
+
+
 def _start_prolific_intake_table_available() -> bool:
     global _start_prolific_intake_table_available_cache
-    if _start_prolific_intake_table_available_cache is not None:
-        return _start_prolific_intake_table_available_cache
+    # Only a confirmed-available result is cached. A failure (no DB, a
+    # connection blip, a create error) is never cached, so the next call
+    # retries and the table can self-heal instead of staying disabled for the
+    # life of the process.
+    if _start_prolific_intake_table_available_cache:
+        return True
 
     database_url = _clean_cookie_value(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
     if not database_url:
-        _start_prolific_intake_table_available_cache = False
         return False
 
     try:
@@ -183,17 +192,31 @@ def _start_prolific_intake_table_available() -> bool:
                     conn.commit()
                     logger.warning("ASGI StartProlificIntake bootstrap: created table start_prolificintake")
                     table_exists = True
-                _start_prolific_intake_table_available_cache = table_exists
+                if table_exists:
+                    _start_prolific_intake_table_available_cache = True
+                return bool(table_exists)
         finally:
             conn.close()
     except Exception as e:
-        _start_prolific_intake_table_available_cache = False
         logger.warning("ASGI StartProlificIntake availability check failed: %s", e)
+        return False
 
-    return bool(_start_prolific_intake_table_available_cache)
+
+def _is_missing_intake_table_error(exc: Exception) -> bool:
+    """True when a query failed because start_prolificintake is gone (e.g. a
+    database reset dropped it while the availability cache still said True)."""
+    message = _clean_cookie_value(str(exc)).lower()
+    return "start_prolificintake" in message and "does not exist" in message
 
 
-def _sync_start_prolific_intake_from_participant(participant, payload: dict) -> bool:
+def _recreate_intake_table_after_missing() -> bool:
+    """Forget the stale availability result and re-check, recreating the table
+    when it is missing."""
+    reset_start_prolific_intake_cache()
+    return _start_prolific_intake_table_available()
+
+
+def _sync_start_prolific_intake_from_participant(participant, payload: dict, _retry: bool = True) -> bool:
     if participant is None or not _start_prolific_intake_table_available():
         return False
 
@@ -238,6 +261,10 @@ def _sync_start_prolific_intake_from_participant(participant, payload: dict) -> 
         finally:
             conn.close()
     except Exception as e:
+        if _retry and _is_missing_intake_table_error(e):
+            logger.warning("ASGI sync_start_prolific_intake: table missing, recreating and retrying participant=%s", participant_code)
+            _recreate_intake_table_after_missing()
+            return _sync_start_prolific_intake_from_participant(participant, payload, _retry=False)
         logger.warning(
             "ASGI sync_start_prolific_intake failed: participant=%s session=%s prolific_id=%s study_id=%s session_id=%s error=%s",
             participant_code,
@@ -277,7 +304,7 @@ def _pending_start_intake_code(payload: dict) -> str:
     return f"pending:{prolific_id}:{study_id}:{session_id}"
 
 
-def _sync_start_prolific_intake_pending(session_code: str, payload: dict) -> bool:
+def _sync_start_prolific_intake_pending(session_code: str, payload: dict, _retry: bool = True) -> bool:
     if not _start_prolific_intake_table_available():
         return False
 
@@ -320,6 +347,10 @@ def _sync_start_prolific_intake_pending(session_code: str, payload: dict) -> boo
         finally:
             conn.close()
     except Exception as e:
+        if _retry and _is_missing_intake_table_error(e):
+            logger.warning("ASGI sync_start_prolific_intake pending: table missing, recreating and retrying session=%s", session_code)
+            _recreate_intake_table_after_missing()
+            return _sync_start_prolific_intake_pending(session_code, payload, _retry=False)
         logger.warning(
             "ASGI sync_start_prolific_intake pending failed: pending=%s session=%s prolific_id=%s study_id=%s session_id=%s error=%s",
             pending_code,
@@ -343,7 +374,7 @@ def _sync_start_prolific_intake_pending(session_code: str, payload: dict) -> boo
     return True
 
 
-def _bind_start_prolific_intake_participant_code(participant_code: str, payload: dict) -> bool:
+def _bind_start_prolific_intake_participant_code(participant_code: str, payload: dict, _retry: bool = True) -> bool:
     if not _start_prolific_intake_table_available():
         return False
 
@@ -425,6 +456,10 @@ def _bind_start_prolific_intake_participant_code(participant_code: str, payload:
         finally:
             conn.close()
     except Exception as e:
+        if _retry and _is_missing_intake_table_error(e):
+            logger.warning("ASGI bind_start_prolific_intake: table missing, recreating and retrying participant=%s", participant_code)
+            _recreate_intake_table_after_missing()
+            return _bind_start_prolific_intake_participant_code(participant_code, payload, _retry=False)
         logger.warning(
             "ASGI bind_start_prolific_intake failed: participant=%s pending=%s prolific_id=%s study_id=%s session_id=%s error=%s",
             participant_code,

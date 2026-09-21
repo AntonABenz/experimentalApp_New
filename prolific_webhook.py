@@ -9,11 +9,16 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from otree.models import Participant, Session
 
 from img_desc.utils import verify_prolific_webhook
-from start import Player as StartPlayer, find_start_prolific_intake
+from start import (
+    Player as StartPlayer,
+    find_start_prolific_intake,
+    reset_start_prolific_intake_cache,
+)
 from img_desc import (
     Player as ImgDescPlayer,
     reset_this_app_for_participant,
     find_prolific_slot_map,
+    _reset_prolific_slot_map_table_cache,
     free_slot_for_participant,
     free_slot_from_prolific_slot_map,
     mark_participant_active,
@@ -182,6 +187,25 @@ async def prolific_webhook_view(request: Request):
         return PlainTextResponse("Missing prolific_pid or status", status_code=400)
 
     participant = _find_participant_by_prolific_id(prolific_pid)
+
+    if participant is None:
+        # Belt and braces: a stale table-availability cache can make the
+        # control-table lookups (intake / slot-map) silently return nothing, so
+        # a returned participant would be missed and their slot left filled.
+        # Forget any cached availability result and try the lookup once more so
+        # the tables self-heal within this same webhook call.
+        try:
+            reset_start_prolific_intake_cache()
+            _reset_prolific_slot_map_table_cache()
+        except Exception:
+            pass
+        participant = _find_participant_by_prolific_id(prolific_pid)
+        if participant is not None:
+            logger.warning(
+                "Webhook: participant found only after cache reset prolific_pid=%s status=%s",
+                prolific_pid,
+                status,
+            )
 
     if participant is None:
         mapping = find_prolific_slot_map(prolific_pid=prolific_pid, prefer_active=False)

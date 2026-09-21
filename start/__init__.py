@@ -124,14 +124,23 @@ def _load_prolific_capture_cookie_from_player(player) -> dict:
     }
 
 
+def reset_start_prolific_intake_cache():
+    """Forget a previous availability result so the next call re-checks."""
+    global _start_prolific_intake_table_available_cache
+    _start_prolific_intake_table_available_cache = None
+
+
 def _start_prolific_intake_table_available() -> bool:
     global _start_prolific_intake_table_available_cache
-    if _start_prolific_intake_table_available_cache is not None:
-        return _start_prolific_intake_table_available_cache
+    # Only a confirmed-available result is cached. A failure (no DB, a
+    # connection blip, a create error) is never cached, so the next call
+    # retries and the table can self-heal instead of staying disabled for the
+    # life of the process.
+    if _start_prolific_intake_table_available_cache:
+        return True
 
     database_url = clean_str(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
     if not database_url:
-        _start_prolific_intake_table_available_cache = False
         return False
 
     try:
@@ -168,14 +177,33 @@ def _start_prolific_intake_table_available() -> bool:
                     conn.commit()
                     logger.warning("StartProlificIntake bootstrap: created table start_prolificintake")
                     table_exists = True
-                _start_prolific_intake_table_available_cache = table_exists
+                if table_exists:
+                    _start_prolific_intake_table_available_cache = True
+                return bool(table_exists)
         finally:
             conn.close()
     except Exception as e:
-        _start_prolific_intake_table_available_cache = False
         logger.warning("StartProlificIntake availability check failed: %s", e)
+        return False
 
-    return bool(_start_prolific_intake_table_available_cache)
+
+def _is_missing_intake_table_error(exc: Exception) -> bool:
+    """True when a query failed because start_prolificintake is gone.
+
+    A confirmed-available result is cached, but the table can still disappear
+    later (e.g. a database reset on redeploy). The cached "available" then keeps
+    the app querying a table that no longer exists, so operations must detect
+    this and recreate it.
+    """
+    message = clean_str(exc).lower()
+    return "start_prolificintake" in message and "does not exist" in message
+
+
+def _recreate_intake_table_after_missing() -> bool:
+    """Forget the stale availability result and re-check, which recreates the
+    table when it is missing. Returns whether it is available afterwards."""
+    reset_start_prolific_intake_cache()
+    return _start_prolific_intake_table_available()
 
 
 def _start_intake_row_from_db(row):
@@ -204,47 +232,53 @@ def find_start_prolific_intake(participant_code: str = "", prolific_pid: str = "
     if not database_url:
         return {}
 
-    row = None
-    try:
-        conn = psycopg2.connect(database_url)
+    for attempt in (0, 1):
+        row = None
         try:
-            with conn.cursor() as cur:
-                # participant_code is the primary stable key for this intake row once
-                # the first real start page exists. Prefer it over PID-based lookup.
-                if participant_code:
-                    cur.execute(
-                        """
-                        SELECT participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts
-                        FROM public.start_prolificintake
-                        WHERE participant_code = %s
-                        LIMIT 1
-                        """,
-                        (participant_code,),
-                    )
-                    row = cur.fetchone()
+            conn = psycopg2.connect(database_url)
+            try:
+                with conn.cursor() as cur:
+                    # participant_code is the primary stable key for this intake row once
+                    # the first real start page exists. Prefer it over PID-based lookup.
+                    if participant_code:
+                        cur.execute(
+                            """
+                            SELECT participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts
+                            FROM public.start_prolificintake
+                            WHERE participant_code = %s
+                            LIMIT 1
+                            """,
+                            (participant_code,),
+                        )
+                        row = cur.fetchone()
 
-                if row is None and prolific_pid:
-                    cur.execute(
-                        """
-                        SELECT participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts
-                        FROM public.start_prolificintake
-                        WHERE prolific_pid = %s OR participant_label = %s
-                        ORDER BY last_seen_ts DESC, participant_code DESC
-                        LIMIT 1
-                        """,
-                        (prolific_pid, prolific_pid),
-                    )
-                    row = cur.fetchone()
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("find_start_prolific_intake: lookup failed participant=%s prolific_id=%s error=%s", participant_code, prolific_pid, e)
-        return {}
+                    if row is None and prolific_pid:
+                        cur.execute(
+                            """
+                            SELECT participant_code, session_code, prolific_pid, participant_label, study_id, session_id, last_seen_ts
+                            FROM public.start_prolificintake
+                            WHERE prolific_pid = %s OR participant_label = %s
+                            ORDER BY last_seen_ts DESC, participant_code DESC
+                            LIMIT 1
+                            """,
+                            (prolific_pid, prolific_pid),
+                        )
+                        row = cur.fetchone()
+            finally:
+                conn.close()
+            return _start_intake_row_from_db(row)
+        except Exception as e:
+            if attempt == 0 and _is_missing_intake_table_error(e):
+                logger.warning("find_start_prolific_intake: table missing, recreating and retrying")
+                _recreate_intake_table_after_missing()
+                continue
+            logger.warning("find_start_prolific_intake: lookup failed participant=%s prolific_id=%s error=%s", participant_code, prolific_pid, e)
+            return {}
 
-    return _start_intake_row_from_db(row)
+    return {}
 
 
-def sync_start_prolific_intake(player, pid: str = "", participant_label: str = "", study_id: str = "", sess_id: str = "") -> dict:
+def sync_start_prolific_intake(player, pid: str = "", participant_label: str = "", study_id: str = "", sess_id: str = "", _retry: bool = True) -> dict:
     participant = getattr(player, "participant", None)
     if participant is None:
         return {}
@@ -329,6 +363,13 @@ def sync_start_prolific_intake(player, pid: str = "", participant_label: str = "
         finally:
             conn.close()
     except Exception as e:
+        if _retry and _is_missing_intake_table_error(e):
+            logger.warning("sync_start_prolific_intake: table missing, recreating and retrying participant=%s", participant_code)
+            _recreate_intake_table_after_missing()
+            return sync_start_prolific_intake(
+                player, pid=pid, participant_label=participant_label,
+                study_id=study_id, sess_id=sess_id, _retry=False,
+            )
         logger.warning(
             "sync_start_prolific_intake: SQL write failed participant=%s prolific_id=%s study_id=%s session_id=%s error=%s",
             participant_code,
