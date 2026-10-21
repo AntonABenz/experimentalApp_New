@@ -1962,6 +1962,28 @@ def safe_json_loads(x, default):
         return default
 
 
+def interpreter_number_mode(session) -> bool:
+    return (session.vars.get("interpreter_input_type") or "radio") == "number"
+
+
+def parse_count(v):
+    """A non-negative whole number, or None."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, int):
+        return v if v >= 0 else None
+    s = str(v).strip()
+    return int(s) if s.isdigit() else None
+
+
+def interpreter_answer(v, number_mode: bool):
+    """Stored answer: a count in number mode, otherwise Yes/No as True/False."""
+    if number_mode:
+        n = parse_count(v)
+        return "" if n is None else n
+    return normalize_yesno_to_01(v)
+
+
 def normalize_yesno_to_01(v):
     if v is None:
         return ""
@@ -2389,6 +2411,15 @@ def creating_session(subsession: Subsession):
         # Header of the interpreter table's left column; configurable via the
         # spreadsheet ("interpreter_col_title") instead of being hard-coded.
         session.vars["interpreter_col_title"] = clean_settings.get("interpreter_col_title") or "Sweets"
+        # How the interpreter answers, from the spreadsheet: "radio" (Yes/No per
+        # choice, the default) or "number" (a count per choice, e.g. how many
+        # gold / silver / bronze medals, which must add up to interpreter_number_total).
+        input_type = clean_str(clean_settings.get("interpreter_input_type")).lower()
+        session.vars["interpreter_input_type"] = "number" if input_type == "number" else "radio"
+        session.vars["interpreter_number_total"] = safe_int(clean_settings.get("interpreter_number_total"), 0)
+        session.vars["interpreter_number_col_title"] = (
+            clean_settings.get("interpreter_number_col_title") or "Number"
+        )
         session.vars["caseflag"] = _truthy(clean_settings.get("caseflag"))
 
         session.vars["instructions_url"] = (
@@ -2782,6 +2813,22 @@ class Q(Page):
         return []
 
     @staticmethod
+    def error_message(player, values):
+        # Server-side check of the number entry (the page also checks it as you type).
+        if player.inner_role != INTERPRETER or not interpreter_number_mode(player.session):
+            return None
+        parsed = safe_json_loads(values.get("interpreter_decision"), None)
+        if not isinstance(parsed, list) or not parsed:
+            return {"interpreter_decision": "Please enter a number for every row."}
+        counts = [parse_count(d.get("answer") if isinstance(d, dict) else d) for d in parsed]
+        if any(c is None for c in counts):
+            return {"interpreter_decision": "Please enter a whole number (0 or more) for every row."}
+        total = int(player.session.vars.get("interpreter_number_total") or 0)
+        if total and sum(counts) != total:
+            return {"interpreter_decision": f"The numbers must add up to {total}."}
+        return None
+
+    @staticmethod
     def vars_for_template(player):
         raw_choices = player.session.vars.get("interpreter_choices") or ""
         if isinstance(raw_choices, str):
@@ -2815,6 +2862,9 @@ class Q(Page):
             interpreter_choices=interpreter_choices,
             interpreter_title=player.session.vars.get("interpreter_title") or "Buy medals:",
             interpreter_col_title=player.session.vars.get("interpreter_col_title") or "Sweets",
+            interpreter_input_type=player.session.vars.get("interpreter_input_type") or "radio",
+            interpreter_number_total=player.session.vars.get("interpreter_number_total") or 0,
+            interpreter_number_col_title=player.session.vars.get("interpreter_number_col_title") or "Number",
             instructions_url=player.session.vars.get("instructions_url"),
             introduction_text=player.session.vars.get("introduction_text", ""),
             doc_link=player.session.vars.get("doc_link", ""),
@@ -2874,12 +2924,13 @@ class Q(Page):
 
             raw = player.interpreter_decision
             parsed = safe_json_loads(raw, None)
+            number_mode = interpreter_number_mode(player.session)
 
             labeled = []
 
             if isinstance(parsed, list) and (not any(isinstance(x, dict) for x in parsed)):
                 for opt, val in zip(choices, parsed[:4]):
-                    labeled.append({"option": opt, "answer": normalize_yesno_to_01(val)})
+                    labeled.append({"option": opt, "answer": interpreter_answer(val, number_mode)})
 
             elif isinstance(parsed, list) and any(isinstance(x, dict) for x in parsed):
                 by_label = {}
@@ -2896,8 +2947,8 @@ class Q(Page):
                     if opt is None:
                         continue
                     opt = str(opt).strip()
-                    by_label[opt] = normalize_yesno_to_01(
-                        d0.get("answer", d0.get("value", d0.get("selected")))
+                    by_label[opt] = interpreter_answer(
+                        d0.get("answer", d0.get("value", d0.get("selected"))), number_mode
                     )
 
                 if by_label:
@@ -2912,8 +2963,8 @@ class Q(Page):
                         labeled.append(
                             {
                                 "option": opt,
-                                "answer": normalize_yesno_to_01(
-                                    d0.get("answer", d0.get("value", d0.get("selected")))
+                                "answer": interpreter_answer(
+                                    d0.get("answer", d0.get("value", d0.get("selected"))), number_mode
                                 ),
                             }
                         )
@@ -2921,7 +2972,7 @@ class Q(Page):
                 s = "" if raw is None else str(raw).strip()
                 parts = [p.strip() for p in re.split(r"[,;\|\s]+", s) if p.strip()]
                 for opt, val in zip(choices, parts[:4]):
-                    labeled.append({"option": opt, "answer": normalize_yesno_to_01(val)})
+                    labeled.append({"option": opt, "answer": interpreter_answer(val, number_mode)})
 
             if not labeled:
                 labeled = [{"option": opt, "answer": ""} for opt in choices]
@@ -3182,7 +3233,9 @@ def custom_export(players):
                 continue
             opt = str(d0.get("option", "")).strip()
             if opt in out:
-                out[opt] = normalize_yesno_to_01(d0.get("answer"))
+                a = d0.get("answer")
+                # counts (number mode) are stored as ints; keep them as they are
+                out[opt] = a if (isinstance(a, int) and not isinstance(a, bool)) else normalize_yesno_to_01(a)
         return out
 
     def _resolve_lookup(item, obj_for_db):
