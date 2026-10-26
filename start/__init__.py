@@ -864,11 +864,18 @@ class _PracticePage(_BasePage):
     @classmethod
     def vars_for_template(cls, player: Player):
         s = cls._settings(player)
+        sv = player.session.vars
         return dict(
             settings=s,
-            js_regex=json.dumps(player.session.vars.get("allowed_regex", [])),
-            allowed_values=player.session.vars.get("allowed_values", []),
-            suffixes=player.session.vars.get("suffixes", []),
+            js_regex=json.dumps(sv.get("allowed_regex", [])),
+            allowed_values=sv.get("allowed_values", []),
+            suffixes=sv.get("suffixes", []),
+            # buyer practice (Practice1-3) answers like the main interpreter page:
+            # Yes/No per choice, or a count per choice that adds up to a total
+            interpreter_input_type=sv.get("interpreter_input_type") or "radio",
+            interpreter_number_total=sv.get("interpreter_number_total") or 0,
+            interpreter_col_title=sv.get("interpreter_col_title") or "",
+            interpreter_number_col_title=sv.get("interpreter_number_col_title") or "Number",
         )
 
 

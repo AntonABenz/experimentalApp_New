@@ -7,7 +7,18 @@
   window.page_settings       = {{ settings|json }};
   window.interpreter_choices = {{ session.vars.interpreter_choices|json }};
   window.interpreter_title   = {{ session.vars.interpreter_title|json }};
+  window.input_type          = {{ interpreter_input_type|json }};
+  window.number_total        = {{ interpreter_number_total|json }};
+  window.col_title           = {{ interpreter_col_title|json }};
+  window.number_col_title    = {{ interpreter_number_col_title|json }};
 </script>
+
+<style>
+  input.count-input { width: 6rem; margin: 0 auto; text-align: center; font-size: 1.25rem; }
+  .count-total { font-size: 1.15rem; text-align: center; margin: 1.5rem 0 1.5rem; }
+  .count-total.ok { color: #198754; }
+  .count-total.off { color: #b02a37; }
+</style>
 
 <div id="app">
   <h1>[[ title ]]</h1>
@@ -18,7 +29,30 @@
          style="max-width: 600px; width: 100%; height: auto;">
   </div>
 
-  <table class="table">
+  <template v-if="numberMode">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>[[ col_title || interpreter_title ]]</th>
+          <th class="text-center">[[ number_col_title ]]</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="(row, idx) in rows" :key="'n' + idx">
+          <td>[[ row.name ]]</td>
+          <td class="text-center">
+            <input type="number" class="form-control count-input" min="0" step="1"
+                   inputmode="numeric" v-model="row.count" @input="error=false; message=''">
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p v-if="total" class="count-total" :class="countTotal === total ? 'ok' : 'off'">
+      [[ countTotal ]] / [[ total ]]
+    </p>
+  </template>
+
+  <table v-else class="table">
     <thead>
       <tr>
         <th>[[ interpreter_title ]]</th>
@@ -39,7 +73,7 @@
   <input type="hidden" name="practice_response" :value="jsonPayload">
 
   <p v-if="error" class="alert alert-danger">
-    Please check your answers.
+    [[ message || "Please check your answers." ]]
   </p>
 
   <div class="text-center mt-4">
@@ -74,30 +108,67 @@ const app = Vue.createApp({
       main_text: S.main_text || "",
       image_path: S.full_image_path || "",
       interpreter_title: window.interpreter_title || "",
-      rows: IC.map(label => ({ name: label, choice: null })),
+      rows: IC.map(label => ({ name: label, choice: null, count: "" })),
       correct,
+      // number mode: right_answer_1..n are the expected counts
+      correctCounts: raw.map(v => parseInt(v, 10)),
+      numberMode: window.input_type === "number",
+      total: parseInt(window.number_total, 10) || 0,
+      col_title: window.col_title || "",
+      number_col_title: window.number_col_title || "Number",
       error: false,
+      message: "",
     };
   },
 
   computed: {
+    counts() {
+      // null for anything that is not a whole number >= 0
+      return this.rows.map(r => {
+        const s = String(r.count ?? "").trim();
+        return /^\d+$/.test(s) ? parseInt(s, 10) : null;
+      });
+    },
+    countTotal() {
+      return this.counts.reduce((a, v) => a + (v || 0), 0);
+    },
     allChosen() {
+      if (this.numberMode) return this.rows.every(r => String(r.count ?? "").trim() !== "");
       return this.rows.every(r => r.choice !== null);
     },
     jsonPayload() {
       // store the raw choices for debugging / exports
-      return JSON.stringify(this.rows.map(r => r.choice));
+      return JSON.stringify(this.numberMode ? this.counts : this.rows.map(r => r.choice));
     }
   },
 
   methods: {
     validate() {
+      this.message = "";
       if (!this.allChosen) {
         this.error = true;
         return;
       }
 
-      if (this.correct.length && this.correct.length === this.rows.length) {
+      if (this.numberMode) {
+        if (this.counts.some(v => v === null)) {
+          this.message = "Please enter a whole number (0 or more) for every row.";
+          this.error = true;
+          return;
+        }
+        if (this.total && this.countTotal !== this.total) {
+          this.message = `The numbers must add up to ${this.total} (now ${this.countTotal}).`;
+          this.error = true;
+          return;
+        }
+        const known = this.correctCounts.length === this.rows.length
+          && this.correctCounts.every(n => !isNaN(n));
+        if (known && this.counts.some((n, i) => n !== this.correctCounts[i])) {
+          this.message = "Not quite. Please look at the picture again and check how many medals of each kind are needed.";
+          this.error = true;
+          return;
+        }
+      } else if (this.correct.length && this.correct.length === this.rows.length) {
         const ok = this.rows.every((r, i) => r.choice === this.correct[i]);
         this.error = !ok;
         if (!ok) return;
