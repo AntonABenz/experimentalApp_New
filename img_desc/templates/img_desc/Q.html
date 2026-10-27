@@ -189,7 +189,7 @@ window.props = {
             <div v-for="(item, i) in items" :key="i" class="clean-row">
                 <div class="input-group">
                     <div v-for="(f, j) in item.fields" :key="j" class="field-wrap">
-                        <span class="field-input-wrap">
+                        <span class="field-input-wrap" :style="fieldStyle(j)">
                             <input class="form-control input-kids"
                                    :class="{ invalid: fieldInvalid(i,j) }"
                                    v-model="f.value"
@@ -331,6 +331,14 @@ const app = Vue.createApp({
         closeInstructions() { this.showInstructions = false; },
         reloadInstructions() { this.instructionsNonce += 1; },
         openOptions(fieldIndex) { this.optionsFieldIndex = fieldIndex; this.showOptions = true; },
+        fieldStyle(fieldIndex) {
+            // wide enough for the longest allowed option of this field (e.g. "Exactly one
+            // of the children"), never narrower than the default 160px
+            const av = Array.isArray(this.props.allowedValues) ? this.props.allowedValues : [];
+            const longest = Math.max(0, ...(av[fieldIndex] || []).map(v => String(v).length));
+            if (!longest) return {};
+            return { flex: "0 0 auto", width: `max(160px, ${Math.min(longest + 5, 34)}ch)` };
+        },
         closeOptions() { this.showOptions = false; },
         addItem() {
             if (this.items.length >= this.maxItems) return;
