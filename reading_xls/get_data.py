@@ -17,8 +17,11 @@ def _gsheet_export_xlsx_url(url: str) -> str:
 
 def _download_gsheet_xlsx(url: str, cache_seconds: int = 60) -> Path:
     export_url = _gsheet_export_xlsx_url(url)
-    tmp_path = Path("/tmp") / "study.xlsx"
-    stamp_path = Path("/tmp") / "study.xlsx.stamp"
+    # One cache file per Google Sheet: with a single shared file, a second session
+    # created within cache_seconds from a different sheet would get the first sheet.
+    sheet_id = re.search(r"/spreadsheets/d/([^/]+)", url).group(1)
+    tmp_path = Path("/tmp") / f"study_{sheet_id}.xlsx"
+    stamp_path = Path("/tmp") / f"study_{sheet_id}.xlsx.stamp"
     try:
         if tmp_path.exists() and stamp_path.exists():
             if time.time() - float(stamp_path.read_text().strip() or "0") < cache_seconds:
