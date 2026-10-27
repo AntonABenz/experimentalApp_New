@@ -47,7 +47,7 @@
     <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
       <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
         <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
-          <input type="text" v-model="field.value" class="form-control input-kids" placeholder="..." autocomplete="off" @input="errorMsg=''">
+          <input type="text" v-model="field.value" class="form-control input-kids" :style="fieldStyle(fieldIndex)" placeholder="..." autocomplete="off" @input="errorMsg=''">
           <span class="mx-2 font-weight-bold text-nowrap">[[ field.suffix ]]</span>
         </div>
         <button class="btn btn-outline-secondary ml-2" @click.prevent="addItem" :disabled="items.length >= 5">+</button>
@@ -88,6 +88,14 @@ const app = Vue.createApp({
   methods: {
     addItem() { if(this.items.length < 5) this.items.push({ fields: this.suffixes.map(s=>({value:"", suffix:s})) }); },
     removeItem(i) { if(this.items.length > 1) this.items.splice(i, 1); },
+    fieldStyle(fieldIndex) {
+      // wide enough for the longest allowed option of this field (e.g. "Exactly one
+      // of the children"), never narrower than the default 200px
+      const av = Array.isArray(this.props.allowedValues) ? this.props.allowedValues : [];
+      const longest = Math.max(0, ...(av[fieldIndex] || []).map(v => String(v).length));
+      if (!longest) return {};
+      return { flex: "0 0 auto", width: `max(200px, ${Math.min(longest + 5, 34)}ch)` };
+    },
     check() {
       this.errorMsg = "";
       
