@@ -757,6 +757,17 @@ def creating_session(subsession: BaseSubsession):
     session.vars["interpreter_choices"] = settings.get("interpreter_choices", []) or []
     session.vars["interpreter_title"] = settings.get("interpreter_title", "Interpretation") or "Interpretation"
     session.vars["EndOfIntroText"] = settings.get("EndOfIntroText", "") or ""
+    # How the buyer practice pages (Practice1-3) are answered: Yes/No or a count per
+    # choice. img_desc sets the same values again, but a "Practice pages only" session
+    # has no img_desc, so read them here as well.
+    input_type = clean_str(settings.get("interpreter_input_type")).lower()
+    session.vars["interpreter_input_type"] = "number" if input_type == "number" else "radio"
+    try:
+        session.vars["interpreter_number_total"] = int(float(clean_str(settings.get("interpreter_number_total")) or 0))
+    except ValueError:
+        session.vars["interpreter_number_total"] = 0
+    session.vars["interpreter_col_title"] = clean_str(settings.get("interpreter_col_title"))
+    session.vars["interpreter_number_col_title"] = clean_str(settings.get("interpreter_number_col_title")) or "Number"
 
     # S3 base + extension
     raw_s3 = clean_str(settings.get("s3path") or settings.get("s3path_base") or "")
