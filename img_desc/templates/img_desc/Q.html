@@ -332,12 +332,10 @@ const app = Vue.createApp({
         reloadInstructions() { this.instructionsNonce += 1; },
         openOptions(fieldIndex) { this.optionsFieldIndex = fieldIndex; this.showOptions = true; },
         fieldStyle(fieldIndex) {
-            // wide enough for the longest allowed option of this field (e.g. "Exactly one
-            // of the children"), never narrower than the default 160px
-            const av = Array.isArray(this.props.allowedValues) ? this.props.allowedValues : [];
-            const longest = Math.max(0, ...(av[fieldIndex] || []).map(v => String(v).length));
-            if (!longest) return {};
-            return { flex: "0 0 auto", width: `max(160px, ${Math.min(longest + 5, 34)}ch)` };
+            // fixed widths: the allowed values may be single words that are combined freely,
+            // so they do not tell how long an answer gets. Field 1 fits "Exactly two of the
+            // children", the others "some but not all"; together they fit on one line.
+            return { flex: "0 0 auto", width: fieldIndex === 0 ? "28ch" : "20ch" };
         },
         closeOptions() { this.showOptions = false; },
         addItem() {

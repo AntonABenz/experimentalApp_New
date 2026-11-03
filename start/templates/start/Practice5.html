@@ -19,6 +19,9 @@
   }
   .vocab-column{ font-size:1.1rem; text-align:left; }
   .vocab-item{ display:block; margin-bottom:2px; }
+  /* the allowed values wrap as small boxes, so a long word list stays short */
+  .vocab-list { display: flex; flex-wrap: wrap; justify-content: center; align-content: flex-start; gap: 6px 8px; }
+  .vocab-list > div { background: #fff; border: 1px solid #dee2e6; border-radius: 4px; padding: 1px 8px; }
   @media (min-width:768px){
     .vocab-column:first-child{ border-right:2px solid #e9ecef; }
   }
@@ -38,10 +41,10 @@
   <div class="vocabulary-box text-center">
     <h5 class="mb-3">[[ vocabTitle ]]</h5>
     <div class="row justify-content-center">
-      <div class="col-md-5 vocab-column px-4">
+      <div class="col-md-5 vocab-column vocab-list px-4">
         <div v-for="(w, i) in vocab1" :key="'v1-'+i" class="vocab-item">[[ w ]]</div>
       </div>
-      <div class="col-md-5 vocab-column px-4">
+      <div class="col-md-5 vocab-column vocab-list px-4">
         <div v-for="(w, i) in vocab2" :key="'v2-'+i" class="vocab-item">[[ w ]]</div>
       </div>
     </div>

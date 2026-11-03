@@ -8,6 +8,9 @@
   .input-kids  { min-width: 200px; }
   .clean-row { border: none; padding: 5px 0; margin-bottom: 10px; }
 
+  /* the allowed values wrap as small boxes, so a long word list stays short */
+  .vocab-list { display: flex; flex-wrap: wrap; justify-content: center; align-content: flex-start; gap: 6px 8px; }
+  .vocab-list > div { background: #fff; border: 1px solid #dee2e6; border-radius: 4px; padding: 1px 8px; }
   .vocab-box {
     background-color: #f8f9fa; border: 1px solid #ddd; padding: 15px; border-radius: 5px; margin-bottom: 20px;
   }
@@ -41,10 +44,10 @@
   <div class="vocab-box text-center">
     <h5>[[ props.settings.vocab_title || "Allowed Vocabulary" ]]</h5>
     <div class="row">
-      <div class="col-md-6" v-if="props.allowedValues[0]">
+      <div class="col-md-6 vocab-list" v-if="props.allowedValues[0]">
         <div v-for="v in props.allowedValues[0]">[[ v ]]</div>
       </div>
-      <div class="col-md-6" v-if="props.allowedValues[1]">
+      <div class="col-md-6 vocab-list" v-if="props.allowedValues[1]">
         <div v-for="v in props.allowedValues[1]">[[ v ]]</div>
       </div>
     </div>
@@ -98,12 +101,9 @@ const app = Vue.createApp({
     addItem() { if(this.items.length < 5) this.items.push({ fields: this.suffixes.map(s=>({value:"", suffix:s})) }); },
     removeItem(i) { if(this.items.length > 1) this.items.splice(i, 1); },
     fieldStyle(fieldIndex) {
-      // wide enough for the longest allowed option of this field (e.g. "Exactly one
-      // of the children"), never narrower than the default 200px
-      const av = Array.isArray(this.props.allowedValues) ? this.props.allowedValues : [];
-      const longest = Math.max(0, ...(av[fieldIndex] || []).map(v => String(v).length));
-      if (!longest) return {};
-      return { flex: "0 0 auto", width: `max(200px, ${Math.min(longest + 5, 34)}ch)` };
+      // the same widths as on the Describer page: the allowed values may be single words
+      // that are combined freely, so they do not tell how long an answer gets
+      return { flex: "0 0 auto", width: fieldIndex === 0 ? "28ch" : "20ch" };
     },
 
     check() {
