@@ -21,7 +21,9 @@ from start import Player as StartPlayer
 import psycopg2
 
 # NEW
-from otree.models import Session  # Django ORM
+from otree.models import Session
+from otree.database import db as otree_db
+from otree.middleware import lock2 as otree_lock2
 from img_desc import (
     CohortSlot,
     Constants as ImgDescConstants,
@@ -710,26 +712,36 @@ async def entry(request):
     # with "for_prolific" switched off is a test session and never gets Prolific
     # participants, so the study can be tested on the live server at any time.
     # (oTree 5 has no Session.objects and keeps the config name inside the config.)
-    s = next(
-        (
-            sess
-            for sess in Session.objects_filter(is_demo=False)
-            .order_by(Session.id.desc())
-            .limit(200)
-            if (sess.config or {}).get("name") == "full_study"
-            and (sess.config or {}).get("for_prolific", True)
-        ),
-        None,
-    )
+    # This route is outside oTree's own pages, so open the database the way oTree's
+    # request middleware does: a fresh session, under the same lock.
+    async with otree_lock2:
+        otree_db.new_session()
+        try:
+            s = next(
+                (
+                    sess
+                    for sess in Session.objects_filter(is_demo=False)
+                    .order_by(Session.id.desc())
+                    .limit(200)
+                    if (sess.config or {}).get("name") == "full_study"
+                    and (sess.config or {}).get("for_prolific", True)
+                ),
+                None,
+            )
+            session_code = s.code if s else ""
+            # the session-wide link /join/<code> takes the join code, not the session code
+            join_code = s._anonymous_code if s else ""
+        finally:
+            otree_db.rollback()
 
-    if not s:
+    if not session_code:
         return PlainTextResponse("No active session found. Create a 'full_study' session in admin.", status_code=500)
 
     payload = _extract_prolific_cookie_payload(request)
     if payload.get("identity_mismatch"):
         logger.warning(
             "Rejected mismatched Prolific entry: session=%s raw_prolific_id=%s raw_participant_label=%s study_id=%s session_id=%s",
-            getattr(s, "code", ""),
+            session_code,
             payload.get("raw_prolific_id", ""),
             payload.get("raw_participant_label", ""),
             payload.get("study_id", ""),
@@ -740,9 +752,9 @@ async def entry(request):
             status_code=400,
         )
 
-    response = RedirectResponse(f"/join/{s.code}{suffix}", status_code=302)
+    response = RedirectResponse(f"/join/{join_code}{suffix}", status_code=302)
     if payload.get("prolific_id"):
-        _sync_start_prolific_intake_pending(s.code, payload)
+        _sync_start_prolific_intake_pending(session_code, payload)
         response.set_cookie(
             PROLIFIC_CAPTURE_COOKIE,
             _sign_cookie_payload(payload),
