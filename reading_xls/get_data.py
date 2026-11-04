@@ -1,8 +1,10 @@
 import pandas as pd
 import logging
+import os
 import re
 import time
 import urllib.request
+import zipfile
 from pathlib import Path
 
 logger = logging.getLogger("benzapp.get_data")
@@ -28,10 +30,23 @@ def _download_gsheet_xlsx(url: str, cache_seconds: int = 60) -> Path:
                 logger.info("Using cached XLSX")
                 return tmp_path
     except Exception: pass
-    logger.info(f"Downloading XLSX from {export_url}")
-    urllib.request.urlretrieve(export_url, tmp_path)
-    stamp_path.write_text(str(time.time()))
-    return tmp_path
+    # Google now and then sends an incomplete file. Download to a side file, check that
+    # it opens as a workbook, and only then put it in place, so a broken download is
+    # retried instead of failing the session and being served from the cache.
+    part_path = tmp_path.with_name(tmp_path.name + ".part")
+    for attempt in range(1, 4):
+        logger.info(f"Downloading XLSX from {export_url} (attempt {attempt})")
+        try:
+            urllib.request.urlretrieve(export_url, part_path)
+            if zipfile.is_zipfile(part_path):
+                os.replace(part_path, tmp_path)
+                stamp_path.write_text(str(time.time()))
+                return tmp_path
+            logger.warning("Downloaded XLSX is incomplete, retrying")
+        except OSError as e:
+            logger.warning(f"Downloading XLSX failed: {e}")
+        time.sleep(attempt)
+    raise RuntimeError("Could not download a complete copy of the Google Sheet. Please try again.")
 
 def _load_excel(filename: str) -> Path:
     if _is_gsheet_url(filename): return _download_gsheet_xlsx(filename, cache_seconds=60)
