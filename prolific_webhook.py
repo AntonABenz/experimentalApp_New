@@ -290,14 +290,7 @@ async def prolific_webhook_view(request: Request):
     elif status in Constants.ACTIVE_PROLIFIC_STATUSES:
         mark_participant_active(participant)
 
-    try:
-        participant.save()
-    except Exception:
-        logger.exception(
-            "Webhook: failed saving participant status. participant=%s prolific_pid=%s",
-            participant.code,
-            prolific_pid,
-        )
+    # No participant.save() in oTree 5: the route commits (asgi._with_db_transaction).
 
     if status in Constants.BAD_PROLIFIC_STATUSES:
         try:
@@ -310,7 +303,6 @@ async def prolific_webhook_view(request: Request):
                 participant.code,
                 completed=False,
             )
-            participant.save()
 
             logger.info(
                 "Webhook: freed slot without deleting schedule for participant=%s status=%s prolific_pid=%s",

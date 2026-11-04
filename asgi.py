@@ -16,6 +16,8 @@ from starlette.responses import JSONResponse, RedirectResponse, PlainTextRespons
 from starlette.requests import Request
 
 from otree.asgi import app as otree_app
+from otree.database import db
+from otree.middleware import lock2 as _otree_request_lock
 from prolific_webhook import prolific_webhook_view, _find_participant_by_prolific_id
 from start import Player as StartPlayer
 import psycopg2
@@ -59,6 +61,33 @@ logger = logging.getLogger("benzapp.admin")
 PROLIFIC_CAPTURE_COOKIE = "prolific_capture"
 PROLIFIC_CAPTURE_MAX_AGE = 6 * 60 * 60
 _start_prolific_intake_table_available_cache = None
+
+def _with_db_transaction(view):
+    """Run a route that lives outside oTree's own app the way oTree runs its pages.
+
+    oTree 5 has no model.save(): changes are written when oTree's
+    CommitTransactionMiddleware commits at the end of a request, and the next
+    request replaces the DB session, dropping anything left uncommitted. Routes
+    mounted next to otree_app never pass through that middleware, so commit here
+    (under the same lock) or their changes are lost.
+    """
+
+    async def wrapped(request):
+        async with _otree_request_lock:
+            db.new_session()
+            try:
+                response = await view(request)
+            except Exception:
+                db.rollback()
+                raise
+            if response.status_code < 500:
+                db.commit()
+            else:
+                db.rollback()
+            return response
+
+    return wrapped
+
 
 async def ping(request):
     return JSONResponse({"ok": True})
@@ -627,7 +656,6 @@ def _apply_prolific_cookie_to_participant(participant, payload: dict) -> bool:
         changed = True
 
     if changed:
-        participant.save()
         logger.info(
             "Prolific cookie captured: participant=%s prolific_id=%s study_id=%s session_id=%s",
             participant.code,
@@ -636,6 +664,31 @@ def _apply_prolific_cookie_to_participant(participant, payload: dict) -> bool:
             session_id,
         )
     return True
+
+
+async def _capture_prolific_cookie_for_participant(participant_code: str, payload: dict) -> bool:
+    """Apply the captured Prolific ids to the participant and commit.
+
+    This middleware runs outside oTree's commit middleware, so commit here (see
+    _with_db_transaction). Best effort: a failure is logged and must not turn the
+    participant's page into a server error.
+    """
+    async with _otree_request_lock:
+        db.new_session()
+        try:
+            _bind_start_prolific_intake_participant_code(participant_code, payload)
+            participant = _find_participant_by_code(participant_code)
+            applied = False
+            if participant:
+                synced = _sync_start_prolific_intake_from_participant(participant, payload)
+                applied = _apply_prolific_cookie_to_participant(participant, payload)
+                applied = bool(synced or applied)
+            db.commit()
+            return applied
+        except Exception:
+            db.rollback()
+            logger.exception("Prolific cookie capture failed participant=%s", participant_code)
+            return False
 
 
 class ProlificCaptureCookieMiddleware(BaseHTTPMiddleware):
@@ -666,24 +719,14 @@ class ProlificCaptureCookieMiddleware(BaseHTTPMiddleware):
 
         if payload:
             if participant_code:
-                _bind_start_prolific_intake_participant_code(participant_code, payload)
-                participant = _find_participant_by_code(participant_code)
-                if participant:
-                    synced = _sync_start_prolific_intake_from_participant(participant, payload)
-                    applied = _apply_prolific_cookie_to_participant(participant, payload)
-                    if synced or applied:
-                        should_clear_cookie = True
+                if await _capture_prolific_cookie_for_participant(participant_code, payload):
+                    should_clear_cookie = True
 
         response = await call_next(request)
 
         if payload and not should_clear_cookie and participant_code:
-            _bind_start_prolific_intake_participant_code(participant_code, payload)
-            participant = _find_participant_by_code(participant_code)
-            if participant:
-                synced = _sync_start_prolific_intake_from_participant(participant, payload)
-                applied = _apply_prolific_cookie_to_participant(participant, payload)
-                if synced or applied:
-                    should_clear_cookie = True
+            if await _capture_prolific_cookie_for_participant(participant_code, payload):
+                should_clear_cookie = True
 
         if request_payload.get("prolific_id") and not payload:
             response.set_cookie(
@@ -1372,23 +1415,19 @@ async def cohort_repair(request: Request):
         free_slot_for_participant(participant.session, participant.code)
         reset_this_app_for_participant(participant)
         mark_participant_complete_in_cohort(participant.session, participant.code, completed=False)
-        participant.save()
         note = "participant marked drop_out, slot freed, app state reset"
     elif participant and action == "finished":
         mark_participant_finished(participant)
         mark_participant_complete_in_cohort(participant.session, participant.code, completed=True)
-        participant.save()
         maybe_expand_prolific_for_participant(participant)
         note = "participant marked finished and cohort completion updated"
     elif participant and action == "free_slot":
         free_slot_for_participant(participant.session, participant.code)
         reset_this_app_for_participant(participant)
         mark_participant_complete_in_cohort(participant.session, participant.code, completed=False)
-        participant.save()
         note = "slot freed and app state reset; participant status unchanged"
     elif participant and action == "active":
         mark_participant_active(participant)
-        participant.save()
         note = "participant marked active"
     elif mapping and action in {"status", "drop_out", "free_slot", "finished"}:
         session_code = clean_str(getattr(mapping, "session_code", ""))
@@ -1519,9 +1558,9 @@ app = Starlette(
     ],
     routes=[
         Route("/prolific/ping/", ping, methods=["GET"]),
-        Route("/prolific/webhook/", prolific_webhook_view, methods=["POST", "GET", "HEAD"]),
-        Route("/admin/cohort-repair", cohort_repair, methods=["GET", "POST"]),
-        Route("/admin/cohort-repair/", cohort_repair, methods=["GET", "POST"]),
+        Route("/prolific/webhook/", _with_db_transaction(prolific_webhook_view), methods=["POST", "GET", "HEAD"]),
+        Route("/admin/cohort-repair", _with_db_transaction(cohort_repair), methods=["GET", "POST"]),
+        Route("/admin/cohort-repair/", _with_db_transaction(cohort_repair), methods=["GET", "POST"]),
         # NEW:
         Route("/entry", entry, methods=["GET"]),
         Route("/entry/", entry, methods=["GET"]),
