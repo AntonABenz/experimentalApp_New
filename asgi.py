@@ -706,12 +706,20 @@ async def entry(request):
     qs = str(request.url.query or "")
     suffix = f"?{qs}" if qs else ""
 
-    # pick the latest real session for config_name='full_study'
-    s = (
-        Session.objects
-        .filter(is_demo=False, config_name="full_study")
-        .order_by("-id")
-        .first()
+    # pick the latest real session for config_name='full_study'. A session created
+    # with "for_prolific" switched off is a test session and never gets Prolific
+    # participants, so the study can be tested on the live server at any time.
+    # (oTree 5 has no Session.objects and keeps the config name inside the config.)
+    s = next(
+        (
+            sess
+            for sess in Session.objects_filter(is_demo=False)
+            .order_by(Session.id.desc())
+            .limit(200)
+            if (sess.config or {}).get("name") == "full_study"
+            and (sess.config or {}).get("for_prolific", True)
+        ),
+        None,
     )
 
     if not s:
