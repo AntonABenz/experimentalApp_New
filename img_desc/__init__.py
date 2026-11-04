@@ -2018,10 +2018,10 @@ def reset_this_app_for_participant(participant):
         "local_slot",
     ]:
         participant.vars.pop(k, None)
-    try:
-        participant._index_in_pages = 0
-    except Exception:
-        pass
+    # Leave participant._index_in_pages alone. oTree 5 numbers pages from 1, so 0 made
+    # every later page of this participant a server error. Without it, a participant
+    # marked as dropped reaches ProlificStatusGate on their next page and is sent back
+    # to Prolific.
 
 
 def sentences_for_line_from_trialrow(tr: TrialRow, exp_target: int):
