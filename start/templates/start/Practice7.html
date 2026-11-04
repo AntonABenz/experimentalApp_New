@@ -12,6 +12,11 @@
   .vocab-list > div { background: #fff; border: 1px solid #dee2e6; border-radius: 4px; padding: 1px 8px; }
   .vocab-box { background-color: #f8f9fa; border: 1px solid #ddd; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
   .image-box { width: 100%; max-width: 600px; height: auto; min-height: 200px; background-color: #eee; margin: 0 auto; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; color: #555; }
+  /* one box per targeted task */
+  .task-box { max-width: 860px; margin: 0 auto 14px; padding: 10px 14px 4px; border: 1px solid #dee2e6; border-radius: 5px; text-align: left; }
+  .task-box.has-error { border-color: #dc3545; }
+  .task-title { font-weight: 600; margin-bottom: 2px; }
+  .task-example { color: #6c757d; font-size: 0.92em; margin-bottom: 8px; }
 </style>
 
 <script>
@@ -27,7 +32,7 @@
   <h2 class="text-center my-3">[[ props.settings.title ]]</h2>
   <div v-html="props.settings.main_text"></div>
 
-  <div class="text-center my-4">
+  <div class="text-center my-4" v-if="props.settings.full_image_path || !tasks.length">
     <img v-if="props.settings.full_image_path" :src="props.settings.full_image_path" style="max-width: 100%; max-height: 400px; border: 1px solid #ddd;">
     <div v-else class="image-box">
       [[ props.settings.blank_area_text || "This area is intentionally blank in this practice task. In the real experiment, a picture will be shown here." ]]
@@ -46,7 +51,22 @@
     </div>
   </div>
 
-  <div class="text-center mt-4">
+  <!-- targeted tasks (task_1 ... task_5 in the practice_7 tab): one sentence per task -->
+  <div v-if="tasks.length" class="mt-4">
+    <div v-for="(task, k) in tasks" :key="k" class="task-box" :class="{ 'has-error': errorRow === k }">
+      <div class="task-title">[[ k + 1 ]]. [[ task.text ]]</div>
+      <div class="task-example" v-if="task.example">Example: [[ task.example ]]</div>
+      <div class="input-group mb-2 d-flex align-items-baseline flex-wrap" style="row-gap: 6px;">
+        <div v-for="(field, fieldIndex) in items[k].fields" :key="fieldIndex" class="d-flex align-items-baseline">
+          <input type="text" v-model="field.value" class="form-control input-kids" :style="fieldStyle(fieldIndex)" placeholder="..." autocomplete="off" @input="errorMsg=''; errorRow=-1">
+          <span class="mx-2 font-weight-bold text-nowrap">[[ field.suffix ]]</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- without tasks in the sheet: the earlier free description with 5 sentences -->
+  <div v-else class="text-center mt-4">
     <div v-for="(item, itemIndex) in items" :key="itemIndex" class="clean-row d-flex justify-content-center">
       <div class="input-group mb-3 d-flex align-items-baseline flex-nowrap">
         <div v-for="(field, fieldIndex) in item.fields" :key="fieldIndex" class="d-flex align-items-baseline">
@@ -60,7 +80,7 @@
   </div>
 
   <input type="hidden" name="practice_response" :value="jsonPayload">
-  
+
   <p v-if="errorMsg" class="alert alert-danger text-center mt-3" style="max-width: 600px; margin: 0 auto;">[[ errorMsg ]]</p>
 
   <div class="text-center mt-5">
@@ -73,16 +93,39 @@
 const app = Vue.createApp({
   data() {
     const p = window.props || {};
+    const s = p.settings || {};
     let suffixes = p.suffixes || ["", ""];
     const regexList = (p.regexStr || []).map(r => new RegExp(`^(?:${r})$`, 'i'));
+    const clean = v => (v === null || v === undefined) ? "" : String(v).trim();
+
+    // task_k: the instruction, example_k: "field 1; field 2", check_k: a regular
+    // expression the sentence (field 1 + " " + field 2) must contain,
+    // error_k: the message when it does not
+    const tasks = [];
+    for (let k = 1; k <= 10; k++) {
+      const text = clean(s[`task_${k}`]);
+      if (!text) continue;
+      const ex = clean(s[`example_${k}`]).split(";").map(clean);
+      let check = null;
+      try { check = clean(s[`check_${k}`]) ? new RegExp(clean(s[`check_${k}`]), 'i') : null; } catch (e) { check = null; }
+      tasks.push({
+        text,
+        example: ex[0] ? ex.map((v, i) => `${v} ${suffixes[i] || ""}`.trim()).join(" ") : "",
+        check,
+        error: clean(s[`error_${k}`]),
+      });
+    }
+    const rows = tasks.length || 1;
 
     return {
       props: p,
       suffixes,
       regexList,
-      items: [{ fields: suffixes.map(s => ({ value: "", suffix: s })) }],
-      requiredRows: 5, // Practice 7 requires 5 sentences
-      errorMsg: ""
+      tasks,
+      items: Array.from({ length: rows }, () => ({ fields: suffixes.map(sf => ({ value: "", suffix: sf })) })),
+      requiredRows: tasks.length || 5, // without tasks: the earlier 5 free sentences
+      errorMsg: "",
+      errorRow: -1
     };
   },
   computed: {
@@ -98,7 +141,8 @@ const app = Vue.createApp({
     },
     check() {
       this.errorMsg = "";
-      
+      this.errorRow = -1;
+
       if (this.items.length !== this.requiredRows) {
         this.errorMsg = `You must produce exactly ${this.requiredRows} sentences.`;
         return;
@@ -108,10 +152,23 @@ const app = Vue.createApp({
         for (let j = 0; j < row.fields.length; j++) {
           const val = (row.fields[j].value || "").trim();
           const reg = this.regexList[j];
-          if (reg && !reg.test(val)) {
-            this.errorMsg = `Sentence ${i+1}, Field ${j+1}: "${val}" is not valid. Please choose from the allowed vocabulary.`;
-            return; 
+          if (!val) {
+            this.errorRow = i;
+            this.errorMsg = `Sentence ${i+1}: please fill in both text fields.`;
+            return;
           }
+          if (reg && !reg.test(val)) {
+            this.errorRow = i;
+            this.errorMsg = `Sentence ${i+1}, Field ${j+1}: "${val}" is not valid. Please choose from the allowed vocabulary.`;
+            return;
+          }
+        }
+        const task = this.tasks[i];
+        const sentence = row.fields.map(f => (f.value || "").trim()).join(" ");
+        if (task && task.check && !task.check.test(sentence)) {
+          this.errorRow = i;
+          this.errorMsg = task.error || `Sentence ${i+1} does not do what task ${i+1} asks: ${task.text}`;
+          return;
         }
       }
       document.querySelector('form').submit();
