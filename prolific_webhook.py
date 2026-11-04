@@ -46,7 +46,7 @@ def _find_participant_in_session(session_code: str, participant_code: str = "", 
         return None
 
     try:
-        session = Session.objects.filter(code=session_code).first()
+        session = Session.objects_filter(code=session_code).first()
     except Exception:
         session = None
     if not session:
@@ -98,22 +98,41 @@ def _find_participant_by_prolific_id(prolific_pid: str):
             return participant
 
     try:
-        qs = Participant.objects.filter(label=prolific_pid)
-        if qs.exists():
-            return qs.order_by("-id").first()
+        participant = (
+            Participant.objects_filter(label=prolific_pid)
+            .order_by(Participant.id.desc())
+            .first()
+        )
+        if participant:
+            return participant
+    except Exception:
+        pass
+
+    # participant.vars is a pickled column in oTree 5, so it cannot be searched
+    # in SQL. Scan the most recent participants and compare in Python instead.
+    try:
+        recent_participants = (
+            Participant.objects_filter()
+            .order_by(Participant.id.desc())
+            .limit(4000)
+            .all()
+        )
+        for participant in recent_participants:
+            try:
+                if participant.vars.get("prolific_id") == prolific_pid:
+                    return participant
+            except Exception:
+                continue
     except Exception:
         pass
 
     try:
-        qs = Participant.objects.filter(vars__contains={"prolific_id": prolific_pid})
-        if qs.exists():
-            return qs.order_by("-id").first()
-    except Exception:
-        pass
-
-    try:
-        qs = ImgDescPlayer.objects.filter(prolific_id_field=prolific_pid).order_by("-id")
-        for player in qs[:50]:
+        qs = (
+            ImgDescPlayer.objects_filter(prolific_id_field=prolific_pid)
+            .order_by(ImgDescPlayer.id.desc())
+            .limit(50)
+        )
+        for player in qs:
             participant = getattr(player, "participant", None)
             if participant:
                 return participant
@@ -122,7 +141,7 @@ def _find_participant_by_prolific_id(prolific_pid: str):
 
     for model in (ImgDescPlayer, StartPlayer):
         try:
-            recent_players = model.objects.order_by("-id")[:4000]
+            recent_players = model.objects_filter().order_by(model.id.desc()).limit(4000).all()
         except Exception:
             recent_players = []
 
@@ -134,7 +153,10 @@ def _find_participant_by_prolific_id(prolific_pid: str):
                 if (
                     getattr(participant, "label", "") == prolific_pid
                     or participant.vars.get("prolific_id") == prolific_pid
-                    or clean_str(getattr(player, "prolific_id_field", "")) == prolific_pid
+                    or (
+                        hasattr(type(player), "prolific_id_field")
+                        and clean_str(player.field_maybe_none("prolific_id_field")) == prolific_pid
+                    )
                 ):
                     return participant
             except Exception:
@@ -224,7 +246,7 @@ async def prolific_webhook_view(request: Request):
             session_code = clean_str(getattr(mapping, "session_code", ""))
             mapped_code = clean_str(getattr(mapping, "participant_code", ""))
             try:
-                session = Session.objects.filter(code=session_code).first() if session_code else None
+                session = Session.objects_filter(code=session_code).first() if session_code else None
             except Exception:
                 session = None
 

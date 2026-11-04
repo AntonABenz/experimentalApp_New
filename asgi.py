@@ -21,7 +21,7 @@ from start import Player as StartPlayer
 import psycopg2
 
 # NEW
-from otree.models import Session
+from otree.models import Participant, Session
 from otree.database import db as otree_db
 from otree.middleware import lock2 as otree_lock2
 from img_desc import (
@@ -499,7 +499,7 @@ def _find_participant_by_code(participant_code: str):
         return None
 
     try:
-        sessions = Session.objects.order_by("-id")[:200]
+        sessions = Session.objects_filter().order_by(Session.id.desc()).limit(200).all()
     except Exception:
         sessions = []
 
@@ -512,15 +512,16 @@ def _find_participant_by_code(participant_code: str):
         except Exception:
             continue
 
-    # Do not use Participant.objects here. In this deployed oTree runtime that API
-    # is not available and caused 500s on /InitializeParticipant for Prolific users.
-    # Find the participant through concrete app Player models instead.
+    # oTree 5 has no Model.objects (that was the Django-era API and caused 500s on
+    # /InitializeParticipant). Find the participant through the concrete app Player
+    # models, joining to Participant to match on its code.
     for model in (StartPlayer, ImgDescPlayer):
         try:
             player = (
-                model.objects
-                .filter(participant__code=participant_code)
-                .order_by("-id")
+                model.objects_filter()
+                .join(Participant, model.participant_id == Participant.id)
+                .filter(Participant.code == participant_code)
+                .order_by(model.id.desc())
                 .first()
             )
             if player and getattr(player, "participant", None):
@@ -548,7 +549,7 @@ def _find_participant_by_code(participant_code: str):
     # the resolved participant object directly.
     for model in (ImgDescPlayer, StartPlayer):
         try:
-            recent_players = model.objects.order_by("-id")[:4000]
+            recent_players = model.objects_filter().order_by(model.id.desc()).limit(4000).all()
         except Exception:
             recent_players = []
 
@@ -858,7 +859,7 @@ def _serialize_mapping_state(mapping):
 
 def _recent_sessions(limit: int = 200):
     try:
-        return list(Session.objects.order_by("-id")[: int(limit or 200)])
+        return list(Session.objects_filter().order_by(Session.id.desc()).limit(int(limit or 200)))
     except Exception:
         return []
 
@@ -906,9 +907,17 @@ def _slot_rows_from_root(root, participant_code: str):
     return result
 
 
+def _player_prolific_id(player) -> str:
+    # oTree 5 raises on reading a null field via getattr, so use field_maybe_none.
+    try:
+        return clean_str(player.field_maybe_none("prolific_id_field"))
+    except Exception:
+        return ""
+
+
 def _recent_img_desc_players(limit: int = 4000):
     try:
-        return list(ImgDescPlayer.objects.order_by("-id")[: int(limit or 4000)])
+        return list(ImgDescPlayer.objects_filter().order_by(ImgDescPlayer.id.desc()).limit(int(limit or 4000)))
     except Exception:
         return []
 
@@ -923,7 +932,7 @@ def _find_recent_img_desc_player(participant_code: str = "", prolific_id: str = 
         try:
             participant = getattr(player, "participant", None)
             player_code = clean_str(getattr(participant, "code", ""))
-            player_pid = clean_str(getattr(player, "prolific_id_field", ""))
+            player_pid = _player_prolific_id(player)
             if participant_code and player_code == participant_code:
                 return player
             if prolific_id and player_pid == prolific_id:
@@ -966,7 +975,7 @@ def _find_repair_fallback_by_participant_code(participant_code: str):
         )
         return dict(
             participant_code=participant_code,
-            prolific_id=clean_str(getattr(player, "prolific_id_field", "")),
+            prolific_id=_player_prolific_id(player),
             session=session,
             session_code=clean_str(getattr(session, "code", "")),
             slot_rows=slot_rows,
@@ -1044,16 +1053,20 @@ def _find_repair_fallback_by_prolific_id(prolific_id: str):
     logger.warning("CohortRepair fallback: no recent img_desc player PID match prolific_id=%s", prolific_id)
 
     try:
-        players = list(ImgDescPlayer.objects.filter(prolific_id_field=prolific_id).order_by("-id")[:200])
+        players = list(
+            ImgDescPlayer.objects_filter(prolific_id_field=prolific_id)
+            .order_by(ImgDescPlayer.id.desc())
+            .limit(200)
+        )
     except Exception:
         players = []
 
     if not players:
         try:
-            players = list(ImgDescPlayer.objects.order_by("-id")[:4000])
+            players = list(ImgDescPlayer.objects_filter().order_by(ImgDescPlayer.id.desc()).limit(4000))
         except Exception:
             players = []
-        players = [p for p in players if clean_str(getattr(p, "prolific_id_field", "")) == prolific_id]
+        players = [p for p in players if _player_prolific_id(p) == prolific_id]
 
     for player in players:
         try:
