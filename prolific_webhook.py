@@ -9,6 +9,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from otree.models import Participant, Session
 
 from img_desc.utils import verify_prolific_webhook
+from utils.prolific_health import KIND_BAD_SIGNATURE, KIND_OK, record_webhook
 from start import (
     Player as StartPlayer,
     find_start_prolific_intake,
@@ -180,6 +181,7 @@ async def prolific_webhook_view(request: Request):
     ok = verify_prolific_webhook(raw_body=raw_body, timestamp=ts, signature=sig)
     if not ok:
         logger.warning("Webhook signature verification failed.")
+        record_webhook(KIND_BAD_SIGNATURE)
         return PlainTextResponse("Bad signature", status_code=403)
 
     try:
@@ -204,6 +206,9 @@ async def prolific_webhook_view(request: Request):
 
     study_id = (data.get("study_id") or "").strip()
     submission_id = (data.get("submission_id") or data.get("id") or "").strip()
+
+    # Shown on the dashboard, so it is visible that Prolific reaches the webhook.
+    record_webhook(KIND_OK, status=status)
 
     if not prolific_pid or not status:
         return PlainTextResponse("Missing prolific_pid or status", status_code=400)

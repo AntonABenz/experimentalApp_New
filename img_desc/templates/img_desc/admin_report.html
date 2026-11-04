@@ -31,6 +31,16 @@
   <div style="color:#888; font-size:12px;">
     {{ num_experiments }} cohort(s) of {{ cohort_size }} &middot; target sample {{ total_participants_needed }} &middot; updates every {{ refresh_seconds }}s{% if expansion.status %} &middot; recruitment: {{ expansion.status }}{% endif %}
   </div>
+  {% if for_prolific and prolific %}
+  <div style="color:#555; font-size:12px; margin-top:4px;">
+    Prolific connection:
+    API token {% if prolific.token_set %}set{% else %}<b style="color:#c0392b;">missing</b>{% endif %}
+    &middot; webhook secret {% if prolific.secret_set %}set{% else %}<b style="color:#c0392b;">missing</b>{% endif %}
+    &middot; last webhook: {% if prolific.last_ok %}{{ prolific.last_ok }}{% if prolific.last_ok_status %}, {{ prolific.last_ok_status }}{% endif %} ({{ prolific.ok_count }} so far){% else %}none received yet{% endif %}
+    {% if prolific.bad_count %}&middot; <b style="color:#c0392b;">{{ prolific.bad_count }} call(s) with a wrong signature</b>, last {{ prolific.last_bad }}{% endif %}
+    {% if prolific.expansion_reason %}&middot; last place increase: {{ prolific.expansion_reason }}{% endif %}
+  </div>
+  {% endif %}
 
   <div class="mon-summary">
     <div class="mon-card"><div class="num">{{ funnel.accepted }}</div><div class="lbl">accepted</div></div>

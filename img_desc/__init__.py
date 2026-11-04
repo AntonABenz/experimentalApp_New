@@ -2333,7 +2333,7 @@ def vars_for_admin_report(subsession):
     )
 
     # Latest Prolific slot-expansion attempt (recruitment status line).
-    expansion = dict(status="", attempts=0)
+    expansion = dict(status="", attempts=0, message="")
     if root:
         try:
             rows = ProlificExpansionState.filter(subsession=root)
@@ -2342,9 +2342,19 @@ def vars_for_admin_report(subsession):
                 expansion = dict(
                     status=clean_str(getattr(latest, "status", "")),
                     attempts=int(getattr(latest, "attempts", 0) or 0),
+                    message=clean_str(getattr(latest, "last_message", "")),
                 )
         except Exception:
-            expansion = dict(status="", attempts=0)
+            expansion = dict(status="", attempts=0, message="")
+
+    # Prolific connection line: token / webhook secret set (yes or no only), last
+    # webhook call, and the reason saved with the last place-increase attempt.
+    try:
+        from utils.prolific_health import prolific_health
+
+        prolific = prolific_health(expansion.get("message", ""))
+    except Exception:
+        prolific = {}
 
     # Auto-refresh cadence. Defaults to 20s (production); a local demo can set
     # DASHBOARD_REFRESH_SECONDS=5 so the dashboard visibly ticks while presenting.
@@ -2363,6 +2373,8 @@ def vars_for_admin_report(subsession):
         cohort_size=csize,
         num_experiments=len(cohorts),
         total_participants_needed=safe_int(session.vars.get("total_participants_needed"), 0),
+        prolific=prolific,
+        for_prolific=bool(session.config.get("for_prolific")),
         refresh_seconds=refresh_seconds,
     )
 
