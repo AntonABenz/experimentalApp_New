@@ -286,13 +286,14 @@ def _root_subsession(obj):
       - Subsession
       - Session
     """
+    # oTree 5 models have no Django _meta.app_label, so check the class directly.
     session_obj = None
 
     try:
-        if hasattr(obj, "subsession") and getattr(getattr(obj.subsession, "_meta", None), "app_label", "") == Constants.name_in_url:
+        if isinstance(getattr(obj, "subsession", None), Subsession):
             return obj.subsession.in_round(1)
 
-        if hasattr(obj, "in_round") and getattr(getattr(obj, "_meta", None), "app_label", "") == Constants.name_in_url:
+        if isinstance(obj, Subsession):
             return obj.in_round(1)
 
         if hasattr(obj, "session"):
@@ -311,7 +312,7 @@ def _root_subsession(obj):
                 for sub in all_subsessions or []:
                     try:
                         if (
-                            getattr(getattr(sub, "_meta", None), "app_label", "") == Constants.name_in_url
+                            isinstance(sub, Subsession)
                             and int(getattr(sub, "round_number", 0) or 0) == 1
                         ):
                             return sub
@@ -321,9 +322,9 @@ def _root_subsession(obj):
             pass
 
         try:
-            qs = Subsession.filter(session=session_obj, round_number=1)
-            if qs:
-                return qs[0]
+            root = Subsession.objects_filter(session=session_obj, round_number=1).first()
+            if root:
+                return root
         except Exception:
             pass
 
@@ -1343,9 +1344,11 @@ def _prolific_slot_map_table_available() -> bool:
 
 
 def _recent_root_subsessions(limit: int = 120):
+    from otree.models import Session
+
     roots = []
     try:
-        sessions = Session.objects.order_by("-id")[: int(limit or 120)]
+        sessions = Session.objects_filter().order_by(Session.id.desc()).limit(int(limit or 120)).all()
     except Exception:
         sessions = []
 
