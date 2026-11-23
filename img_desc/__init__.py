@@ -274,7 +274,7 @@ class ProlificSlotMap(ExtraModel):
 class ProlificExpansionState(ExtraModel):
     subsession = models.Link(Subsession)
     exp_num = models.IntegerField()
-    status = models.StringField()  # "success" | "failed"
+    status = models.StringField()  # "success" | "failed" | "waiting"
     attempts = models.IntegerField(initial=0)
     last_attempt_ts = models.FloatField(initial=0)
     last_message = models.LongStringField(blank=True)
@@ -879,7 +879,8 @@ def _get_expansion_state(player, exp_num: int):
     return qs[0] if qs else None
 
 
-def _set_expansion_state(player, exp_num: int, status: str, message: str = "", bump_attempt: bool = False):
+def _set_expansion_state(player, exp_num: int, status: str, message: str = "", bump_attempt: bool = False,
+                         touch: bool = False):
     root = _root_subsession(player)
     if not root:
         return
@@ -890,6 +891,8 @@ def _set_expansion_state(player, exp_num: int, status: str, message: str = "", b
     if row:
         if bump_attempt:
             row.attempts = int(getattr(row, "attempts", 0) or 0) + 1
+            row.last_attempt_ts = now
+        elif touch:
             row.last_attempt_ts = now
         row.status = status
         row.last_message = message or ""
@@ -905,11 +908,35 @@ def _set_expansion_state(player, exp_num: int, status: str, message: str = "", b
             exp_num=int(exp_num),
             status=status,
             attempts=1 if bump_attempt else 0,
-            last_attempt_ts=now if bump_attempt else 0,
+            last_attempt_ts=now if (bump_attempt or touch) else 0,
             last_message=message or "",
         )
     except Exception:
         pass
+
+
+def cohort_approval_count(player, exp_num: int):
+    """
+    (approved, members) for a cohort: how many of the participants holding its
+    slots Prolific has reported as APPROVED (stored from the webhook).
+    """
+    root = _root_subsession(player)
+    if not root:
+        return 0, 0
+    codes = {
+        clean_str(r.participant_code)
+        for r in CohortSlot.filter(subsession=root, exp_num=int(exp_num), active=True)
+        if clean_str(r.participant_code)
+    }
+    if not codes:
+        return 0, 0
+    approved = 0
+    for p in player.session.get_participants():
+        if p.code in codes:
+            status = clean_str(p.vars.get("prolific_submission_status", "")).upper()
+            if status in Constants.APPROVED_PROLIFIC_STATUSES:
+                approved += 1
+    return approved, len(codes)
 
 
 def _expansion_succeeded(player, exp_num: int) -> bool:
@@ -1085,6 +1112,32 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
             clean_str(getattr(getattr(player, "participant", None), "code", "")),
             clean_str(getattr(session, "code", "")),
             exp_num,
+        )
+        return
+
+    # Add places only after Prolific has approved every member of the cohort.
+    # Until then a finished participant may still be rejected (e.g. for bad
+    # quality); Prolific then reopens that place and the replacement must join
+    # this cohort, before the next cohort is recruited. Every APPROVED webhook
+    # calls this function again (maybe_expand_prolific_for_participant), so
+    # the check repeats until the last member is approved, however long the
+    # review takes.
+    approved, members = cohort_approval_count(player, exp_num)
+    if members == 0 or approved < members:
+        logger.info(
+            "Prolific expansion waiting: participant=%s session=%s exp_num=%s approved=%s/%s",
+            clean_str(getattr(getattr(player, "participant", None), "code", "")),
+            clean_str(getattr(session, "code", "")),
+            exp_num,
+            approved,
+            members,
+        )
+        _set_expansion_state(
+            player,
+            exp_num,
+            status="waiting",
+            message=f"waiting_for_approval:{exp_num}:{approved}/{members}",
+            touch=True,
         )
         return
 

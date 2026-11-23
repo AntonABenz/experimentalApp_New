@@ -55,11 +55,12 @@ def _patch_study(token: str, study_id: str, payload: dict) -> dict:
     return resp.json()
 
 
-# A study is "AWAITING REVIEW" when every place has been used and nobody is still
-# working on it, e.g. when the last person of a cohort returned the task on Prolific
-# but finished in the app. Adding places is what the researcher wants then, too.
-# PAUSED and COMPLETED are set by the researcher on purpose and stay excluded.
-DEFAULT_ALLOWED_STATUSES = "ACTIVE,AWAITING REVIEW"
+# The app adds places only after every member of a cohort has been approved
+# (img_desc.maybe_expand_prolific_when_cohort_complete). By then Prolific usually
+# shows the study as COMPLETED (all places used and reviewed), or AWAITING REVIEW
+# while other submissions still wait for review. PAUSED is set by the researcher
+# on purpose and stays excluded.
+DEFAULT_ALLOWED_STATUSES = "ACTIVE,AWAITING REVIEW,COMPLETED"
 
 
 def _norm_status(s: str) -> str:
@@ -69,7 +70,7 @@ def _norm_status(s: str) -> str:
 def _allowed_statuses() -> set[str]:
     """
     Optional env var:
-      - PROLIFIC_ALLOWED_STATUSES (default: "ACTIVE,AWAITING REVIEW")
+      - PROLIFIC_ALLOWED_STATUSES (default: "ACTIVE,AWAITING REVIEW,COMPLETED")
         Example: "ACTIVE,PAUSED"
     """
     raw = (os.environ.get("PROLIFIC_ALLOWED_STATUSES") or DEFAULT_ALLOWED_STATUSES).strip()
@@ -88,7 +89,7 @@ def maybe_expand_slots(enabled: bool, batch_done: bool, study_id: str = "") -> T
       - PROLIFIC_STUDY_ID (fallback only if study_id argument is empty)
       - PROLIFIC_EXPAND_BY (default: 4)
       - PROLIFIC_MAX_PLACES (optional cap, default: unset)
-      - PROLIFIC_ALLOWED_STATUSES (default: "ACTIVE,AWAITING REVIEW")
+      - PROLIFIC_ALLOWED_STATUSES (default: "ACTIVE,AWAITING REVIEW,COMPLETED")
 
     Returns:
       (ok, message)

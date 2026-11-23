@@ -132,6 +132,11 @@ def explain_expansion_message(message: str) -> str:
         if "PROLIFIC_API_TOKEN" in m or "PROLIFIC_API_KEY" in m:
             return "no Prolific API token on the server"
         return "settings missing on the server (" + m[len("config_error:"):].strip() + ")"
+    if m.startswith("waiting_for_approval:"):
+        _, exp, counts = (m.split(":", 2) + ["", ""])[:3]
+        done, _, total = counts.partition("/")
+        return (f"waiting until Prolific has approved all members of cohort {exp} "
+                f"({done} of {total} approved so far)")
     if m.startswith("status_not_allowed:"):
         return "the Prolific study was not active (status " + m.split(":", 1)[1].strip() + ")"
     if m.startswith("http_error:"):
