@@ -1,4 +1,5 @@
 # asgi.py
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -21,6 +22,7 @@ from otree.middleware import lock2 as _otree_request_lock
 from prolific_webhook import prolific_webhook_view, _find_participant_by_prolific_id
 from start import Player as StartPlayer
 import psycopg2
+from utils import pg_pool  # one reused connection for the plain-SQL tables
 
 # NEW
 from otree.models import Participant, Session
@@ -55,6 +57,7 @@ from img_desc import (
     _recent_root_subsessions,
     reset_this_app_for_participant,
     safe_int,
+    set_background_loop,
 )
 
 logger = logging.getLogger("benzapp.admin")
@@ -191,7 +194,7 @@ def _start_prolific_intake_table_available() -> bool:
         return False
 
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT to_regclass('public.start_prolificintake')")
@@ -270,7 +273,7 @@ def _sync_start_prolific_intake_from_participant(participant, payload: dict, _re
         return False
 
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -356,7 +359,7 @@ def _sync_start_prolific_intake_pending(session_code: str, payload: dict, _retry
         return False
 
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -423,7 +426,7 @@ def _bind_start_prolific_intake_participant_code(participant_code: str, payload:
         return False
 
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -693,6 +696,9 @@ async def _capture_prolific_cookie_for_participant(participant_code: str, payloa
 
 class ProlificCaptureCookieMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        # Tell img_desc which event loop to use for the Prolific place increase,
+        # so that call can run outside oTree's request lock (every request passes here).
+        set_background_loop(asyncio.get_running_loop())
         should_clear_cookie = False
         payload = _load_signed_cookie(request.cookies.get(PROLIFIC_CAPTURE_COOKIE, ""))
         request_payload = _extract_prolific_cookie_payload(request)

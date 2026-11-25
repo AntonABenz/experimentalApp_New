@@ -31,9 +31,9 @@ def _connect():
     url = _database_url()
     if not url:
         return None
-    import psycopg2
+    from utils import pg_pool
 
-    return psycopg2.connect(url)
+    return pg_pool.connect(url)
 
 
 def _ensure_table(cur):

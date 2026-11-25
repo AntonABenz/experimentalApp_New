@@ -9,6 +9,7 @@ import re
 import time
 
 import psycopg2
+from utils import pg_pool  # one reused connection for the plain-SQL tables
 
 from reading_xls.get_data import get_data
 
@@ -144,7 +145,7 @@ def _start_prolific_intake_table_available() -> bool:
         return False
 
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT to_regclass('public.start_prolificintake')")
@@ -235,7 +236,7 @@ def find_start_prolific_intake(participant_code: str = "", prolific_pid: str = "
     for attempt in (0, 1):
         row = None
         try:
-            conn = psycopg2.connect(database_url)
+            conn = pg_pool.connect(database_url)
             try:
                 with conn.cursor() as cur:
                     # participant_code is the primary stable key for this intake row once
@@ -307,7 +308,7 @@ def sync_start_prolific_intake(player, pid: str = "", participant_label: str = "
 
     row = {}
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute(

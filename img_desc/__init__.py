@@ -11,6 +11,7 @@ import re
 import threading
 from types import SimpleNamespace
 import psycopg2
+from utils import pg_pool  # one reused connection for the plain-SQL tables
 from starlette.responses import RedirectResponse
 
 from .utils import STUBURL
@@ -20,6 +21,13 @@ logger = logging.getLogger("benzapp.img_desc")
 _cohort_assignment_lock = threading.Lock()
 _pending_slot_reservations = {}
 _prolific_slot_map_table_available_cache = None
+# participant_code -> (what was last written to the slot map, when, the row).
+# Every question page asks to write the same row again (about four times); skip
+# those repeats and only write when something changed, or after a while to keep
+# last_seen_ts fresh. The app runs in one process (Procfile: --workers 1), and
+# the other functions that change the table forget the participant's entry.
+_slot_map_last_write = {}
+_SLOT_MAP_REWRITE_SECONDS = 300
 PROLIFIC_CAPTURE_COOKIE = "prolific_capture"
 
 PRODUCER = "P"
@@ -977,7 +985,7 @@ def _cohort_study_ids_from_slot_map(player, exp_num: int):
     """
     rows = []
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, (int(getattr(root, "id", 0) or 0), int(exp_num)))
@@ -989,7 +997,7 @@ def _cohort_study_ids_from_slot_map(player, exp_num: int):
             _reset_prolific_slot_map_table_cache()
             if _prolific_slot_map_table_available():
                 try:
-                    conn = psycopg2.connect(database_url)
+                    conn = pg_pool.connect(database_url)
                     try:
                         with conn.cursor() as cur:
                             cur.execute(sql, (int(getattr(root, "id", 0) or 0), int(exp_num)))
@@ -1160,6 +1168,12 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
         )
         return
 
+    root = _root_subsession(player)
+    flight_key = (int(getattr(root, "id", 0) or 0), int(exp_num))
+    if flight_key in _expansion_in_flight:
+        logger.info("Prolific expansion already running: exp_num=%s study_id=%s", exp_num, study_id)
+        return
+
     _set_expansion_state(
         player,
         exp_num,
@@ -1168,24 +1182,262 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
         bump_attempt=True,
     )
 
+    if _start_expansion_in_background(player, flight_key, exp_num, study_id, study_source):
+        return
+
+    # No event loop known (scripts and tests): ask Prolific right here, as before.
+    ok, msg = _ask_prolific_for_places(exp_num, study_id, study_source)
+    _set_expansion_state(player, exp_num, status="success" if ok else "failed", message=msg)
+
+
+# The call to Prolific that adds places can take seconds (up to 20 s per call if
+# Prolific is slow). oTree answers one request at a time, so while the webhook or
+# the final page waited for Prolific, every participant's page waited too. Now the
+# request only decides that places are due; the Prolific call runs afterwards on
+# the server's event loop, outside oTree's request lock, and the result is saved
+# under the lock like any request. asgi.py tells us the loop (set_background_loop).
+_background_loop = None
+_expansion_in_flight = set()
+
+
+def set_background_loop(loop) -> None:
+    global _background_loop, _approval_watch_started
+    _background_loop = loop
+    if not _approval_watch_started and APPROVAL_CHECK_SECONDS > 0:
+        _approval_watch_started = True
+        import asyncio
+
+        asyncio.run_coroutine_threadsafe(_approval_watch(), loop)
+
+
+def _ask_prolific_for_places(exp_num, study_id, study_source):
     try:
         ok, msg = maybe_expand_slots(enabled=True, batch_done=True, study_id=study_id)
-        logger.info(
-            "Prolific expansion result: exp_num=%s study_id=%s source=%s ok=%s msg=%s",
-            exp_num,
-            study_id,
-            study_source,
-            ok,
-            msg,
-        )
-        if ok:
-            _set_expansion_state(player, exp_num, status="success", message=msg)
-        else:
-            _set_expansion_state(player, exp_num, status="failed", message=msg)
-
     except Exception:
         logger.exception("maybe_expand_slots raised unexpectedly")
-        _set_expansion_state(player, exp_num, status="failed", message="exception")
+        return False, "exception"
+    logger.info(
+        "Prolific expansion result: exp_num=%s study_id=%s source=%s ok=%s msg=%s",
+        exp_num,
+        study_id,
+        study_source,
+        ok,
+        msg,
+    )
+    return bool(ok), msg
+
+
+def _start_expansion_in_background(player, flight_key, exp_num, study_id, study_source) -> bool:
+    loop = _background_loop
+    if loop is None or loop.is_closed() or not loop.is_running():
+        return False
+    import asyncio
+
+    session_code = clean_str(getattr(getattr(player, "session", None), "code", ""))
+    participant_code = clean_str(getattr(getattr(player, "participant", None), "code", ""))
+    _expansion_in_flight.add(flight_key)
+    try:
+        asyncio.run_coroutine_threadsafe(
+            _expand_in_background(flight_key, session_code, participant_code, exp_num, study_id, study_source),
+            loop,
+        )
+    except Exception:
+        _expansion_in_flight.discard(flight_key)
+        logger.exception("Could not start the Prolific place increase in the background")
+        return False
+    return True
+
+
+async def _expand_in_background(flight_key, session_code, participant_code, exp_num, study_id, study_source):
+    import asyncio
+    from otree.database import db
+    from otree.middleware import lock2
+
+    try:
+        ok, msg = await asyncio.to_thread(_ask_prolific_for_places, exp_num, study_id, study_source)
+        async with lock2:
+            db.new_session()
+            try:
+                player = _img_desc_player_for(session_code, participant_code)
+                if player is None:
+                    logger.warning(
+                        "Prolific expansion result not saved: participant=%s session=%s not found",
+                        participant_code,
+                        session_code,
+                    )
+                else:
+                    _set_expansion_state(player, exp_num, status="success" if ok else "failed", message=msg)
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception("Could not save the Prolific place increase result")
+    finally:
+        _expansion_in_flight.discard(flight_key)
+
+
+# Backup for approvals that never arrive. Places for the next cohort are added
+# only when Prolific has approved every member of a cohort, and the app learns
+# about approvals from Prolific's webhook. Once (23 Nov 2026) one approval never
+# reached the app, so it waited forever. While a cohort is waiting, the app now
+# also asks Prolific every few minutes. Only approvals are taken over this way;
+# returns and rejections still come from the webhook (they free places).
+APPROVAL_CHECK_SECONDS = int(float(os.environ.get("PROLIFIC_APPROVAL_CHECK_SECONDS", "300") or 0))  # 0 turns the check off
+_approval_watch_started = False
+_APPROVAL_CHECK_MAX_AGE_SECONDS = 14 * 24 * 3600
+
+
+async def _approval_watch():
+    import asyncio
+
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await check_missing_approvals_once()
+        except Exception:
+            logger.exception("Approval check with Prolific failed")
+        await asyncio.sleep(APPROVAL_CHECK_SECONDS)
+
+
+async def check_missing_approvals_once() -> int:
+    """Ask Prolific about cohort members whose approval the app has not seen.
+
+    Returns how many approvals were taken over. Reads under oTree's request lock,
+    asks Prolific without holding it, then saves under the lock again.
+    """
+    import asyncio
+    from otree.database import db
+    from otree.middleware import lock2
+    from utils.prolific import get_submission_statuses
+
+    async with lock2:
+        db.new_session()
+        try:
+            todo = _cohorts_waiting_for_approval()
+        finally:
+            db.rollback()
+    if not todo:
+        return 0
+
+    statuses = {}
+    for study_id in sorted({item["study_id"] for item in todo}):
+        try:
+            statuses[study_id] = await asyncio.to_thread(get_submission_statuses, study_id)
+        except Exception as e:
+            logger.warning("Approval check: could not read submissions of study %s (%s)", study_id, e)
+
+    if not statuses:
+        return 0
+    async with lock2:
+        db.new_session()
+        try:
+            taken = _apply_prolific_approvals(todo, statuses)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    return taken
+
+
+def _cohorts_waiting_for_approval():
+    from otree.database import db
+
+    now = time.time()
+    todo = []
+    # oTree's .filter() needs a model instance (subsession=...); this looks across sessions.
+    for row in db.query(ProlificExpansionState).filter(ProlificExpansionState.status == "waiting"):
+        if now - float(getattr(row, "last_attempt_ts", 0) or 0) > _APPROVAL_CHECK_MAX_AGE_SECONDS:
+            continue
+        root = row.subsession
+        session = getattr(root, "session", None)
+        config = getattr(session, "config", None) or {}
+        if not config.get("for_prolific") or not config.get("expand_slots"):
+            continue
+        exp_num = int(row.exp_num)
+        codes = {
+            clean_str(r.participant_code)
+            for r in CohortSlot.filter(subsession=root, exp_num=exp_num, active=True)
+            if clean_str(r.participant_code)
+        }
+        missing = []
+        any_player = None
+        for p in session.get_participants():
+            if p.code not in codes:
+                continue
+            if any_player is None:
+                any_player = next((pp for pp in p.get_players() if hasattr(pp, "completed_experiment")), None)
+            status = clean_str(p.vars.get("prolific_submission_status", "")).upper()
+            pid = get_participant_prolific_id(p)
+            if status not in Constants.APPROVED_PROLIFIC_STATUSES and pid:
+                missing.append((p.code, pid))
+        if not missing or any_player is None:
+            continue
+        study_id, _source = _resolve_expansion_study_id(any_player, exp_num)
+        if not study_id:
+            continue
+        todo.append(dict(session_code=session.code, exp_num=exp_num, study_id=study_id, missing=missing))
+    return todo
+
+
+def _apply_prolific_approvals(todo, statuses) -> int:
+    from otree.models import Session
+
+    taken = 0
+    for item in todo:
+        on_prolific = statuses.get(item["study_id"])
+        if on_prolific is None:
+            continue
+        session = Session.objects_filter(code=item["session_code"]).first()
+        if session is None:
+            continue
+        by_code = {p.code: p for p in session.get_participants()}
+        last = None
+        for code, pid in item["missing"]:
+            participant = by_code.get(code)
+            prolific_status = on_prolific.get(pid, "")
+            if participant is None or not prolific_status:
+                continue
+            if clean_str(participant.vars.get("prolific_submission_status", "")).upper() in Constants.APPROVED_PROLIFIC_STATUSES:
+                continue
+            if prolific_status not in Constants.APPROVED_PROLIFIC_STATUSES:
+                if prolific_status in Constants.BAD_PROLIFIC_STATUSES:
+                    logger.warning(
+                        "Approval check: Prolific shows %s for participant=%s prolific_id=%s, but no webhook came; left for the webhook / cohort repair",
+                        prolific_status,
+                        code,
+                        pid,
+                    )
+                continue
+            # Same as an APPROVED webhook (prolific_webhook_view).
+            participant.vars["prolific_submission_status"] = "APPROVED"
+            participant.vars["prolific_status_source"] = "approval_check"
+            mark_participant_finished(participant)
+            mark_participant_complete_in_cohort(session, participant.code, completed=True)
+            logger.warning(
+                "Approval check: took over a missing approval participant=%s prolific_id=%s exp=%s",
+                code,
+                pid,
+                item["exp_num"],
+            )
+            taken += 1
+            last = participant
+        if last is not None:
+            maybe_expand_prolific_for_participant(last)
+    return taken
+
+
+def _img_desc_player_for(session_code, participant_code):
+    from otree.models import Session
+
+    session = Session.objects_filter(code=session_code).first() if session_code else None
+    if session is None:
+        return None
+    for participant in session.get_participants():
+        if clean_str(participant.code) != participant_code:
+            continue
+        for pp in participant.get_players():
+            if hasattr(pp, "completed_experiment"):
+                return pp
+    return None
 
 
 def maybe_expand_prolific_for_participant(participant) -> None:
@@ -1331,7 +1583,7 @@ def _prolific_slot_map_table_available() -> bool:
         return False
 
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT to_regclass('public.img_desc_prolificslotmap')")
@@ -1480,7 +1732,7 @@ def find_prolific_slot_map(
         LIMIT 10
     """
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, (participant_code, participant_code, prolific_pid, prolific_pid, session_code, session_code))
@@ -1492,7 +1744,7 @@ def find_prolific_slot_map(
             _reset_prolific_slot_map_table_cache()
             if _prolific_slot_map_table_available():
                 try:
-                    conn = psycopg2.connect(database_url)
+                    conn = pg_pool.connect(database_url)
                     try:
                         with conn.cursor() as cur:
                             cur.execute(sql, (participant_code, participant_code, prolific_pid, prolific_pid, session_code, session_code))
@@ -1551,9 +1803,13 @@ def sync_prolific_slot_map(
         return None
 
     active_value = bool(active) if active is not None else True
+    write_key = (int(getattr(root, "id", 0) or 0), session_code, prolific_pid, study_id, exp_num, slot, active_value, status)
+    last = _slot_map_last_write.get(participant_code)
+    if last and last[0] == write_key and time.time() - last[1] < _SLOT_MAP_REWRITE_SECONDS:
+        return last[2]
     row = None
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1630,6 +1886,7 @@ def sync_prolific_slot_map(
         )
         return None
 
+    _slot_map_last_write[participant_code] = (write_key, time.time(), row)
     logger.warning(
         "sync_prolific_slot_map: upserted participant=%s prolific_id=%s session=%s exp=%s slot=%s active=%s status=%s",
         participant_code,
@@ -1650,12 +1907,13 @@ def deactivate_prolific_slot_map(session, participant_code: str, status: str = "
     participant_code = clean_str(participant_code)
     if not participant_code:
         return
+    _slot_map_last_write.pop(participant_code, None)
     database_url = clean_str(os.environ.get("DATABASE_URL", "") or os.environ.get("OTREE_DB_URL", ""))
     if not database_url:
         return
     session_code = clean_str(getattr(session, "code", ""))
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1694,9 +1952,10 @@ def free_slot_from_prolific_slot_map(mapping, status: str = "") -> bool:
 
     if subsession_id <= 0 or not participant_code or exp_num <= 0 or slot <= 0:
         return False
+    _slot_map_last_write.pop(participant_code, None)
 
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1764,9 +2023,10 @@ def mark_finished_from_prolific_slot_map(mapping, status: str = "") -> bool:
 
     if subsession_id <= 0 or not participant_code or exp_num <= 0 or slot <= 0:
         return False
+    _slot_map_last_write.pop(participant_code, None)
 
     try:
-        conn = psycopg2.connect(database_url)
+        conn = pg_pool.connect(database_url)
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -2205,16 +2465,42 @@ def vars_for_admin_report(subsession):
     except Exception:
         status_by_code, code_to_participant = {}, {}
 
-    # participant_code -> number of scheduled questions (one ScheduleItem per round)
+    # participant_code -> number of scheduled questions (one ScheduleItem per round).
+    # Counted in the database: loading every row (each holds a round's data) made
+    # the dashboard slow, and oTree serves one request at a time.
+    from otree.database import db as _db
+    from sqlalchemy import func as _func
+
     total_by_code = {}
     if root:
         try:
-            for it in ScheduleItem.filter(subsession=root):
-                c = clean_str(getattr(it, "participant_code", ""))
+            for code, n in (
+                _db.query(ScheduleItem.participant_code, _func.count(ScheduleItem.id))
+                .filter(ScheduleItem.subsession_id == root.id)
+                .group_by(ScheduleItem.participant_code)
+            ):
+                c = clean_str(code)
                 if c:
-                    total_by_code[c] = total_by_code.get(c, 0) + 1
+                    total_by_code[c] = total_by_code.get(c, 0) + int(n or 0)
         except Exception:
+            logger.warning("dashboard: could not count scheduled questions", exc_info=True)
             total_by_code = {}
+
+    # participant id -> [(producer_decision, interpreter_decision, decision_seconds)]
+    # for every img_desc round, in one query instead of loading each participant's
+    # rounds one by one. None = the query failed; _metrics then loads them as before.
+    decisions_by_pid = {}
+    try:
+        for pid, prod, interp, secs in _db.query(
+            Player.participant_id,
+            Player.producer_decision,
+            Player.interpreter_decision,
+            Player.decision_seconds,
+        ).filter(Player.session_id == session.id):
+            decisions_by_pid.setdefault(pid, []).append((prod, interp, secs))
+    except Exception:
+        logger.warning("dashboard: could not read the answers in one query", exc_info=True)
+        decisions_by_pid = None
 
     IDLE_ALERT_SECONDS = 180
     FAST_ANSWER_SECONDS = 1.5
@@ -2236,14 +2522,22 @@ def vars_for_admin_report(subsession):
             total_secs = 0.0
             n_timed = 0
             too_fast = 0
-            for pl in participant.get_players():
-                if not isinstance(pl, Player):
-                    continue
-                if clean_str(pl.field_maybe_none("producer_decision")) or clean_str(
-                    pl.field_maybe_none("interpreter_decision")
-                ):
+            if decisions_by_pid is not None:
+                rounds = decisions_by_pid.get(participant.id, [])
+            else:
+                rounds = [
+                    (
+                        pl.field_maybe_none("producer_decision"),
+                        pl.field_maybe_none("interpreter_decision"),
+                        getattr(pl, "decision_seconds", 0),
+                    )
+                    for pl in participant.get_players()
+                    if isinstance(pl, Player)
+                ]
+            for prod, interp, secs_value in rounds:
+                if clean_str(prod) or clean_str(interp):
                     answered += 1
-                    secs = float(getattr(pl, "decision_seconds", 0) or 0)
+                    secs = float(secs_value or 0)
                     if secs > 0:
                         total_secs += secs
                         n_timed += 1

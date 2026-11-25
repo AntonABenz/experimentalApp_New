@@ -177,3 +177,31 @@ def maybe_expand_slots(enabled: bool, batch_done: bool, study_id: str = "") -> T
             _expansion_lock.release()
         except Exception:
             pass
+
+
+def get_submission_statuses(study_id: str, page_size: int = 100, max_pages: int = 20) -> dict:
+    """{participant_id: status} for every submission of one study, read from Prolific.
+
+    Used as a backup when an approval webhook never reached the app (seen once in
+    November 2026): without it the app would wait for that approval forever and
+    add no places. GET /submissions/?study=<id> is paged with page / page_size.
+    Statuses come back with spaces ("AWAITING REVIEW"). Raises on HTTP errors.
+    """
+    token = _get_prolific_token()
+    statuses = {}
+    for page in range(1, max_pages + 1):
+        resp = requests.get(
+            f"{PROLIFIC_API_BASE}/submissions/",
+            params={"study": study_id, "page": page, "page_size": page_size},
+            headers=_auth_headers(token),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        results = (resp.json() or {}).get("results") or []
+        for row in results:
+            pid = str(row.get("participant_id") or "").strip()
+            if pid:
+                statuses[pid] = _norm_status(str(row.get("status") or ""))
+        if len(results) < page_size:
+            break
+    return statuses
