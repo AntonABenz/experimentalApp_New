@@ -54,16 +54,34 @@ def _find_participant_in_session(session_code: str, participant_code: str = "", 
         return None
 
     try:
-        for participant in session.get_participants():
-            if participant_code and clean_str(getattr(participant, "code", "")) == participant_code:
-                return participant
-            if prolific_pid and (
-                clean_str(getattr(participant, "label", "")) == prolific_pid
-                or clean_str(participant.vars.get("prolific_id", "")) == prolific_pid
-            ):
-                return participant
+        participants = list(session.get_participants())
     except Exception:
         return None
+
+    # The exact participant code wins. Someone who opens the study link twice has
+    # two participants with the same Prolific ID (e.g. a first attempt left on the
+    # Demographics page). Matching the ID first sent Prolific's approval to that
+    # abandoned first attempt, so the cohort never saw it (26 Nov 2026: b7u59zsv
+    # got the approval meant for da0ltx3x; no places were added).
+    if participant_code:
+        for participant in participants:
+            if clean_str(getattr(participant, "code", "")) == participant_code:
+                return participant
+
+    if prolific_pid:
+        matches = []
+        for participant in participants:
+            try:
+                if (
+                    clean_str(getattr(participant, "label", "")) == prolific_pid
+                    or clean_str(participant.vars.get("prolific_id", "")) == prolific_pid
+                ):
+                    matches.append(participant)
+            except Exception:
+                continue
+        if matches:
+            # Prefer the attempt that got furthest (the one actually playing).
+            return max(matches, key=lambda p: (int(getattr(p, "_index_in_pages", 0) or 0), int(getattr(p, "id", 0) or 0)))
 
     return None
 
