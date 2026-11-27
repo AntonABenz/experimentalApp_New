@@ -1204,6 +1204,10 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
 # under the lock like any request. asgi.py tells us the loop (set_background_loop).
 _background_loop = None
 _expansion_in_flight = set()
+# One place increase at a time: utils.prolific refuses a second one that starts
+# while another is running ("lock_busy"). Seen 27 Nov 2026 when the approval
+# check completed two cohorts at once. Created on the loop when first needed.
+_background_expansion_lock = None
 
 
 def set_background_loop(loop) -> None:
@@ -1259,8 +1263,12 @@ async def _expand_in_background(flight_key, session_code, participant_code, exp_
     from otree.database import db
     from otree.middleware import lock2
 
+    global _background_expansion_lock
+    if _background_expansion_lock is None:
+        _background_expansion_lock = asyncio.Lock()
     try:
-        ok, msg = await asyncio.to_thread(_ask_prolific_for_places, exp_num, study_id, study_source, places_needed)
+        async with _background_expansion_lock:
+            ok, msg = await asyncio.to_thread(_ask_prolific_for_places, exp_num, study_id, study_source, places_needed)
         async with lock2:
             db.new_session()
             try:
