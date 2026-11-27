@@ -1182,11 +1182,17 @@ def maybe_expand_prolific_when_cohort_complete(player) -> None:
         bump_attempt=True,
     )
 
-    if _start_expansion_in_background(player, flight_key, exp_num, study_id, study_source):
+    # Places the study needs once the next cohort is recruited. If the researcher
+    # already added them by hand (26 Nov 2026: the approval of the last member
+    # arrived only after the next cohort had been recruited manually), Prolific
+    # already has them and nothing more is added.
+    places_needed = int(cohort_size(player)) * (int(exp_num) + 1)
+
+    if _start_expansion_in_background(player, flight_key, exp_num, study_id, study_source, places_needed):
         return
 
     # No event loop known (scripts and tests): ask Prolific right here, as before.
-    ok, msg = _ask_prolific_for_places(exp_num, study_id, study_source)
+    ok, msg = _ask_prolific_for_places(exp_num, study_id, study_source, places_needed)
     _set_expansion_state(player, exp_num, status="success" if ok else "failed", message=msg)
 
 
@@ -1210,9 +1216,9 @@ def set_background_loop(loop) -> None:
         asyncio.run_coroutine_threadsafe(_approval_watch(), loop)
 
 
-def _ask_prolific_for_places(exp_num, study_id, study_source):
+def _ask_prolific_for_places(exp_num, study_id, study_source, places_needed=None):
     try:
-        ok, msg = maybe_expand_slots(enabled=True, batch_done=True, study_id=study_id)
+        ok, msg = maybe_expand_slots(enabled=True, batch_done=True, study_id=study_id, places_needed=places_needed)
     except Exception:
         logger.exception("maybe_expand_slots raised unexpectedly")
         return False, "exception"
@@ -1227,7 +1233,7 @@ def _ask_prolific_for_places(exp_num, study_id, study_source):
     return bool(ok), msg
 
 
-def _start_expansion_in_background(player, flight_key, exp_num, study_id, study_source) -> bool:
+def _start_expansion_in_background(player, flight_key, exp_num, study_id, study_source, places_needed=None) -> bool:
     loop = _background_loop
     if loop is None or loop.is_closed() or not loop.is_running():
         return False
@@ -1238,7 +1244,7 @@ def _start_expansion_in_background(player, flight_key, exp_num, study_id, study_
     _expansion_in_flight.add(flight_key)
     try:
         asyncio.run_coroutine_threadsafe(
-            _expand_in_background(flight_key, session_code, participant_code, exp_num, study_id, study_source),
+            _expand_in_background(flight_key, session_code, participant_code, exp_num, study_id, study_source, places_needed),
             loop,
         )
     except Exception:
@@ -1248,13 +1254,13 @@ def _start_expansion_in_background(player, flight_key, exp_num, study_id, study_
     return True
 
 
-async def _expand_in_background(flight_key, session_code, participant_code, exp_num, study_id, study_source):
+async def _expand_in_background(flight_key, session_code, participant_code, exp_num, study_id, study_source, places_needed=None):
     import asyncio
     from otree.database import db
     from otree.middleware import lock2
 
     try:
-        ok, msg = await asyncio.to_thread(_ask_prolific_for_places, exp_num, study_id, study_source)
+        ok, msg = await asyncio.to_thread(_ask_prolific_for_places, exp_num, study_id, study_source, places_needed)
         async with lock2:
             db.new_session()
             try:

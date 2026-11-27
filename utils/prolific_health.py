@@ -152,6 +152,8 @@ def explain_expansion_message(message: str) -> str:
         return "already at the maximum number of places (PROLIFIC_MAX_PLACES)"
     if m == "attempt_started":
         return "the attempt stopped before it finished"
+    if m.startswith("enough_places:"):
+        return "the study already had " + m.split(":", 1)[1].strip() + " places, so none were added"
     if m == "no_next_experiment":
         return "no further cohort to recruit for"
     return m[:80]

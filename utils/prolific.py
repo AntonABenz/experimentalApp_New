@@ -78,7 +78,8 @@ def _allowed_statuses() -> set[str]:
     return set(parts) if parts else {"ACTIVE"}
 
 
-def maybe_expand_slots(enabled: bool, batch_done: bool, study_id: str = "") -> Tuple[bool, str]:
+def maybe_expand_slots(enabled: bool, batch_done: bool, study_id: str = "",
+                       places_needed: Optional[int] = None) -> Tuple[bool, str]:
     """
     Increase Prolific study places when a batch is done.
 
@@ -90,6 +91,10 @@ def maybe_expand_slots(enabled: bool, batch_done: bool, study_id: str = "") -> T
       - PROLIFIC_EXPAND_BY (default: 4)
       - PROLIFIC_MAX_PLACES (optional cap, default: unset)
       - PROLIFIC_ALLOWED_STATUSES (default: "ACTIVE,AWAITING REVIEW,COMPLETED")
+
+    places_needed: the number of places the study needs once the next cohort is
+      recruited (cohort size x next cohort number). If the study already has at
+      least that many (e.g. the researcher added them by hand), nothing is added.
 
     Returns:
       (ok, message)
@@ -130,6 +135,11 @@ def maybe_expand_slots(enabled: bool, batch_done: bool, study_id: str = "") -> T
             return False, f"status_not_allowed:{status}"
 
         current = int(study.get("total_available_places") or 0)
+        if places_needed and current >= int(places_needed):
+            logger.info(
+                "Study already has %s places (needed %s); nothing added.", current, places_needed
+            )
+            return True, f"enough_places:{current}"
         new_total = current + expand_by
 
         if max_places is not None:
